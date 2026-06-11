@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+{% block title %}Admin — LogVault{% endblock %}
+{% block body %}
+<h1>Admin</h1>
+
+{% if purged is not none %}
+<div class="alert ok">
+  {% if purged %}Dropped {{ purged|length }} partition(s): {{ purged|join(', ') }}.
+  {% else %}Nothing to purge — no partitions older than the cutoff.{% endif %}
+</div>
+{% endif %}
+
+<section>
+  <h2>Retention</h2>
+  <p>Minimum retention is <b>{{ retention_years }} years</b>. Purge drops whole monthly
+     partitions older than the chosen age. The app will not purge below the retention floor.</p>
+  <form method="post" action="/admin/purge" class="panel inline-form"
+        onsubmit="return confirm('Permanently DROP partitions older than the selected age?');">
+    <label>Drop data older than
+      <input type="number" name="years" min="{{ retention_years }}" value="{{ retention_years }}"> years
+    </label>
+    <button type="submit" class="btn danger">Purge old partitions</button>
+  </form>
+</section>
+
+<section>
+  <h2>Storage</h2>
+  <p>{{ "{:,}".format(stats.total) }} events · {{ stats.size }} on disk ·
+     {{ stats.partitions|length }} partitions ·
+     span {{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }} → {{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }}</p>
+</section>
+
+<section>
+  <h2>Recent uploads</h2>
+  <table>
+    <tr><th>#</th><th>Uploaded (UTC)</th><th>File</th><th>Format</th><th class="r">Parsed</th>
+        <th class="r">Stored</th><th class="r">Dup</th><th class="r">Err</th><th>Status</th></tr>
+    {% for b in batches %}
+    <tr>
+      <td>{{ b.id }}</td>
+      <td class="nowrap">{{ b.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td>{{ b.filename }}</td>
+      <td>{{ format_labels.get(b.fmt, b.fmt) }}</td>
+      <td class="r">{{ "{:,}".format(b.total_rows or 0) }}</td>
+      <td class="r">{{ "{:,}".format(b.inserted_rows or 0) }}</td>
+      <td class="r">{{ "{:,}".format(b.duplicate_rows or 0) }}</td>
+      <td class="r">{{ "{:,}".format(b.error_rows or 0) }}</td>
+      <td><span class="badge {{ b.status }}">{{ b.status }}</span></td>
+    </tr>
+    {% else %}<tr><td colspan="9" class="muted">No uploads yet.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

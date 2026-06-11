@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}Event #{{ ev.id }} — LogVault{% endblock %}
+{% block body %}
+<a href="javascript:history.back()" class="btn">‹ Back</a>
+<h1>Event #{{ ev.id }}</h1>
+
+<table class="kv">
+  <tr><th>Event time (UTC)</th><td>{{ ev.event_time }}</td></tr>
+  <tr><th>Ingested</th><td>{{ ev.ingested_at }}</td></tr>
+  <tr><th>Vendor / product</th><td>{{ ev.vendor }} / {{ ev.product or '—' }}</td></tr>
+  <tr><th>Log type</th><td>{{ ev.log_type or '—' }}</td></tr>
+  <tr><th>Severity / action</th><td>{{ ev.severity or '—' }} / {{ ev.action or '—' }}</td></tr>
+  <tr><th>Source</th><td>{{ ev.src_ip or '—' }}{% if ev.src_port %}:{{ ev.src_port }}{% endif %}</td></tr>
+  <tr><th>Destination</th><td>{{ ev.dst_ip or '—' }}{% if ev.dst_port %}:{{ ev.dst_port }}{% endif %}</td></tr>
+  <tr><th>Protocol / app</th><td>{{ ev.protocol or '—' }} / {{ ev.app or '—' }}</td></tr>
+  <tr><th>User</th><td>{{ ev.user_name or '—' }}</td></tr>
+  <tr><th>Host</th><td>{{ ev.host_name or '—' }}</td></tr>
+  <tr><th>Rule</th><td>{{ ev.rule_name or '—' }}</td></tr>
+  <tr><th>Bytes</th><td>{{ ev.bytes_total if ev.bytes_total is not none else '—' }}</td></tr>
+  <tr><th>Message</th><td>{{ ev.message or '—' }}</td></tr>
+  <tr><th>Batch</th><td>#{{ ev.batch_id }}</td></tr>
+</table>
+
+<h2>Raw record</h2>
+<pre class="raw">{{ ev.raw | tojson(indent=2) }}</pre>
+{% endblock %}

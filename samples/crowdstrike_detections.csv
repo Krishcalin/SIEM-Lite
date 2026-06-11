@@ -1,0 +1,4 @@
+Timestamp,DetectName,Severity,SeverityName,Tactic,Technique,ComputerName,UserName,LocalIP,ExternalIP,FileName,CommandLine,PatternDispositionDescription,Status,SHA256
+2026-06-10T13:52:11Z,Credential Theft,5,Critical,Credential Access,Credential Dumping,FIN-WS-014,corp\jdoe,10.20.30.40,93.184.216.34,mimikatz.exe,"mimikatz.exe ""sekurlsa::logonpasswords""",Process killed,new,7b2d000000000000000000000000000000000000000000000000000000000e9a
+2026-06-10T13:58:40Z,Suspicious PowerShell,3,Medium,Execution,PowerShell,HR-WS-007,corp\asmith,10.20.30.41,,powershell.exe,"powershell -enc SQBFAFgA",Process allowed,new,ab19000000000000000000000000000000000000000000000000000000000044
+2026-06-10T14:03:22Z,Malware Quarantined,4,High,Defense Evasion,Obfuscated Files,OPS-SRV-02,SYSTEM,10.20.30.50,,evil.dll,rundll32 evil.dll,Quarantined,closed,c4a9000000000000000000000000000000000000000000000000000000000f8b

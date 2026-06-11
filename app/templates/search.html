@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Search — LogVault{% endblock %}
+{% block body %}
+<h1>Search</h1>
+
+<form method="get" action="/search" class="panel filters">
+  <input type="text" name="q" placeholder="Full-text query (e.g. malware AND 10.0.0.5)" value="{{ params.get('q','') }}" class="wide">
+  <select name="vendor">
+    <option value="">any vendor</option>
+    {% for v in vendors %}<option value="{{ v }}" {{ 'selected' if params.get('vendor')==v }}>{{ v }}</option>{% endfor %}
+  </select>
+  <select name="log_type">
+    <option value="">any type</option>
+    {% for t in log_types %}<option value="{{ t }}" {{ 'selected' if params.get('log_type')==t }}>{{ t }}</option>{% endfor %}
+  </select>
+  <input type="text" name="src_ip" placeholder="src ip / cidr" value="{{ params.get('src_ip','') }}">
+  <input type="text" name="dst_ip" placeholder="dst ip / cidr" value="{{ params.get('dst_ip','') }}">
+  <input type="text" name="user" placeholder="user contains" value="{{ params.get('user','') }}">
+  <input type="text" name="host" placeholder="host contains" value="{{ params.get('host','') }}">
+  <input type="text" name="action" placeholder="action" value="{{ params.get('action','') }}">
+  <input type="text" name="severity" placeholder="severity" value="{{ params.get('severity','') }}">
+  <label class="inline">from <input type="datetime-local" name="time_from" value="{{ params.get('time_from','') }}"></label>
+  <label class="inline">to <input type="datetime-local" name="time_to" value="{{ params.get('time_to','') }}"></label>
+  <button type="submit" class="btn primary">Search</button>
+  <a class="btn" href="/search">Reset</a>
+</form>
+
+<div class="resultbar">
+  <span><b>{{ "{:,}".format(total) }}</b> matching events</span>
+  {% if total %}<a class="btn" href="/search.csv?{{ base_qs }}">Export CSV</a>{% endif %}
+</div>
+
+<table class="results">
+  <tr>
+    <th>Time (UTC)</th><th>Vendor</th><th>Type</th><th>Sev</th><th>Action</th>
+    <th>Src</th><th>Dst</th><th>User</th><th>Host</th><th>Message</th>
+  </tr>
+  {% for r in rows %}
+  <tr onclick="location.href='/event/{{ r.id }}'">
+    <td class="nowrap">{{ r.event_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td>{{ r.vendor }}</td>
+    <td>{{ r.log_type or '' }}</td>
+    <td>{{ r.severity or '' }}</td>
+    <td>{{ r.action or '' }}</td>
+    <td class="nowrap">{{ r.src_ip or '' }}{% if r.src_port %}:{{ r.src_port }}{% endif %}</td>
+    <td class="nowrap">{{ r.dst_ip or '' }}{% if r.dst_port %}:{{ r.dst_port }}{% endif %}</td>
+    <td>{{ r.user_name or '' }}</td>
+    <td>{{ r.host_name or '' }}</td>
+    <td class="msg">{{ (r.message or '')[:120] }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="10" class="muted">No matching events.</td></tr>
+  {% endfor %}
+</table>
+
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a class="btn" href="?{{ base_qs }}&page={{ page-1 }}">‹ Prev</a>{% endif %}
+  <span>Page {{ page }} / {{ pages }}</span>
+  {% if page < pages %}<a class="btn" href="?{{ base_qs }}&page={{ page+1 }}">Next ›</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

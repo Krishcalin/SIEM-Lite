@@ -1,0 +1,5 @@
+Receive Time,Type,Threat/Content Type,Source address,Destination address,Source Port,Destination Port,IP Protocol,Application,Action,Rule,Source User,Bytes,Severity,Category,Device Name
+2026/06/10 13:45:01,TRAFFIC,end,10.20.30.40,93.184.216.34,52344,443,tcp,ssl,allow,Allow-Outbound-Web,corp\jdoe,84213,informational,computer-and-internet-info,PA-VM-01
+2026/06/10 13:46:12,TRAFFIC,end,10.20.30.41,8.8.8.8,51122,53,udp,dns,allow,Allow-DNS,corp\asmith,512,informational,dns,PA-VM-01
+2026/06/10 13:47:05,THREAT,vulnerability,203.0.113.9,10.20.30.40,40221,445,tcp,ms-ds-smb,reset-both,Block-Inbound,,0,critical,code-execution,PA-VM-01
+2026/06/10 13:48:33,TRAFFIC,deny,10.20.30.55,45.83.122.7,33444,4444,tcp,unknown-tcp,deny,Deny-Suspicious,corp\bwayne,0,informational,unknown,PA-VM-01

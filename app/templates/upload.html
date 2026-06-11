@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}Upload — LogVault{% endblock %}
+{% block body %}
+<h1>Upload logs</h1>
+
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+{% if result %}
+<div class="alert ok">
+  <strong>Ingested {{ result.filename }}</strong> as <code>{{ format_labels[result.format] }}</code>
+  (batch #{{ result.batch_id }}).
+  {% if result.already_ingested %}<br><em>Note: a file with identical contents was ingested before — duplicates were skipped.</em>{% endif %}
+  <ul class="stats-inline">
+    <li><b>{{ "{:,}".format(result.total) }}</b> parsed</li>
+    <li><b>{{ "{:,}".format(result.inserted) }}</b> stored</li>
+    <li><b>{{ "{:,}".format(result.duplicates) }}</b> duplicates skipped</li>
+    <li><b>{{ "{:,}".format(result.errors) }}</b> errors</li>
+  </ul>
+  <a class="btn" href="/search?vendor={{ result.vendor }}">View {{ result.vendor }} events →</a>
+</div>
+{% endif %}
+
+<form method="post" action="/upload" enctype="multipart/form-data" class="panel">
+  <label>Log file
+    <input type="file" name="file" required>
+  </label>
+  <label>Format
+    <select name="fmt">
+      <option value="auto" selected>Auto-detect</option>
+      {% for key, label in format_labels.items() %}
+      <option value="{{ key }}">{{ label }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <button type="submit" class="btn primary">Upload &amp; ingest</button>
+</form>
+
+<p class="muted">
+  Auto-detect inspects the header / content. Pick the format explicitly if a file
+  is ambiguous. Re-uploading the same file is safe — identical records are de-duplicated.
+</p>
+{% endblock %}

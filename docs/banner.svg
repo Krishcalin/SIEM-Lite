@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 220" width="800" height="220" role="img" aria-label="LogVault — SIEM-Lite log parser and store">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#111827"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <style>
+      .title { font: 800 54px system-ui,-apple-system,Segoe UI,Roboto,sans-serif; fill: url(#accent); }
+      .sub   { font: 500 18px system-ui,-apple-system,Segoe UI,Roboto,sans-serif; fill: #cbd5e1; }
+      .chip  { font: 600 13px system-ui,-apple-system,Segoe UI,Roboto,sans-serif; fill: #94a3b8; }
+      .mono  { font: 12px ui-monospace,SFMono-Regular,Menlo,monospace; fill: #334155; }
+    </style>
+  </defs>
+
+  <!-- backdrop -->
+  <rect x="0" y="0" width="800" height="220" rx="16" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="799" height="219" rx="16" fill="none" stroke="#1e293b"/>
+
+  <!-- faint log lines (decorative) -->
+  <g opacity="0.5">
+    <text class="mono" x="470" y="34">2026/06/10 13:45:01  TRAFFIC  allow  ssl</text>
+    <text class="mono" x="470" y="52">2026-06-10T13:52  Falcon  Critical  detect</text>
+    <text class="mono" x="470" y="70">2026/06/10 13:47:05  THREAT  reset-both</text>
+  </g>
+
+  <!-- shield + magnifier emblem -->
+  <g transform="translate(40,52)">
+    <path d="M44 4 L84 20 L84 64 C84 99 66 120 44 130 C22 120 4 99 4 64 L4 20 Z"
+          fill="url(#accent)"/>
+    <path d="M44 4 L84 20 L84 64 C84 99 66 120 44 130 C22 120 4 99 4 64 L4 20 Z"
+          fill="#0f172a" opacity="0.08"/>
+    <!-- magnifier (search) -->
+    <circle cx="38" cy="56" r="18" fill="none" stroke="#04293a" stroke-width="6"/>
+    <line x1="51" y1="69" x2="66" y2="84" stroke="#04293a" stroke-width="7" stroke-linecap="round"/>
+  </g>
+
+  <!-- wordmark -->
+  <text class="title" x="150" y="98">LogVault</text>
+  <text class="sub" x="152" y="128">Parse · index · store — Palo Alto NGFW &amp; CrowdStrike EDR logs</text>
+
+  <!-- chips -->
+  <g transform="translate(152,150)">
+    <g>
+      <rect x="0" y="0" width="118" height="28" rx="14" fill="#1e293b" stroke="#334155"/>
+      <text class="chip" x="14" y="19">Palo Alto NGFW</text>
+    </g>
+    <g transform="translate(128,0)">
+      <rect x="0" y="0" width="128" height="28" rx="14" fill="#1e293b" stroke="#334155"/>
+      <text class="chip" x="14" y="19">CrowdStrike EDR</text>
+    </g>
+    <g transform="translate(266,0)">
+      <rect x="0" y="0" width="100" height="28" rx="14" fill="#1e293b" stroke="#334155"/>
+      <text class="chip" x="14" y="19">PostgreSQL</text>
+    </g>
+    <g transform="translate(376,0)">
+      <rect x="0" y="0" width="132" height="28" rx="14" fill="#052e1a" stroke="#22c55e"/>
+      <text class="chip" x="14" y="19" fill="#22c55e">≥ 3-year retention</text>
+    </g>
+  </g>
+</svg>
