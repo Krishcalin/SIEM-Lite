@@ -2,9 +2,11 @@
 from pathlib import Path
 
 from app.detect import detect_format
-from app.parsers import (cef, crowdstrike_csv, crowdstrike_json,
-                         fortinet_fortigate, paloalto_csv, paloalto_syslog,
-                         suricata_eve, windows_security)
+from app.parsers import (aws_cloudtrail, cef, cisco_asa, crowdstrike_csv,
+                         crowdstrike_json, entra_signin, fortinet_fortigate,
+                         generic_syslog, m365_audit, okta_system_log,
+                         paloalto_csv, paloalto_syslog, suricata_eve,
+                         windows_security, zeek_tsv)
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
@@ -170,6 +172,140 @@ def test_windows_csv():
     assert e.host_name == "FIN-WS-014.corp.local"
 
 
+def test_generic_syslog():
+    evs = list(generic_syslog.parse(_read("generic_syslog.log")))
+    assert len(evs) == 3
+    a = evs[0]
+    assert a.vendor == "syslog"
+    assert a.log_type == "auth"          # facility 4
+    assert a.severity == "warning"       # severity 4
+    assert a.host_name == "host01.corp.local"
+    assert a.app == "sshd"
+    assert "45.83.122.7" in (a.message or "")
+    assert a.event_time.year == 2026
+    b = evs[1]                           # RFC 3164
+    assert b.log_type == "authpriv" and b.severity == "notice"
+    assert b.app == "sudo" and b.host_name == "host02"
+    assert b.event_time is not None
+    c = evs[2]
+    assert c.log_type == "local0" and c.severity == "informational"
+    assert c.app == "myapp" and c.rule_name == "ID99"
+    assert "Service started" in (c.message or "")
+
+
+def test_cisco_asa():
+    evs = list(cisco_asa.parse(_read("cisco_asa.log")))
+    assert len(evs) == 4
+    by_id = {e.log_type: e for e in evs}
+    built = by_id["302013"]
+    assert built.vendor == "cisco" and built.product == "asa"
+    assert built.action == "allow" and built.protocol == "tcp"
+    assert built.src_ip == "10.20.30.40" and built.src_port == 51514
+    assert built.dst_ip == "93.184.216.34" and built.dst_port == 443
+    assert built.severity == "informational"
+    assert built.rule_name == "%ASA-6-302013"
+    assert built.host_name == "ASA-FW"
+    assert built.event_time.year == 2026
+    deny = by_id["106023"]
+    assert deny.action == "deny" and deny.severity == "critical"
+    assert deny.src_ip == "45.83.122.7" and deny.dst_port == 51515
+    cmd = by_id["111008"]
+    assert cmd.user_name == "admin" and cmd.action is None
+    login = by_id["605005"]
+    assert login.action == "allow"
+    assert login.src_ip == "10.20.30.9" and login.dst_ip == "10.20.30.5"
+    assert login.user_name == "asmith"
+
+
+def test_zeek():
+    evs = list(zeek_tsv.parse(_read("zeek_conn.log")))
+    assert len(evs) == 3
+    c = evs[0]
+    assert c.vendor == "zeek" and c.product == "conn" and c.log_type == "conn"
+    assert c.src_ip == "10.20.30.40" and c.src_port == 51514
+    assert c.dst_ip == "93.184.216.34" and c.dst_port == 443
+    assert c.protocol == "tcp" and c.app == "ssl"
+    assert c.bytes_total == 4096 + 84213
+    assert c.action == "SF"
+    assert c.event_time.year == 2026
+    rej = evs[1]
+    assert rej.src_ip == "45.83.122.7" and rej.dst_port == 51515
+    assert rej.action == "REJ" and rej.app is None and rej.bytes_total == 0
+    dns = evs[2]
+    assert dns.product == "dns" and dns.dst_ip == "8.8.8.8" and dns.dst_port == 53
+    assert dns.protocol == "udp" and dns.action == "NOERROR"
+    assert "malware-c2.example.net" in (dns.message or "")
+
+
+def test_aws_cloudtrail():
+    evs = list(aws_cloudtrail.parse(_read("aws_cloudtrail.json")))
+    assert len(evs) == 2
+    login = evs[0]
+    assert login.vendor == "aws" and login.product == "cloudtrail"
+    assert login.log_type == "signin" and login.rule_name == "ConsoleLogin"
+    assert login.action == "failure"
+    assert login.src_ip == "45.83.122.7" and login.user_name == "jdoe"
+    assert login.host_name == "123456789012"
+    assert "ConsoleLogin" in (login.message or "") and "Failure" in (login.message or "")
+    assert login.event_time.year == 2026
+    create = evs[1]
+    assert create.log_type == "iam" and create.rule_name == "CreateUser"
+    assert create.action == "failed"
+    assert create.src_ip == "10.20.30.9" and create.user_name == "asmith"
+    assert "not authorized" in (create.message or "")
+
+
+def test_m365_audit():
+    evs = list(m365_audit.parse(_read("m365_audit.json")))
+    assert len(evs) == 2
+    fail = evs[0]
+    assert fail.vendor == "microsoft" and fail.product == "o365"
+    assert fail.log_type == "azureactivedirectory"
+    assert fail.action == "UserLoginFailed"
+    assert fail.src_ip == "45.83.122.7" and fail.user_name == "jdoe@contoso.com"
+    assert "Failed" in (fail.message or "")
+    assert fail.event_time.year == 2026
+    dl = evs[1]
+    assert dl.log_type == "sharepoint" and dl.action == "FileDownloaded"
+    assert dl.src_ip == "10.20.30.9" and dl.user_name == "asmith@contoso.com"
+
+
+def test_okta_system_log():
+    evs = list(okta_system_log.parse(_read("okta_system_log.json")))
+    assert len(evs) == 2
+    fail = evs[0]
+    assert fail.vendor == "okta" and fail.product == "system-log"
+    assert fail.log_type == "user.session.start"
+    assert fail.severity == "warning" and fail.action == "failure"
+    assert fail.src_ip == "45.83.122.7" and fail.user_name == "jdoe@contoso.com"
+    assert fail.rule_name == "core.user_auth.login_failed"
+    assert fail.app == "Okta Dashboard"
+    assert "INVALID_CREDENTIALS" in (fail.message or "")
+    assert fail.event_time.year == 2026
+    ok = evs[1]
+    assert ok.severity == "informational" and ok.action == "success"
+    assert ok.src_ip == "10.20.30.9" and ok.user_name == "asmith@contoso.com"
+
+
+def test_entra_signin():
+    evs = list(entra_signin.parse(_read("entra_signin.json")))
+    assert len(evs) == 2
+    fail = evs[0]
+    assert fail.vendor == "microsoft" and fail.product == "entra"
+    assert fail.log_type == "signin" and fail.action == "failure"
+    assert fail.severity == "high"
+    assert fail.src_ip == "45.83.122.7" and fail.user_name == "jdoe@contoso.com"
+    assert fail.app == "Office 365 Exchange Online"
+    assert fail.rule_name == "IMAP4"
+    assert fail.host_name is None
+    assert "Invalid username" in (fail.message or "")
+    assert fail.event_time.year == 2026
+    ok = evs[1]
+    assert ok.action == "success" and ok.severity is None
+    assert ok.src_ip == "10.20.30.9" and ok.user_name == "asmith@contoso.com"
+    assert ok.app == "Microsoft Teams" and ok.host_name == "ASMITH-LT"
+
+
 def test_detect_format():
     assert detect_format("t.csv", _read("paloalto_traffic.csv")) == "paloalto_csv"
     assert detect_format("s.log", _read("paloalto_syslog.log")) == "paloalto_syslog"
@@ -180,3 +316,10 @@ def test_detect_format():
     assert detect_format("s.json", _read("suricata_eve.json")) == "suricata_eve"
     assert detect_format("w.json", _read("windows_security.json")) == "windows_security"
     assert detect_format("w.csv", _read("windows_security.csv")) == "windows_security"
+    assert detect_format("a.log", _read("cisco_asa.log")) == "cisco_asa"
+    assert detect_format("z.log", _read("zeek_conn.log")) == "zeek_tsv"
+    assert detect_format("g.log", _read("generic_syslog.log")) == "generic_syslog"
+    assert detect_format("ct.json", _read("aws_cloudtrail.json")) == "aws_cloudtrail"
+    assert detect_format("m.json", _read("m365_audit.json")) == "m365_audit"
+    assert detect_format("o.json", _read("okta_system_log.json")) == "okta_system_log"
+    assert detect_format("en.json", _read("entra_signin.json")) == "entra_signin"

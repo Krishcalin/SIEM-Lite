@@ -1,0 +1,30 @@
+[
+  {
+    "CreationTime": "2026-06-15T10:00:00",
+    "Id": "aaaa1111-0000-0000-0000-000000000001",
+    "Operation": "UserLoginFailed",
+    "OrganizationId": "11112222-3333-4444-5555-666677778888",
+    "RecordType": 15,
+    "ResultStatus": "Failed",
+    "UserKey": "100320000ABCDEF0",
+    "UserType": 0,
+    "Workload": "AzureActiveDirectory",
+    "ClientIP": "45.83.122.7",
+    "UserId": "jdoe@contoso.com",
+    "LogonError": "InvalidUserNameOrPassword"
+  },
+  {
+    "CreationTime": "2026-06-15T10:05:00",
+    "Id": "bbbb2222-0000-0000-0000-000000000002",
+    "Operation": "FileDownloaded",
+    "OrganizationId": "11112222-3333-4444-5555-666677778888",
+    "RecordType": 6,
+    "ResultStatus": "Succeeded",
+    "UserType": 0,
+    "Workload": "SharePoint",
+    "ClientIP": "10.20.30.9",
+    "UserId": "asmith@contoso.com",
+    "ObjectId": "https://contoso.sharepoint.com/sites/Finance/Shared Documents/payroll.xlsx",
+    "SourceFileName": "payroll.xlsx"
+  }
+]

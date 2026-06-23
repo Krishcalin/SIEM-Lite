@@ -28,9 +28,16 @@ _PAN_SYSLOG_RE = re.compile(
     re.IGNORECASE)
 # CEF header (optionally behind a syslog header).
 _CEF_RE = re.compile(r"CEF:\s*\d+\s*\|")
+# Cisco ASA / Firepower message ID: %ASA-6-302013: ...
+_CISCO_RE = re.compile(r"%(?:ASA|FTD|ASASM|FWSM|PIX)-\d-\d+", re.IGNORECASE)
+# Zeek TSV metadata header.
+_ZEEK_RE = re.compile(r"^#(?:separator|fields)\b", re.MULTILINE)
 # Fortinet key=value syslog: needs devname= plus a Forti-specific key.
 _FORTINET_RE = re.compile(r"\bdevname=", re.IGNORECASE)
 _FORTINET_MARK = re.compile(r"\b(logid|devid|vd|eventtime)=", re.IGNORECASE)
+# Generic syslog (catch-all, checked LAST): a <PRI> prefix or an RFC 3164 header.
+_SYSLOG_RE = re.compile(r"^<\d{1,3}>", re.MULTILINE)
+_RFC3164_HDR = re.compile(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s", re.MULTILINE)
 
 
 def detect_format(filename: str, content: str) -> Optional[str]:
@@ -45,6 +52,14 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     # CEF — generic, but a strong, specific prefix; check before syslog/CSV.
     if _CEF_RE.search(sample):
         return "cef"
+
+    # Cisco ASA / Firepower — distinctive %ASA-L-NNNNNN message id.
+    if _CISCO_RE.search(sample):
+        return "cisco_asa"
+
+    # Zeek TSV — #separator / #fields metadata header (check before CSV).
+    if _ZEEK_RE.search(sample):
+        return "zeek_tsv"
 
     # Palo Alto syslog — positional payload signature.
     if _PAN_SYSLOG_RE.search(sample):
@@ -67,6 +82,10 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     if hset & _WIN_CSV_MARKERS:
         return "windows_security"
 
+    # Generic syslog — catch-all, only after every specific signature missed.
+    if _SYSLOG_RE.search(sample) or _RFC3164_HDR.search(sample):
+        return "generic_syslog"
+
     return None  # unknown — the UI asks the user to pick a format explicitly
 
 
@@ -77,13 +96,29 @@ def _detect_json(text: str) -> Optional[str]:
         return "crowdstrike_json"  # looked like JSON but no object — legacy default
     keys = {str(k).lower() for k in rec}
 
+    # Suricata EVE — event_type plus network fields.
     if "event_type" in keys and ({"flow_id", "src_ip", "alert", "dest_ip"} & keys):
         return "suricata_eve"
+    # Windows Security Event Log (JSON export).
     if "providername" in keys and "id" in keys and ({"leveldisplayname", "machinename"} & keys):
         return "windows_security"
+    # AWS CloudTrail.
+    if "eventsource" in keys and ({"eventname", "awsregion", "eventid"} & keys):
+        return "aws_cloudtrail"
+    # Microsoft 365 Unified Audit Log.
+    if ("workload" in keys and "operation" in keys) or ("auditdata" in keys and "creationtime" in keys):
+        return "m365_audit"
+    # Okta System Log (eventType — distinct from Suricata's event_type).
+    if "eventtype" in keys and ({"actor", "legacyeventtype", "outcome", "published"} & keys):
+        return "okta_system_log"
+    # Microsoft Entra ID sign-in logs.
+    if ({"userprincipalname", "appdisplayname"} & keys) and \
+            ({"createddatetime", "clientappused", "risklevelduringsignin"} & keys):
+        return "entra_signin"
+    # CrowdStrike Falcon JSON (and the default JSON source in scope).
     if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event", "resources"} & keys):
         return "crowdstrike_json"
-    return "crowdstrike_json"  # default JSON source in scope
+    return "crowdstrike_json"
 
 
 def _first_json_record(text: str) -> Optional[dict]:
@@ -96,7 +131,7 @@ def _first_json_record(text: str) -> Optional[dict]:
         if isinstance(obj, list):
             return next((r for r in obj if isinstance(r, dict)), None)
         if isinstance(obj, dict):
-            for key in ("resources", "events"):
+            for key in ("resources", "events", "Records", "records", "value"):
                 if isinstance(obj.get(key), list):
                     return next((r for r in obj[key] if isinstance(r, dict)), None)
             return obj

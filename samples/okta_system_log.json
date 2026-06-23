@@ -1,0 +1,43 @@
+[
+  {
+    "uuid": "evt-00000000-0000-0000-0000-000000000001",
+    "published": "2026-06-15T10:00:00.000Z",
+    "eventType": "user.session.start",
+    "version": "0",
+    "severity": "WARN",
+    "displayMessage": "User login to Okta",
+    "actor": {
+      "id": "00u1abcd",
+      "type": "User",
+      "alternateId": "jdoe@contoso.com",
+      "displayName": "John Doe"
+    },
+    "client": {
+      "ipAddress": "45.83.122.7",
+      "userAgent": { "rawUserAgent": "Mozilla/5.0" },
+      "geographicalContext": { "city": "Unknown", "country": "Anonymous Proxy" }
+    },
+    "outcome": { "result": "FAILURE", "reason": "INVALID_CREDENTIALS" },
+    "legacyEventType": "core.user_auth.login_failed",
+    "target": [
+      { "id": "0oa1abcd", "type": "AppInstance", "alternateId": "Okta Dashboard", "displayName": "Okta Dashboard" }
+    ]
+  },
+  {
+    "uuid": "evt-00000000-0000-0000-0000-000000000002",
+    "published": "2026-06-15T10:05:00.000Z",
+    "eventType": "user.session.start",
+    "version": "0",
+    "severity": "INFO",
+    "displayMessage": "User login to Okta",
+    "actor": {
+      "id": "00u2efgh",
+      "type": "User",
+      "alternateId": "asmith@contoso.com",
+      "displayName": "Anna Smith"
+    },
+    "client": { "ipAddress": "10.20.30.9" },
+    "outcome": { "result": "SUCCESS" },
+    "legacyEventType": "core.user_auth.login_success"
+  }
+]

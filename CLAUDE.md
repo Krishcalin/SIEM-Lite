@@ -38,8 +38,9 @@ app/
   normalize.py   dedup_hash() + tsv_text()
   db.py          pool, schema/partition mgmt, insert, search, stats, purge
   ingest.py      orchestration: detect -> parse -> normalize -> bulk insert -> batch stats
-  parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, crowdstrike_csv,
-                 crowdstrike_json, windows_security, suricata_eve, cef
+  parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, zeek_tsv,
+                 crowdstrike_csv, crowdstrike_json, windows_security, suricata_eve, cef,
+                 generic_syslog, aws_cloudtrail, m365_audit, entra_signin, okta_system_log
   templates/     base, dashboard, upload, search, event, admin
   static/style.css
 schema.sql       partitioned events table, FTS + indexes, ingest_batches
@@ -104,9 +105,26 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   `flow.bytes_*` summed into `bytes_total`.
 - **CEF** keeps the real device vendor/product on the event; the extension parser
   slices on ` key=` boundaries (values may contain spaces) and unescapes `\| \= \\`.
-- **Detection ordering (`detect.py`)** is specific-before-generic: JSON is routed by
-  content (`event_type` → Suricata; `ProviderName`+`Id` → Windows; else CrowdStrike);
-  `CEF:n|`, PAN syslog, and Fortinet KV are matched before the CSV-header fallback.
+- **Cisco ASA/Firepower** keys off the `%FAC-LEVEL-ID:` token (severity = the syslog
+  level, *not* the `<PRI>`); the 5-tuple/bytes/user are mined from the free-text
+  message — `src`/`dst` win, else `from`/`to`, else Built `for`(foreign)/`to`(local).
+- **Zeek** is driven by the `#separator`/`#fields`/`#path`/`#unset_field` header, so
+  column order comes from the file; `ts` is epoch-seconds-with-fraction (pass through
+  `float()` before `parse_ts`); `-`/`(empty)` become NULL; multiple logs may concatenate.
+- **Generic syslog** decodes `<PRI>` → facility/severity names, then RFC 5424 (version
+  digit first) or RFC 3164 (`Mmm dd hh:mm:ss`); unrecognized lines keep the whole line
+  as the message. It is the **catch-all**, so `detect.py` checks it **last**.
+- **Cloud/identity JSON** (CloudTrail, M365, Entra, Okta) all use `util.iter_json_records`
+  (handles single object / array / NDJSON / `{"Records"|"value":[…]}` wrappers) and a
+  case-insensitive `_g` to tolerate camelCase (Graph) vs PascalCase (Azure Monitor).
+  Success/failure action comes from the vendor's outcome field (`errorCode==0`,
+  `ResultStatus`, `responseElements.ConsoleLogin`, `outcome.result`).
+- **Detection ordering (`detect.py`)** is specific-before-generic. JSON is routed by
+  record keys: `event_type`+net → Suricata; `ProviderName`+`Id` → Windows;
+  `eventSource`+`eventName` → CloudTrail; `Workload`+`Operation` → M365; `eventType`+
+  `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; else CrowdStrike. Text
+  formats match `CEF:n|`, then `%ASA-…` (Cisco), then Zeek `#fields`, then PAN syslog,
+  then Fortinet KV, then CSV headers, and finally **generic syslog** (`<PRI>` / RFC 3164).
 
 ## Adding a new format / vendor
 

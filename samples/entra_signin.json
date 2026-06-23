@@ -1,0 +1,30 @@
+[
+  {
+    "id": "signin-00000000-0000-0000-0000-000000000001",
+    "createdDateTime": "2026-06-15T10:00:00Z",
+    "userPrincipalName": "jdoe@contoso.com",
+    "userDisplayName": "John Doe",
+    "appDisplayName": "Office 365 Exchange Online",
+    "ipAddress": "45.83.122.7",
+    "clientAppUsed": "IMAP4",
+    "status": { "errorCode": 50126, "failureReason": "Invalid username or password." },
+    "location": { "city": "Unknown", "countryOrRegion": "RU" },
+    "deviceDetail": { "deviceId": "", "operatingSystem": "Unknown", "browser": "Unknown", "displayName": "" },
+    "riskLevelDuringSignIn": "high",
+    "conditionalAccessStatus": "failure"
+  },
+  {
+    "id": "signin-00000000-0000-0000-0000-000000000002",
+    "createdDateTime": "2026-06-15T10:05:00Z",
+    "userPrincipalName": "asmith@contoso.com",
+    "userDisplayName": "Anna Smith",
+    "appDisplayName": "Microsoft Teams",
+    "ipAddress": "10.20.30.9",
+    "clientAppUsed": "Browser",
+    "status": { "errorCode": 0 },
+    "location": { "city": "Seattle", "countryOrRegion": "US" },
+    "deviceDetail": { "deviceId": "dev-2", "operatingSystem": "Windows10", "browser": "Edge", "displayName": "ASMITH-LT" },
+    "riskLevelDuringSignIn": "none",
+    "conditionalAccessStatus": "success"
+  }
+]

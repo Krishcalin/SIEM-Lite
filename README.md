@@ -4,30 +4,41 @@
 
 # LogVault
 
-A self-hosted **log parser, indexer, and long-term store** for **Palo Alto NGFW**
-and **CrowdStrike Falcon EDR** logs. You manually export logs from each console and
-upload them through a web UI; LogVault parses and normalizes them, indexes them for
-full-text + structured search, and retains them in PostgreSQL for **≥ 3 years**.
+A self-hosted **log parser, indexer, and long-term store** for **network, endpoint,
+cloud, and identity** logs from many vendors. You manually export logs from each
+console and upload them through a web UI; LogVault parses and normalizes them, indexes
+them for full-text + structured search, and retains them in PostgreSQL for **≥ 3 years**.
 
 ```
  export logs           upload (web)         parse + normalize        store (Postgres)
  ───────────►  file  ──────────────►  auto-detect ─► common ─► month-partitioned
- PAN / Falcon                          format        schema      events + FTS index
+ any vendor                            format        schema      events + FTS index
                                                                        │
                                               search ◄── filters + full-text ◄──┘
 ```
 
 ## Features
 
-- **Eight parsers**, auto-detected on upload:
-  - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
-  - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
-  - Fortinet **FortiGate** syslog (`key=value`; traffic / UTM / event)
-  - CrowdStrike Falcon **CSV export** (detections / incidents)
-  - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
-  - **Windows Security Event Log** (CSV, or `Get-WinEvent | ConvertTo-Json`)
-  - **Suricata** EVE JSON (alert / flow / dns / http / tls; NDJSON or array)
-  - **CEF** — Common Event Format (generic; ArcSight & many firewalls / WAFs / proxies / AV)
+- **Fifteen parsers**, auto-detected on upload:
+  - *Network / firewall:*
+    - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
+    - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
+    - Fortinet **FortiGate** syslog (`key=value`; traffic / UTM / event)
+    - Cisco **ASA / Firepower (FTD)** syslog (`%ASA-L-NNNNNN` message IDs)
+    - **Zeek** (Bro) TSV (`conn` / `dns` / `http` … via the `#fields` header)
+  - *Endpoint / IDS / host:*
+    - CrowdStrike Falcon **CSV export** (detections / incidents)
+    - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
+    - **Windows Security Event Log** (CSV, or `Get-WinEvent | ConvertTo-Json`)
+    - **Suricata** EVE JSON (alert / flow / dns / http / tls; NDJSON or array)
+  - *Cloud / identity (JSON):*
+    - **AWS CloudTrail** (`{"Records":[…]}`, single event, or NDJSON)
+    - **Microsoft 365** Unified Audit Log (Management API / `Search-UnifiedAuditLog`)
+    - **Microsoft Entra ID** (Azure AD) sign-in logs
+    - **Okta** System Log (auth / admin activity)
+  - *Generic:*
+    - **CEF** — Common Event Format (ArcSight & many firewalls / WAFs / proxies / AV)
+    - **Generic syslog** — RFC 3164 (BSD) and RFC 5424 catch-all
 - **Normalization** to one common schema (time, vendor, type, src/dst IP+port, user,
   host, action, severity, rule, bytes, message) — the **full original record is kept**
   in a `jsonb` column so nothing is lost and any field stays searchable.
@@ -76,7 +87,14 @@ The schema (tables, partitions, indexes) is created automatically on startup.
 | CrowdStrike Falcon | Event Search / API / FDR export (JSON or NDJSON) | CrowdStrike JSON (auto) |
 | Windows hosts | `Get-WinEvent -LogName Security` ▸ **Export-Csv** (or **ConvertTo-Json**); or Event Viewer ▸ **Save All Events As CSV** | Windows Security (auto) |
 | Suricata IDS/IPS | `eve.json` (NDJSON) or an exported JSON array | Suricata EVE (auto) |
+| Cisco ASA / Firepower | Syslog from your collector (lines with `%ASA-…`/`%FTD-…`) | Cisco ASA / Firepower (auto) |
+| Zeek (Bro) | `conn.log` / `dns.log` / `http.log` (classic TSV with `#fields`) | Zeek TSV (auto) |
+| AWS CloudTrail | S3/CloudWatch export or `aws cloudtrail lookup-events` (JSON) | AWS CloudTrail (auto) |
+| Microsoft 365 | `Search-UnifiedAuditLog` ▸ **AuditData**, or Management Activity API (JSON) | Microsoft 365 (auto) |
+| Microsoft Entra ID | Sign-in logs via Graph `auditLogs/signIns` or Azure Monitor export (JSON) | Microsoft Entra ID (auto) |
+| Okta | System Log API export (JSON array / NDJSON) | Okta System Log (auto) |
 | Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
+| Any syslog source | Plain RFC 3164 / 5424 syslog not matched above | Generic syslog (auto) |
 
 Auto-detect inspects the header/content; if a file is ambiguous, pick the format
 explicitly in the upload form.
@@ -108,8 +126,9 @@ Log-Parser-Storage/
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
 │   ├── util.py             # tolerant time/IP/int coercion
-│   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, crowdstrike_{csv,json},
-│   │                       #   windows_security, suricata_eve, cef
+│   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_asa, zeek_tsv,
+│   │                       #   crowdstrike_{csv,json}, windows_security, suricata_eve, cef,
+│   │                       #   generic_syslog, aws_cloudtrail, m365_audit, entra_signin, okta_system_log
 │   ├── templates/          # dashboard, upload, search, event, admin
 │   └── static/style.css
 ├── samples/                # one example file per format
@@ -148,6 +167,13 @@ format auto-detection — they do not require a database.
   `app/parsers/paloalto_syslog.py` are easy to adjust.
 - CrowdStrike CSV/JSON resolve each field from multiple candidate names to cope
   with detection vs incident vs FDR shapes.
+- **Cisco ASA/Firepower** mines the 5-tuple, bytes and user from the free-text message
+  (best-effort `src`/`dst`, `from`/`to`, Built `for`/`to`); the full message is in `raw`.
+- **Zeek** reads the `#separator` / `#fields` / `#path` header, so column order is taken
+  from the file itself; a file may concatenate several logs (each with its own header).
+- **Cloud/identity** JSON (CloudTrail, M365, Entra, Okta) is routed by record keys and
+  resolves fields case-insensitively to tolerate camelCase (Graph) vs PascalCase
+  (Azure Monitor) and wrapper shapes (`{"Records":…}`, `{"value":…}`).
 
 ## Security
 
