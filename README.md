@@ -4,6 +4,8 @@
 
 # LogVault
 
+[![tests](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml/badge.svg)](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml)
+
 A self-hosted **log parser, indexer, and long-term store** for **network, endpoint,
 cloud, and identity** logs from many vendors. You manually export logs from each
 console and upload them through a web UI; LogVault parses and normalizes them, indexes
