@@ -12,6 +12,8 @@ env/
 # Local config / secrets / data
 .env
 *.log
+# ...but test fixtures are not runtime logs — keep them tracked
+!samples/*.log
 uploads/
 pgdata/
 

@@ -1,0 +1,20 @@
+#separator \x09
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	conn
+#open	2026-06-15-10-00-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	service	duration	orig_bytes	resp_bytes	conn_state
+#types	time	string	addr	port	addr	port	enum	string	interval	count	count	string
+1781517600.123456	Cabc123	10.20.30.40	51514	93.184.216.34	443	tcp	ssl	0.532000	4096	84213	SF
+1781517605.000000	Cdef456	45.83.122.7	4444	10.20.30.40	51515	tcp	-	0.001000	0	0	REJ
+#close	2026-06-15-10-05-00
+#separator \x09
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	dns
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	proto	query	qtype_name	rcode_name
+#types	time	string	addr	port	addr	port	enum	string	string	string
+1781517610.000000	Cghi789	10.20.30.40	53124	8.8.8.8	53	udp	malware-c2.example.net	A	NOERROR
+#close	2026-06-15-10-05-00

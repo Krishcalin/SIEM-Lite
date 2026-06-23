@@ -1,0 +1,4 @@
+<166>Jun 15 2026 10:00:31 ASA-FW : %ASA-6-302013: Built outbound TCP connection 76543 for outside:93.184.216.34/443 (93.184.216.34/443) to inside:10.20.30.40/51514 (10.20.30.40/51514)
+<162>Jun 15 2026 10:01:05 ASA-FW : %ASA-2-106023: Deny tcp src outside:45.83.122.7/4444 dst inside:10.20.30.40/51515 by access-group "outside_access_in" [0x0, 0x0]
+<165>Jun 15 2026 10:02:00 ASA-FW : %ASA-5-111008: User 'admin' executed the 'enable' command.
+<166>Jun 15 2026 10:03:10 ASA-FW : %ASA-6-605005: Login permitted from 10.20.30.9/52001 to inside:10.20.30.5/443 for user 'asmith'

@@ -1,0 +1,3 @@
+<36>1 2026-06-15T10:00:00.000Z host01.corp.local sshd 2143 - - Failed password for invalid user admin from 45.83.122.7 port 51530 ssh2
+<85>Jun 15 10:01:12 host02 sudo[2210]: corp\jdoe : TTY=pts/0 ; PWD=/home/jdoe ; USER=root ; COMMAND=/usr/bin/cat /etc/shadow
+<134>1 2026-06-15T10:02:30.500Z app01.corp.local myapp 4099 ID99 [exampleSDID@32473 iut="3" eventSource="App"] Service started successfully
