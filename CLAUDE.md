@@ -38,7 +38,8 @@ app/
   normalize.py   dedup_hash() + tsv_text()
   db.py          pool, schema/partition mgmt, insert, search, stats, purge
   ingest.py      orchestration: detect -> parse -> normalize -> bulk insert -> batch stats
-  parsers/       paloalto_csv, paloalto_syslog, crowdstrike_csv, crowdstrike_json
+  parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, crowdstrike_csv,
+                 crowdstrike_json, windows_security, suricata_eve, cef
   templates/     base, dashboard, upload, search, event, admin
   static/style.css
 schema.sql       partitioned events table, FTS + indexes, ingest_batches
@@ -94,6 +95,18 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   the documented offsets — if you change the maps, update the sample + tests together.
 - **CrowdStrike** CSV/JSON resolve fields from multiple candidate names to cope with
   detection vs incident vs FDR shapes; JSON flattens nested `event`/`metadata`.
+- **Fortinet FortiGate** is `key=value` (quoted values tolerated); numeric `proto` is
+  mapped to tcp/udp/icmp/…; timestamp comes from `date`+`time` (not the ns `eventtime`).
+- **Windows Security** extracts target account / source IP / logon type from the
+  `Message` text (one code path for both the CSV and JSON exports); event-id → action
+  via a small map. Account list: take the **last** non-`-`/non-`NULL SID` value.
+- **Suricata EVE** keys off `event_type`; alert severity 1/2/3 → high/medium/low;
+  `flow.bytes_*` summed into `bytes_total`.
+- **CEF** keeps the real device vendor/product on the event; the extension parser
+  slices on ` key=` boundaries (values may contain spaces) and unescapes `\| \= \\`.
+- **Detection ordering (`detect.py`)** is specific-before-generic: JSON is routed by
+  content (`event_type` → Suricata; `ProviderName`+`Id` → Windows; else CrowdStrike);
+  `CEF:n|`, PAN syslog, and Fortinet KV are matched before the CSV-header fallback.
 
 ## Adding a new format / vendor
 

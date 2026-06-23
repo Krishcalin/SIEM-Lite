@@ -1,0 +1,18 @@
+[
+  {
+    "TimeCreated": "2026-06-15T10:01:05.000Z",
+    "Id": 4625,
+    "LevelDisplayName": "Information",
+    "ProviderName": "Microsoft-Windows-Security-Auditing",
+    "MachineName": "FIN-WS-014.corp.local",
+    "Message": "An account failed to log on.\r\n\r\nSubject:\r\n\tSecurity ID:\t\tNULL SID\r\n\tAccount Name:\t\t-\r\n\r\nLogon Type:\t\t3\r\n\r\nAccount For Which Logon Failed:\r\n\tSecurity ID:\t\tNULL SID\r\n\tAccount Name:\t\tjdoe\r\n\tAccount Domain:\t\tCORP\r\n\r\nFailure Information:\r\n\tFailure Reason:\t\tUnknown user name or bad password.\r\n\tStatus:\t\t0xC000006D\r\n\r\nNetwork Information:\r\n\tWorkstation Name:\tATTACKER-PC\r\n\tSource Network Address:\t45.83.122.7\r\n\tSource Port:\t\t51530"
+  },
+  {
+    "TimeCreated": "2026-06-15T10:05:42.000Z",
+    "Id": 4624,
+    "LevelDisplayName": "Information",
+    "ProviderName": "Microsoft-Windows-Security-Auditing",
+    "MachineName": "OPS-SRV-02.corp.local",
+    "Message": "An account was successfully logged on.\r\n\r\nSubject:\r\n\tAccount Name:\t\tOPS-SRV-02$\r\n\r\nLogon Type:\t\t10\r\n\r\nNew Logon:\r\n\tSecurity ID:\t\tCORP\\asmith\r\n\tAccount Name:\t\tasmith\r\n\tAccount Domain:\t\tCORP\r\n\r\nNetwork Information:\r\n\tWorkstation Name:\tADMIN-PC\r\n\tSource Network Address:\t10.20.30.9\r\n\tSource Port:\t\t52001"
+  }
+]

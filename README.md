@@ -19,11 +19,15 @@ full-text + structured search, and retains them in PostgreSQL for **≥ 3 years*
 
 ## Features
 
-- **Four parsers**, auto-detected on upload:
+- **Eight parsers**, auto-detected on upload:
   - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
   - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
+  - Fortinet **FortiGate** syslog (`key=value`; traffic / UTM / event)
   - CrowdStrike Falcon **CSV export** (detections / incidents)
   - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
+  - **Windows Security Event Log** (CSV, or `Get-WinEvent | ConvertTo-Json`)
+  - **Suricata** EVE JSON (alert / flow / dns / http / tls; NDJSON or array)
+  - **CEF** — Common Event Format (generic; ArcSight & many firewalls / WAFs / proxies / AV)
 - **Normalization** to one common schema (time, vendor, type, src/dst IP+port, user,
   host, action, severity, rule, bytes, message) — the **full original record is kept**
   in a `jsonb` column so nothing is lost and any field stays searchable.
@@ -67,8 +71,12 @@ The schema (tables, partitions, indexes) is created automatically on startup.
 |---|---|---|
 | Palo Alto NGFW | Monitor ▸ Logs ▸ (Traffic/Threat/URL/System/Config) ▸ **Export to CSV** | Palo Alto CSV (auto) |
 | Palo Alto NGFW | Syslog file from your collector / forwarder | Palo Alto syslog (auto) |
+| Fortinet FortiGate | Syslog from your collector, or FortiAnalyzer ▸ **Log download** | Fortinet FortiGate (auto) |
 | CrowdStrike Falcon | Endpoint security ▸ Detections / Incidents ▸ **Export** (CSV) | CrowdStrike CSV (auto) |
 | CrowdStrike Falcon | Event Search / API / FDR export (JSON or NDJSON) | CrowdStrike JSON (auto) |
+| Windows hosts | `Get-WinEvent -LogName Security` ▸ **Export-Csv** (or **ConvertTo-Json**); or Event Viewer ▸ **Save All Events As CSV** | Windows Security (auto) |
+| Suricata IDS/IPS | `eve.json` (NDJSON) or an exported JSON array | Suricata EVE (auto) |
+| Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
 
 Auto-detect inspects the header/content; if a file is ambiguous, pick the format
 explicitly in the upload form.
@@ -100,7 +108,8 @@ Log-Parser-Storage/
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
 │   ├── util.py             # tolerant time/IP/int coercion
-│   ├── parsers/            # paloalto_csv, paloalto_syslog, crowdstrike_csv, crowdstrike_json
+│   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, crowdstrike_{csv,json},
+│   │                       #   windows_security, suricata_eve, cef
 │   ├── templates/          # dashboard, upload, search, event, admin
 │   └── static/style.css
 ├── samples/                # one example file per format

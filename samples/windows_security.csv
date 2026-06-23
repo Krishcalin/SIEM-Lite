@@ -1,0 +1,11 @@
+TimeCreated,Id,LevelDisplayName,ProviderName,MachineName,Message
+2026-06-15T10:08:00.000Z,4688,Information,Microsoft-Windows-Security-Auditing,FIN-WS-014.corp.local,"A new process has been created.
+
+Creator Subject:
+	Security ID:		CORP\jdoe
+	Account Name:		jdoe
+	Account Domain:		CORP
+
+Process Information:
+	New Process Name:	C:\Windows\System32\rundll32.exe
+	Command Line:		rundll32 comsvcs.dll, MiniDump 712 C:\temp\lsass.dmp full"
