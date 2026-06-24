@@ -1,0 +1,27 @@
+{
+  "records": [
+    {
+      "time": "2026-06-24T10:00:00.1234567Z",
+      "operationName": "MICROSOFT.COMPUTE/VIRTUALMACHINES/DELETE",
+      "category": "Administrative",
+      "resultType": "Success",
+      "resultSignature": "Succeeded.OK",
+      "callerIpAddress": "45.83.122.7",
+      "correlationId": "11112222-3333-4444-5555-666677778888",
+      "identity": { "claims": { "name": "jdoe@contoso.com" } },
+      "level": "Warning",
+      "resourceId": "/SUBSCRIPTIONS/SUB/RESOURCEGROUPS/RG/PROVIDERS/MICROSOFT.COMPUTE/VIRTUALMACHINES/WEB-1"
+    },
+    {
+      "time": "2026-06-24T10:05:00.0000000Z",
+      "operationName": "MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/WRITE",
+      "category": "Administrative",
+      "resultType": "Failure",
+      "resultSignature": "Forbidden",
+      "callerIpAddress": "10.20.30.9",
+      "identity": { "claims": { "name": "asmith@contoso.com" } },
+      "level": "Error",
+      "resourceId": "/SUBSCRIPTIONS/SUB/RESOURCEGROUPS/RG/PROVIDERS/MICROSOFT.AUTHORIZATION/ROLEASSIGNMENTS/RA-1"
+    }
+  ]
+}

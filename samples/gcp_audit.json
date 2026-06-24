@@ -1,0 +1,31 @@
+[
+  {
+    "protoPayload": {
+      "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+      "authenticationInfo": { "principalEmail": "jdoe@example.com" },
+      "requestMetadata": { "callerIp": "45.83.122.7", "callerSuppliedUserAgent": "google-cloud-sdk" },
+      "serviceName": "compute.googleapis.com",
+      "methodName": "v1.compute.instances.delete",
+      "resourceName": "projects/prod/zones/us-central1-a/instances/web-1",
+      "status": { "code": 7, "message": "PERMISSION_DENIED" }
+    },
+    "resource": { "type": "gce_instance" },
+    "timestamp": "2026-06-24T10:00:00Z",
+    "severity": "ERROR",
+    "logName": "projects/prod/logs/cloudaudit.googleapis.com%2Factivity"
+  },
+  {
+    "protoPayload": {
+      "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+      "authenticationInfo": { "principalEmail": "asmith@example.com" },
+      "requestMetadata": { "callerIp": "10.20.30.9" },
+      "serviceName": "storage.googleapis.com",
+      "methodName": "storage.buckets.create",
+      "resourceName": "projects/_/buckets/prod-backups"
+    },
+    "resource": { "type": "gcs_bucket" },
+    "timestamp": "2026-06-24T10:05:00Z",
+    "severity": "NOTICE",
+    "logName": "projects/prod/logs/cloudaudit.googleapis.com%2Factivity"
+  }
+]

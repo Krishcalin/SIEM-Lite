@@ -2,11 +2,13 @@
 from pathlib import Path
 
 from app.detect import detect_format
-from app.parsers import (aws_cloudtrail, cef, cisco_asa, crowdstrike_csv,
-                         crowdstrike_json, entra_signin, fortinet_fortigate,
-                         generic_syslog, m365_audit, okta_system_log,
+from app.parsers import (aws_cloudtrail, azure_activity, cef, cisco_asa,
+                         cisco_ios, crowdstrike_csv, crowdstrike_json,
+                         entra_signin, fortinet_fortigate, gcp_audit,
+                         generic_json, generic_syslog, github_audit,
+                         gitlab_audit, m365_audit, meraki, okta_system_log,
                          paloalto_csv, paloalto_syslog, suricata_eve,
-                         windows_security, zeek_tsv)
+                         windows_security, zeek_json, zeek_tsv)
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
@@ -306,6 +308,152 @@ def test_entra_signin():
     assert ok.app == "Microsoft Teams" and ok.host_name == "ASMITH-LT"
 
 
+def test_cisco_ios():
+    evs = list(cisco_ios.parse(_read("cisco_ios.log")))
+    assert len(evs) == 4
+    by_fac = {e.log_type: e for e in evs}
+    acl = by_fac["sec"]
+    assert acl.vendor == "cisco" and acl.product == "ios"
+    assert acl.severity == "informational" and acl.action == "deny"
+    assert acl.protocol == "tcp"
+    assert acl.src_ip == "45.83.122.7" and acl.src_port == 4444
+    assert acl.dst_ip == "10.20.30.40" and acl.dst_port == 51515
+    assert acl.rule_name == "%SEC-6-IPACCESSLOGP"
+    assert acl.host_name == "RTR-CORE"
+    assert acl.event_time.year == 2026
+    cfg = by_fac["sys"]
+    assert cfg.severity == "notice" and cfg.user_name == "admin"
+    assert "Configured from console" in (cfg.message or "")
+    link = by_fac["link"]
+    assert link.severity == "error" and link.action is None
+    login = by_fac["sec_login"]
+    assert login.severity == "warning" and login.action == "failure"
+    assert login.user_name == "admin" and login.src_ip == "45.83.122.7"
+
+
+def test_meraki():
+    evs = list(meraki.parse(_read("meraki.log")))
+    assert len(evs) == 3
+    flows = evs[0]
+    assert flows.vendor == "cisco" and flows.product == "meraki"
+    assert flows.log_type == "flows" and flows.host_name == "MX84-CORP"
+    assert flows.src_ip == "45.83.122.7" and flows.dst_ip == "10.20.30.40"
+    assert flows.protocol == "tcp" and flows.src_port == 4444 and flows.dst_port == 51515
+    assert flows.action == "deny"
+    assert "deny all" in (flows.message or "")
+    assert flows.event_time.year == 2026
+    urls = evs[1]
+    assert urls.log_type == "urls"
+    assert urls.src_ip == "10.20.30.40" and urls.src_port == 51000
+    assert urls.dst_ip == "93.184.216.34" and urls.dst_port == 443
+    assert "example.com/login" in (urls.message or "")
+    ids = evs[2]
+    assert ids.log_type == "ids-alerts" and ids.protocol == "tcp"
+    assert ids.src_ip == "45.83.122.7" and ids.dst_ip == "10.20.30.40"
+    assert ids.rule_name == "1:2010935:3"
+    assert "DoublePulsar" in (ids.message or "")
+
+
+def test_zeek_json():
+    evs = list(zeek_json.parse(_read("zeek_json.json")))
+    assert len(evs) == 2
+    c = evs[0]
+    assert c.vendor == "zeek" and c.product == "conn" and c.log_type == "conn"
+    assert c.src_ip == "10.20.30.40" and c.src_port == 51514
+    assert c.dst_ip == "93.184.216.34" and c.dst_port == 443
+    assert c.protocol == "tcp" and c.app == "ssl"
+    assert c.bytes_total == 4096 + 84213 and c.action == "SF"
+    assert c.event_time.year == 2026
+    dns = evs[1]
+    assert dns.product == "dns" and dns.dst_ip == "8.8.8.8" and dns.dst_port == 53
+    assert dns.protocol == "udp" and dns.action == "NOERROR"
+    assert "malware-c2.example.net" in (dns.message or "")
+
+
+def test_gcp_audit():
+    evs = list(gcp_audit.parse(_read("gcp_audit.json")))
+    assert len(evs) == 2
+    delete = evs[0]
+    assert delete.vendor == "gcp" and delete.product == "cloud-audit"
+    assert delete.log_type == "compute.googleapis.com"
+    assert delete.action == "v1.compute.instances.delete"
+    assert delete.severity == "error"
+    assert delete.user_name == "jdoe@example.com" and delete.src_ip == "45.83.122.7"
+    assert "PERMISSION_DENIED" in (delete.message or "")
+    assert delete.rule_name == "projects/prod/zones/us-central1-a/instances/web-1"
+    assert delete.event_time.year == 2026
+    create = evs[1]
+    assert create.log_type == "storage.googleapis.com"
+    assert create.action == "storage.buckets.create" and create.severity == "notice"
+    assert create.user_name == "asmith@example.com" and create.src_ip == "10.20.30.9"
+
+
+def test_azure_activity():
+    evs = list(azure_activity.parse(_read("azure_activity.json")))
+    assert len(evs) == 2
+    vm = evs[0]
+    assert vm.vendor == "microsoft" and vm.product == "azure"
+    assert vm.log_type == "administrative"
+    assert vm.action == "MICROSOFT.COMPUTE/VIRTUALMACHINES/DELETE"
+    assert vm.severity == "warning"
+    assert vm.user_name == "jdoe@contoso.com" and vm.src_ip == "45.83.122.7"
+    assert "Success" in (vm.message or "")
+    assert vm.event_time.year == 2026
+    role = evs[1]
+    assert role.severity == "error" and "Failure" in (role.message or "")
+    assert role.user_name == "asmith@contoso.com" and role.src_ip == "10.20.30.9"
+
+
+def test_github_audit():
+    evs = list(github_audit.parse(_read("github_audit.json")))
+    assert len(evs) == 2
+    destroy = evs[0]
+    assert destroy.vendor == "github" and destroy.product == "audit"
+    assert destroy.log_type == "repo" and destroy.action == "repo.destroy"
+    assert destroy.user_name == "jdoe" and destroy.src_ip == "45.83.122.7"
+    assert destroy.rule_name == "Krishcalin/secret-proj"
+    assert "repo.destroy" in (destroy.message or "")
+    assert destroy.event_time.year == 2026
+    override = evs[1]
+    assert override.log_type == "protected_branch"
+    assert override.action == "protected_branch.policy_override"
+    assert override.user_name == "asmith" and override.src_ip == "10.20.30.9"
+
+
+def test_gitlab_audit():
+    evs = list(gitlab_audit.parse(_read("gitlab_audit.json")))
+    assert len(evs) == 2
+    proj = evs[0]
+    assert proj.vendor == "gitlab" and proj.product == "audit"
+    assert proj.log_type == "project" and proj.action == "Removed project"
+    assert proj.user_name == "jdoe" and proj.src_ip == "45.83.122.7"
+    assert proj.rule_name == "Krishcalin/secret-proj"
+    assert proj.event_time.year == 2026
+    usr = evs[1]
+    assert usr.log_type == "user" and usr.action == "add user"
+    assert usr.user_name == "asmith" and usr.src_ip == "10.20.30.9"
+    assert usr.rule_name == "backdoor"
+
+
+def test_generic_json():
+    evs = list(generic_json.parse(_read("generic_json.json")))
+    assert len(evs) == 2
+    ecs = evs[0]                                  # Elastic Common Schema (nested)
+    assert ecs.vendor == "json"
+    assert ecs.action == "file-deleted" and ecs.severity == "high"
+    assert ecs.src_ip == "45.83.122.7" and ecs.src_port == 51530
+    assert ecs.dst_ip == "10.20.30.40" and ecs.dst_port == 445
+    assert ecs.user_name == "corp\\jdoe" and ecs.host_name == "FIN-WS-014"
+    assert ecs.protocol == "tcp" and ecs.rule_name == "FIM-001"
+    assert ecs.message == "Sensitive file deleted"
+    assert ecs.event_time.year == 2026
+    flat = evs[1]                                 # flat keys + epoch seconds
+    assert flat.src_ip == "10.20.30.9" and flat.dst_ip == "185.220.101.5"
+    assert flat.dst_port == 8080 and flat.user_name == "asmith"
+    assert flat.action == "allow" and flat.severity == "low"
+    assert flat.bytes_total == 2048 and flat.event_time.year == 2026
+
+
 def test_detect_format():
     assert detect_format("t.csv", _read("paloalto_traffic.csv")) == "paloalto_csv"
     assert detect_format("s.log", _read("paloalto_syslog.log")) == "paloalto_syslog"
@@ -323,3 +471,11 @@ def test_detect_format():
     assert detect_format("m.json", _read("m365_audit.json")) == "m365_audit"
     assert detect_format("o.json", _read("okta_system_log.json")) == "okta_system_log"
     assert detect_format("en.json", _read("entra_signin.json")) == "entra_signin"
+    assert detect_format("ios.log", _read("cisco_ios.log")) == "cisco_ios"
+    assert detect_format("mr.log", _read("meraki.log")) == "meraki"
+    assert detect_format("zj.json", _read("zeek_json.json")) == "zeek_json"
+    assert detect_format("gcp.json", _read("gcp_audit.json")) == "gcp_audit"
+    assert detect_format("az.json", _read("azure_activity.json")) == "azure_activity"
+    assert detect_format("gh.json", _read("github_audit.json")) == "github_audit"
+    assert detect_format("gl.json", _read("gitlab_audit.json")) == "gitlab_audit"
+    assert detect_format("gj.json", _read("generic_json.json")) == "generic_json"

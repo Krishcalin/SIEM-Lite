@@ -30,6 +30,14 @@ _PAN_SYSLOG_RE = re.compile(
 _CEF_RE = re.compile(r"CEF:\s*\d+\s*\|")
 # Cisco ASA / Firepower message ID: %ASA-6-302013: ...
 _CISCO_RE = re.compile(r"%(?:ASA|FTD|ASASM|FWSM|PIX)-\d-\d+", re.IGNORECASE)
+# Cisco IOS/IOS-XE/NX-OS mnemonic: %SEC-6-IPACCESSLOGP: ... (alpha mnemonic; not ASA's numeric id).
+_CISCO_IOS_RE = re.compile(r"%[A-Z][A-Z0-9_]*-\d-[A-Z_][A-Z0-9_]*:")
+# Cisco Meraki: RFC 5424 syslog whose body starts with a Meraki event type.
+_MERAKI_RE = re.compile(
+    r"^<\d{1,3}>1\s+\S+\s+\S+\s+"
+    r"(?:flows|urls|ids-alerts|security_event|ip_flow_start|ip_flow_end|firewall|"
+    r"vpn_firewall|dhcp_lease|dhcp_no_offers|events|airmarshal_events)\b",
+    re.MULTILINE)
 # Zeek TSV metadata header.
 _ZEEK_RE = re.compile(r"^#(?:separator|fields)\b", re.MULTILINE)
 # Fortinet key=value syslog: needs devname= plus a Forti-specific key.
@@ -53,9 +61,13 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     if _CEF_RE.search(sample):
         return "cef"
 
-    # Cisco ASA / Firepower — distinctive %ASA-L-NNNNNN message id.
+    # Cisco ASA / Firepower — distinctive %ASA-L-NNNNNN message id (numeric).
     if _CISCO_RE.search(sample):
         return "cisco_asa"
+
+    # Cisco IOS / IOS-XE / NX-OS — %FACILITY-SEVERITY-MNEMONIC (alpha mnemonic).
+    if _CISCO_IOS_RE.search(sample):
+        return "cisco_ios"
 
     # Zeek TSV — #separator / #fields metadata header (check before CSV).
     if _ZEEK_RE.search(sample):
@@ -68,6 +80,10 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     # Fortinet FortiGate — key=value syslog.
     if _FORTINET_RE.search(sample) and _FORTINET_MARK.search(sample):
         return "fortinet_fortigate"
+
+    # Cisco Meraki — RFC 5424 syslog with a Meraki event type (before generic syslog).
+    if _MERAKI_RE.search(sample):
+        return "meraki"
 
     # CSV by header.
     try:
@@ -93,7 +109,7 @@ def _detect_json(text: str) -> Optional[str]:
     """Route a JSON/NDJSON document to the right parser by inspecting its keys."""
     rec = _first_json_record(text)
     if not isinstance(rec, dict):
-        return "crowdstrike_json"  # looked like JSON but no object — legacy default
+        return "generic_json"  # looked like JSON but no object to inspect
     keys = {str(k).lower() for k in rec}
 
     # Suricata EVE — event_type plus network fields.
@@ -115,10 +131,29 @@ def _detect_json(text: str) -> Optional[str]:
     if ({"userprincipalname", "appdisplayname"} & keys) and \
             ({"createddatetime", "clientappused", "risklevelduringsignin"} & keys):
         return "entra_signin"
-    # CrowdStrike Falcon JSON (and the default JSON source in scope).
-    if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event", "resources"} & keys):
+    # Zeek JSON — dotted connection keys.
+    if ("id.orig_h" in keys) or ("id.resp_h" in keys) or \
+            ({"uid", "ts", "id.orig_p"} <= keys):
+        return "zeek_json"
+    # GCP Cloud Audit Logs.
+    if "protopayload" in keys:
+        return "gcp_audit"
+    # Azure Activity Log.
+    if "operationname" in keys and \
+            ({"resultsignature", "calleripaddress", "correlationid", "resourceid"} & keys):
+        return "azure_activity"
+    # GitHub audit log.
+    if "action" in keys and "actor" in keys and \
+            ({"@timestamp", "actor_id", "actor_ip", "org", "repo"} & keys):
+        return "github_audit"
+    # GitLab audit events.
+    if "entity_type" in keys and "details" in keys:
+        return "gitlab_audit"
+    # CrowdStrike Falcon JSON (detection-summary or flat/FDR shapes).
+    if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event"} <= keys):
         return "crowdstrike_json"
-    return "crowdstrike_json"
+    # Unrecognized JSON — fall back to the generic JSON mapper (not CrowdStrike).
+    return "generic_json"
 
 
 def _first_json_record(text: str) -> Optional[dict]:
@@ -131,7 +166,7 @@ def _first_json_record(text: str) -> Optional[dict]:
         if isinstance(obj, list):
             return next((r for r in obj if isinstance(r, dict)), None)
         if isinstance(obj, dict):
-            for key in ("resources", "events", "Records", "records", "value"):
+            for key in ("resources", "events", "Records", "records", "value", "entries", "data"):
                 if isinstance(obj.get(key), list):
                     return next((r for r in obj[key] if isinstance(r, dict)), None)
             return obj

@@ -1,10 +1,11 @@
 """Log parsers. Each module exposes `parse(content: str) -> Iterator[NormalizedEvent]`."""
 from __future__ import annotations
 
-from . import (aws_cloudtrail, cef, cisco_asa, crowdstrike_csv, crowdstrike_json,
-               entra_signin, fortinet_fortigate, generic_syslog, m365_audit,
-               okta_system_log, paloalto_csv, paloalto_syslog, suricata_eve,
-               windows_security, zeek_tsv)
+from . import (aws_cloudtrail, azure_activity, cef, cisco_asa, cisco_ios,
+               crowdstrike_csv, crowdstrike_json, entra_signin, fortinet_fortigate,
+               gcp_audit, generic_json, generic_syslog, github_audit, gitlab_audit,
+               m365_audit, meraki, okta_system_log, paloalto_csv, paloalto_syslog,
+               suricata_eve, windows_security, zeek_json, zeek_tsv)
 
 # Format key -> parser module. Keys are also the values of the UI "format" dropdown.
 PARSERS = {
@@ -23,6 +24,14 @@ PARSERS = {
     "m365_audit": m365_audit,
     "okta_system_log": okta_system_log,
     "entra_signin": entra_signin,
+    "cisco_ios": cisco_ios,
+    "meraki": meraki,
+    "zeek_json": zeek_json,
+    "gcp_audit": gcp_audit,
+    "azure_activity": azure_activity,
+    "github_audit": github_audit,
+    "gitlab_audit": gitlab_audit,
+    "generic_json": generic_json,
 }
 
 FORMAT_LABELS = {
@@ -41,4 +50,12 @@ FORMAT_LABELS = {
     "m365_audit": "Microsoft 365 — Unified Audit Log",
     "okta_system_log": "Okta — System Log",
     "entra_signin": "Microsoft Entra ID — sign-in logs",
+    "cisco_ios": "Cisco IOS / IOS-XE / NX-OS — syslog",
+    "meraki": "Cisco Meraki — syslog",
+    "zeek_json": "Zeek (Bro) — JSON (conn / dns / http …)",
+    "gcp_audit": "Google Cloud — Cloud Audit Logs",
+    "azure_activity": "Microsoft Azure — Activity Log",
+    "github_audit": "GitHub — audit log",
+    "gitlab_audit": "GitLab — audit events",
+    "generic_json": "Generic JSON / NDJSON (catch-all)",
 }

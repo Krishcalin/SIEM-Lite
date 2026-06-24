@@ -1,0 +1,4 @@
+<189>1001: RTR-CORE: Jun 24 2026 10:00:00.123 UTC: %SEC-6-IPACCESSLOGP: list 101 denied tcp 45.83.122.7(4444) -> 10.20.30.40(51515), 1 packet
+<190>1002: RTR-CORE: Jun 24 2026 10:01:00.000 UTC: %SYS-5-CONFIG_I: Configured from console by admin on vty0 (10.20.30.9)
+<187>1003: SW-ACCESS: Jun 24 2026 10:02:00.000 UTC: %LINK-3-UPDOWN: Interface GigabitEthernet0/1, changed state to down
+<188>1004: RTR-CORE: Jun 24 2026 10:03:00.000 UTC: %SEC_LOGIN-4-LOGIN_FAILED: Login failed [user: admin] [Source: 45.83.122.7] [localport: 22] [Reason: Login Authentication Failed]

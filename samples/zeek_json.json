@@ -1,0 +1,2 @@
+{"ts":1781517600.123456,"uid":"Cabc123","id.orig_h":"10.20.30.40","id.orig_p":51514,"id.resp_h":"93.184.216.34","id.resp_p":443,"proto":"tcp","service":"ssl","orig_bytes":4096,"resp_bytes":84213,"conn_state":"SF","_path":"conn"}
+{"ts":1781517610.0,"uid":"Cdns456","id.orig_h":"10.20.30.40","id.orig_p":53124,"id.resp_h":"8.8.8.8","id.resp_p":53,"proto":"udp","query":"malware-c2.example.net","qtype_name":"A","rcode_name":"NOERROR","_path":"dns"}

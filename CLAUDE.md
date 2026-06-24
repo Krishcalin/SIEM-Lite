@@ -38,9 +38,11 @@ app/
   normalize.py   dedup_hash() + tsv_text()
   db.py          pool, schema/partition mgmt, insert, search, stats, purge
   ingest.py      orchestration: detect -> parse -> normalize -> bulk insert -> batch stats
-  parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, zeek_tsv,
-                 crowdstrike_csv, crowdstrike_json, windows_security, suricata_eve, cef,
-                 generic_syslog, aws_cloudtrail, m365_audit, entra_signin, okta_system_log
+  parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
+                 meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
+                 windows_security, suricata_eve, cef, generic_syslog, generic_json,
+                 aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
+                 okta_system_log, github_audit, gitlab_audit  (23 total)
   templates/     base, dashboard, upload, search, event, admin
   static/style.css
 schema.sql       partitioned events table, FTS + indexes, ingest_batches
@@ -119,12 +121,32 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   case-insensitive `_g` to tolerate camelCase (Graph) vs PascalCase (Azure Monitor).
   Success/failure action comes from the vendor's outcome field (`errorCode==0`,
   `ResultStatus`, `responseElements.ConsoleLogin`, `outcome.result`).
+- **Cisco IOS/IOS-XE/NX-OS** keys off `%FACILITY-SEVERITY-MNEMONIC:` (alpha mnemonic) —
+  distinct from ASA's numeric message id, so its detect regex requires a letter-led
+  mnemonic and won't match ASA. 5-tuple mined from ACL `ip(port) -> ip(port)`, user
+  from `[user: …]` / `by …`, source from `[Source: …]`.
+- **Cisco Meraki** is RFC 5424 syslog whose body is `<etype> key=value… note:` — the
+  event type is the log_type; `src`/`dst` may carry `:port` (use `split_ip_port`);
+  `pattern:`/`request:`/`message:` becomes the message. Detected before generic syslog.
+- **Zeek JSON** mirrors `zeek_tsv` but from `LogAscii::use_json` records (dotted keys like
+  `id.orig_h`); path comes from `_path` or is inferred from the fields present.
+- **GCP/Azure/GitHub/GitLab** JSON each map their own shape: GCP `protoPayload.*`
+  (methodName / principalEmail / callerIp); Azure `operationName` + `identity.claims`
+  (operationName/resultType may be `{value,localizedValue}`); GitHub `action`/`actor`/
+  `actor_ip` with epoch-ms `@timestamp`; GitLab actor + action under `details`.
+- **Generic JSON (`generic_json`)** is the JSON catch-all and the **fallback for
+  unrecognized JSON** (replacing the old CrowdStrike default). It flattens one level so
+  ECS keys (`source.ip`, `event.action`) resolve and maps many candidate names; vendor
+  defaults to `"json"`. Keep it last in `_detect_json`.
 - **Detection ordering (`detect.py`)** is specific-before-generic. JSON is routed by
   record keys: `event_type`+net → Suricata; `ProviderName`+`Id` → Windows;
   `eventSource`+`eventName` → CloudTrail; `Workload`+`Operation` → M365; `eventType`+
-  `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; else CrowdStrike. Text
-  formats match `CEF:n|`, then `%ASA-…` (Cisco), then Zeek `#fields`, then PAN syslog,
-  then Fortinet KV, then CSV headers, and finally **generic syslog** (`<PRI>` / RFC 3164).
+  `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; `id.orig_h` → Zeek JSON;
+  `protoPayload` → GCP; `operationName`+azure-keys → Azure; `action`+`actor` → GitHub;
+  `entity_type`+`details` → GitLab; `metadata`+`event` (both) or `aid`/`cid`/… →
+  CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `%ASA-…` (numeric)
+  → Cisco ASA, then `%FAC-SEV-MNEMONIC` (alpha) → Cisco IOS, then Zeek `#fields`, then PAN
+  syslog, then Fortinet KV, then Meraki, then CSV headers, and finally **generic syslog**.
 
 ## Adding a new format / vendor
 
