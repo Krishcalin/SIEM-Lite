@@ -1,0 +1,17 @@
+title: Ingress Tool Transfer Utility
+id: lo-ingress-tool-transfer
+description: A known download / living-off-the-land utility appears in the event (certutil, bitsadmin, PowerShell download cradle, wget/curl).
+level: high
+detection:
+  keywords:
+    - certutil
+    - bitsadmin
+    - Invoke-WebRequest
+    - DownloadString
+    - DownloadFile
+    - 'wget '
+    - 'curl '
+  condition: keywords
+tags:
+  - attack.t1105
+  - attack.command_and_control

@@ -10,6 +10,19 @@
   <div class="card"><div class="num">{{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }}</div><div class="lbl">latest event</div></div>
 </div>
 
+<section>
+  <h2>Open alerts</h2>
+  {% set total_open = (alert_counts.values()|sum) if alert_counts else 0 %}
+  {% if total_open %}
+  <p>
+    {% for lvl in ['critical','high','medium','low','informational'] %}
+      {% if alert_counts.get(lvl) %}<a href="/alerts?status=open&amp;level={{ lvl }}"><span class="badge {{ lvl }}">{{ alert_counts.get(lvl) }} {{ lvl }}</span></a> {% endif %}
+    {% endfor %}
+    · <a href="/alerts?status=open">view all {{ total_open }} open ›</a>
+  </p>
+  {% else %}<p class="muted">No open alerts. <a href="/alerts">View alert history ›</a></p>{% endif %}
+</section>
+
 <div class="grid2">
   <section>
     <h2>By vendor</h2>

@@ -1,0 +1,14 @@
+title: Windows Failed Logon
+id: lo-win-failed-logon
+description: A failed Windows logon (event 4625). Single events are low signal; a burst from one source is the real indicator (see correlation rules).
+level: low
+logsource:
+  vendor: microsoft
+  log_type: security
+detection:
+  selection:
+    action: failed-logon
+  condition: selection
+tags:
+  - attack.t1110
+  - attack.credential_access

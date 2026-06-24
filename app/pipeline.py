@@ -12,7 +12,9 @@ from datetime import datetime, timezone
 from typing import Iterable, Iterator, Optional
 
 from . import db
+from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
+from .normalize import dedup_hash
 from .parsers import PARSERS
 
 # Rows per INSERT batch. One executemany per chunk keeps memory flat on big files.
@@ -48,15 +50,25 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     the SQL layer. `fallback` (default: now, UTC) stamps events without a time.
     """
     fb = fallback or datetime.now(timezone.utc)
+    engine = detruntime.get_engine()           # None if detection disabled/not loaded
     total = 0
     chunk: list[NormalizedEvent] = []
+    alerts: list[dict] = []
     for evt in events:
         total += 1
         apply_fallback_time(evt, fb)
         chunk.append(evt)
+        if engine is not None:
+            matched = engine.evaluate_event(evt)
+            if matched:
+                dh = dedup_hash(evt)           # same identity used for the event row
+                alerts.extend(detengine.alert_from_match(r, evt, dh, batch_id)
+                              for r in matched)
         if len(chunk) >= CHUNK:
             db.insert_events(conn, chunk, batch_id)
+            db.insert_alerts(conn, alerts); alerts = []
             chunk = []
     if chunk:
         db.insert_events(conn, chunk, batch_id)
+    db.insert_alerts(conn, alerts)
     return total

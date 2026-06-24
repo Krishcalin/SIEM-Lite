@@ -1,0 +1,22 @@
+title: Security Tooling Disabled or Stopped
+id: lo-disable-security-tools
+description: An action that disables or stops endpoint protection / logging (Defender, the AV service, or Windows event logging).
+level: high
+detection:
+  action_sel:
+    action|contains:
+      - disable
+      - stop
+      - tamper
+  target:
+    message|contains:
+      - defender
+      - antivirus
+      - ' av '
+      - real-time protection
+      - eventlog
+      - windows defender
+  condition: action_sel and target
+tags:
+  - attack.t1562.001
+  - attack.defense_evasion

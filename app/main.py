@@ -18,6 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from . import api, db, ingest, streaming
 from .config import settings
 from .detect import detect_format
+from .detection import runtime as detection_runtime
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .util import parse_ts
@@ -62,6 +63,8 @@ async def lifespan(app: FastAPI):
     db.init_schema()
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
+    if settings.detection_enabled:
+        detection_runtime.load_and_sync(BASE.parent / "rules")
 
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
@@ -99,7 +102,8 @@ def health():
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
-    return templates.TemplateResponse("dashboard.html", _ctx(request, stats=db.stats()))
+    return templates.TemplateResponse("dashboard.html", _ctx(
+        request, stats=db.stats(), alert_counts=db.alert_severity_counts()))
 
 
 # --------------------------------------------------------------------------- #
@@ -209,12 +213,56 @@ def event_detail(request: Request, event_id: int):
 
 
 # --------------------------------------------------------------------------- #
+#  Alerts                                                                      #
+# --------------------------------------------------------------------------- #
+def _alert_filters(request: Request) -> dict:
+    q = request.query_params
+    return {"status": q.get("status") or None, "level": q.get("level") or None,
+            "rule_id": q.get("rule_id") or None, "q": q.get("q") or None}
+
+
+@app.get("/alerts", response_class=HTMLResponse)
+def alerts(request: Request):
+    f = _alert_filters(request)
+    try:
+        page = max(int(request.query_params.get("page", "1")), 1)
+    except ValueError:
+        page = 1
+    limit = settings.page_size
+    rows, total = db.recent_alerts(f, limit=limit, offset=(page - 1) * limit)
+    pages = max((total + limit - 1) // limit, 1)
+    base_qs = urlencode([(k, v) for k, v in request.query_params.multi_items()
+                         if k != "page" and v])
+    return templates.TemplateResponse("alerts.html", _ctx(
+        request, rows=rows, total=total, page=page, pages=pages,
+        params=request.query_params, base_qs=base_qs,
+        counts=db.alert_severity_counts()))
+
+
+@app.get("/alert/{alert_id}", response_class=HTMLResponse)
+def alert_detail(request: Request, alert_id: int):
+    a = db.get_alert(alert_id)
+    if a is None:
+        return HTMLResponse("Alert not found", status_code=404)
+    event_id = db.event_id_for(a["dedup_hash"], a["event_time"])
+    return templates.TemplateResponse("alert.html", _ctx(request, a=a, event_id=event_id))
+
+
+@app.post("/alert/{alert_id}/status")
+def alert_set_status(alert_id: int, status: str = Form(...)):
+    if status in ("open", "ack", "closed"):
+        db.set_alert_status(alert_id, status)
+    return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
 #  Admin / retention                                                           #
 # --------------------------------------------------------------------------- #
 def _render_admin(request: Request, *, purged=None, new_key=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
-        api_keys=db.list_api_keys(), purged=purged, new_key=new_key))
+        api_keys=db.list_api_keys(), rules=db.list_rules(),
+        purged=purged, new_key=new_key))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -241,4 +289,11 @@ def admin_create_api_key(request: Request, name: str = Form(...), source_label: 
 @app.post("/admin/api-keys/{key_id}/toggle")
 def admin_toggle_api_key(key_id: int, enabled: str = Form(...)):
     db.set_api_key_enabled(key_id, enabled == "true")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/rules/{rule_id}/toggle")
+def admin_toggle_rule(rule_id: str, enabled: str = Form(...)):
+    db.set_rule_enabled(rule_id, enabled == "true")
+    detection_runtime.refresh_enabled()   # apply to the in-memory engine immediately
     return RedirectResponse(url="/admin", status_code=303)

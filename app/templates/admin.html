@@ -74,6 +74,32 @@
 </section>
 
 <section>
+  <h2>Detection rules</h2>
+  <p>Rules are loaded from <code>rules/*.yml</code> and evaluated on every ingested
+     event. Disable a noisy rule here — it takes effect immediately.</p>
+  <table>
+    <tr><th>Rule</th><th>Severity</th><th>MITRE</th><th class="r">Fired</th>
+        <th>Last fired (UTC)</th><th>Status</th><th></th></tr>
+    {% for r in rules %}
+    <tr>
+      <td>{{ r.title }} <span class="muted">({{ r.rule_id }})</span></td>
+      <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
+      <td class="muted">{{ (r.techniques or [])|join(', ') }}</td>
+      <td class="r">{{ "{:,}".format(r.fired or 0) }}</td>
+      <td class="nowrap">{{ r.last_fired.strftime('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
+      <td><span class="badge {{ 'done' if r.enabled else 'error' }}">{{ 'enabled' if r.enabled else 'disabled' }}</span></td>
+      <td>
+        <form method="post" action="/admin/rules/{{ r.rule_id }}/toggle">
+          <input type="hidden" name="enabled" value="{{ 'false' if r.enabled else 'true' }}">
+          <button type="submit" class="btn">{{ 'Disable' if r.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="7" class="muted">No rules loaded.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section>
   <h2>Recent ingests</h2>
   <table>
     <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>

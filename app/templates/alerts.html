@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block title %}Alerts — LogOcean{% endblock %}
+{% block body %}
+<h1>Alerts</h1>
+
+<form method="get" action="/alerts" class="panel filters">
+  <input type="text" name="q" placeholder="Search message / user / src ip" value="{{ params.get('q','') }}" class="wide">
+  <select name="status">
+    <option value="">any status</option>
+    {% for s in ['open','ack','closed'] %}<option value="{{ s }}" {{ 'selected' if params.get('status')==s }}>{{ s }}</option>{% endfor %}
+  </select>
+  <select name="level">
+    <option value="">any severity</option>
+    {% for l in ['critical','high','medium','low','informational'] %}<option value="{{ l }}" {{ 'selected' if params.get('level')==l }}>{{ l }}</option>{% endfor %}
+  </select>
+  <input type="text" name="rule_id" placeholder="rule id" value="{{ params.get('rule_id','') }}">
+  <button type="submit" class="btn primary">Filter</button>
+  <a class="btn" href="/alerts">Reset</a>
+</form>
+
+<div class="resultbar">
+  <span><b>{{ "{:,}".format(total) }}</b> alerts</span>
+  <span class="muted">
+    {% for lvl in ['critical','high','medium','low'] %}
+      {% if counts.get(lvl) %}<span class="badge {{ lvl }}">{{ counts.get(lvl) }} {{ lvl }}</span> {% endif %}
+    {% endfor %}
+    open
+  </span>
+</div>
+
+<table class="results">
+  <tr>
+    <th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>MITRE</th><th>Vendor</th>
+    <th>Src</th><th>User</th><th>Host</th><th>Message</th><th>Status</th>
+  </tr>
+  {% for r in rows %}
+  <tr onclick="location.href='/alert/{{ r.id }}'">
+    <td class="nowrap">{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
+    <td>{{ r.rule_title }}</td>
+    <td class="nowrap muted">{{ (r.techniques or [])|join(', ') }}</td>
+    <td>{{ r.vendor or '' }}</td>
+    <td class="nowrap">{{ r.src_ip or '' }}</td>
+    <td>{{ r.user_name or '' }}</td>
+    <td>{{ r.host_name or '' }}</td>
+    <td class="msg">{{ (r.message or '')[:100] }}</td>
+    <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+  </tr>
+  {% else %}
+  <tr><td colspan="10" class="muted">No alerts match.</td></tr>
+  {% endfor %}
+</table>
+
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a class="btn" href="?{{ base_qs }}&page={{ page-1 }}">‹ Prev</a>{% endif %}
+  <span>Page {{ page }} / {{ pages }}</span>
+  {% if page < pages %}<a class="btn" href="?{{ base_qs }}&page={{ page+1 }}">Next ›</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

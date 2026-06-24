@@ -1,0 +1,15 @@
+title: RDP Connection Allowed
+id: lo-rdp-allowed
+description: An allowed connection to RDP (3389). Review for external exposure or lateral movement.
+level: medium
+detection:
+  selection:
+    dst_port: 3389
+  permitted:
+    action:
+      - allow
+      - accept
+  condition: selection and permitted
+tags:
+  - attack.t1021.001
+  - attack.lateral_movement

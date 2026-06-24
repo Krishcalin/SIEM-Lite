@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Alert #{{ a.id }} — LogOcean{% endblock %}
+{% block body %}
+<a href="/alerts" class="btn">‹ Alerts</a>
+<h1>Alert #{{ a.id }} — {{ a.rule_title }}</h1>
+
+<table class="kv">
+  <tr><th>Severity / status</th>
+      <td><span class="badge {{ a.level }}">{{ a.level }}</span>
+          <span class="badge {{ a.status }}">{{ a.status }}</span></td></tr>
+  <tr><th>Rule</th><td>{{ a.rule_title }} <span class="muted">({{ a.rule_id }})</span></td></tr>
+  <tr><th>MITRE ATT&CK</th>
+      <td>{{ (a.techniques or [])|join(', ') or '—' }}
+          {% if a.tactics %}<span class="muted">· {{ a.tactics|join(', ') }}</span>{% endif %}</td></tr>
+  <tr><th>Raised (UTC)</th><td>{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
+  <tr><th>Event time (UTC)</th><td>{{ a.event_time.strftime('%Y-%m-%d %H:%M:%S') if a.event_time else '—' }}</td></tr>
+  <tr><th>Vendor</th><td>{{ a.vendor or '—' }}</td></tr>
+  <tr><th>Source / dest IP</th><td>{{ a.src_ip or '—' }} → {{ a.dst_ip or '—' }}</td></tr>
+  <tr><th>User</th><td>{{ a.user_name or '—' }}</td></tr>
+  <tr><th>Host</th><td>{{ a.host_name or '—' }}</td></tr>
+  <tr><th>Message</th><td>{{ a.message or '—' }}</td></tr>
+  <tr><th>Originating event</th>
+      <td>{% if event_id %}<a href="/event/{{ event_id }}">View event #{{ event_id }} ›</a>
+          {% else %}<span class="muted">not found (purged or out of range)</span>{% endif %}</td></tr>
+</table>
+
+<h2>Triage</h2>
+<form method="post" action="/alert/{{ a.id }}/status" class="panel inline-form">
+  {% if a.status != 'ack' %}<button name="status" value="ack" class="btn">Acknowledge</button>{% endif %}
+  {% if a.status != 'closed' %}<button name="status" value="closed" class="btn primary">Close</button>{% endif %}
+  {% if a.status != 'open' %}<button name="status" value="open" class="btn">Reopen</button>{% endif %}
+</form>
+{% endblock %}

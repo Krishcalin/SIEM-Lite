@@ -188,6 +188,116 @@ def set_api_key_enabled(key_id: int, enabled: bool) -> None:
 
 
 # --------------------------------------------------------------------------- #
+#  Detection: rule registry + alerts                                          #
+# --------------------------------------------------------------------------- #
+def sync_rules(rules: Iterable[Any]) -> None:
+    """Upsert each loaded rule's metadata, preserving the `enabled` flag."""
+    with pool().connection() as conn:
+        for r in rules:
+            conn.execute(
+                "INSERT INTO detection_rules (rule_id, title, level, source, tactics, techniques) "
+                "VALUES (%s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (rule_id) DO UPDATE SET title = EXCLUDED.title, "
+                "level = EXCLUDED.level, source = EXCLUDED.source, "
+                "tactics = EXCLUDED.tactics, techniques = EXCLUDED.techniques",
+                (r.id, r.title, r.level, r.source, r.tactics, r.techniques))
+        conn.commit()
+
+
+def enabled_rule_ids() -> set[str]:
+    with pool().connection() as conn:
+        rows = conn.execute("SELECT rule_id FROM detection_rules WHERE enabled").fetchall()
+    return {row["rule_id"] for row in rows}
+
+
+def list_rules() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT r.*, COALESCE(a.n, 0) AS fired, a.last_fired "
+            "FROM detection_rules r LEFT JOIN ("
+            "  SELECT rule_id, count(*) AS n, max(created_at) AS last_fired "
+            "  FROM alerts GROUP BY rule_id) a ON a.rule_id = r.rule_id "
+            "ORDER BY r.level, r.rule_id").fetchall()
+
+
+def set_rule_enabled(rule_id: str, enabled: bool) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE detection_rules SET enabled = %s WHERE rule_id = %s",
+                     (enabled, rule_id))
+        conn.commit()
+
+
+_ALERT_INSERT = """
+INSERT INTO alerts (event_time, rule_id, rule_title, level, tactics, techniques,
+    vendor, src_ip, dst_ip, user_name, host_name, message, dedup_hash, batch_id)
+VALUES (%(event_time)s, %(rule_id)s, %(rule_title)s, %(level)s, %(tactics)s, %(techniques)s,
+    %(vendor)s, %(src_ip)s::inet, %(dst_ip)s::inet, %(user_name)s, %(host_name)s,
+    %(message)s, %(dedup_hash)s, %(batch_id)s)
+ON CONFLICT (rule_id, dedup_hash) DO NOTHING
+"""
+
+
+def insert_alerts(conn, alerts: list[dict]) -> None:
+    """Insert alerts within the caller's transaction (idempotent per rule+event)."""
+    if not alerts:
+        return
+    with conn.cursor() as cur:
+        cur.executemany(_ALERT_INSERT, alerts)
+
+
+def _alert_where(f: dict) -> tuple[str, dict]:
+    clauses, p = [], {}
+    if f.get("status"):
+        clauses.append("status = %(status)s"); p["status"] = f["status"]
+    if f.get("level"):
+        clauses.append("lower(level) = lower(%(level)s)"); p["level"] = f["level"]
+    if f.get("rule_id"):
+        clauses.append("rule_id = %(rule_id)s"); p["rule_id"] = f["rule_id"]
+    if f.get("q"):
+        clauses.append("(message ILIKE %(q)s OR user_name ILIKE %(q)s OR "
+                       "host(src_ip) ILIKE %(q)s)"); p["q"] = f"%{f['q']}%"
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, p
+
+
+_ALERT_COLS = """id, created_at, event_time, rule_id, rule_title, level, tactics,
+    techniques, vendor, host(src_ip) AS src_ip, host(dst_ip) AS dst_ip,
+    user_name, host_name, message, dedup_hash, batch_id, status"""
+
+
+def recent_alerts(filters: dict, limit: int, offset: int) -> tuple[list[dict], int]:
+    where, p = _alert_where(filters)
+    with pool().connection() as conn:
+        total = conn.execute(f"SELECT count(*) AS n FROM alerts {where}", p).fetchone()["n"]
+        p2 = dict(p, _limit=limit, _offset=offset)
+        rows = conn.execute(
+            f"SELECT {_ALERT_COLS} FROM alerts {where} "
+            f"ORDER BY created_at DESC LIMIT %(_limit)s OFFSET %(_offset)s", p2).fetchall()
+    return rows, int(total)
+
+
+def get_alert(alert_id: int) -> Optional[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            f"SELECT {_ALERT_COLS} FROM alerts WHERE id = %s", (alert_id,)).fetchone()
+
+
+def set_alert_status(alert_id: int, status: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE alerts SET status = %s WHERE id = %s", (status, alert_id))
+        conn.commit()
+
+
+def alert_severity_counts() -> dict:
+    """Open-alert counts by level, for the dashboard."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT level, count(*) AS n FROM alerts WHERE status = 'open' "
+            "GROUP BY level").fetchall()
+    return {r["level"]: int(r["n"]) for r in rows}
+
+
+# --------------------------------------------------------------------------- #
 #  Search                                                                      #
 # --------------------------------------------------------------------------- #
 def _ip_clause(col: str, value: str, params: dict, key: str) -> str:
@@ -262,6 +372,16 @@ def get_event(event_id: int) -> Optional[dict]:
             "action, host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, src_port, dst_port, "
             "protocol, app, user_name, host_name, rule_name, bytes_total, message, raw, "
             "batch_id FROM events WHERE id = %s", (event_id,)).fetchone()
+
+
+def event_id_for(dedup_hash: str, event_time) -> Optional[int]:
+    """Resolve the originating event id for an alert (events are keyed by
+    dedup_hash + event_time), for drill-down. None if not found."""
+    with pool().connection() as conn:
+        row = conn.execute(
+            "SELECT id FROM events WHERE dedup_hash = %s AND event_time = %s LIMIT 1",
+            (dedup_hash, event_time)).fetchone()
+    return row["id"] if row else None
 
 
 def distinct_values(column: str, days: int = 365) -> list[str]:

@@ -68,6 +68,15 @@ pre.raw { background: #0b1220; border: 1px solid var(--line); border-radius: 8px
 .badge.done { background: #052e1a; color: var(--ok); }
 .badge.error { background: #2e0a0a; color: var(--err); }
 .badge.pending { background: #2e2606; color: var(--warn); }
+/* alert severities + statuses */
+.badge.critical { background: var(--err); color: #fff; font-weight: 600; }
+.badge.high { background: #2e0a0a; color: var(--err); border: 1px solid var(--err); }
+.badge.medium { background: #2e2606; color: var(--warn); }
+.badge.low { background: #0b2533; color: var(--accent); }
+.badge.informational, .badge.info { background: #1e293b; color: var(--muted); }
+.badge.open { background: #2e2606; color: var(--warn); }
+.badge.ack { background: #0b2533; color: var(--accent); }
+.badge.closed { background: #052e1a; color: var(--ok); }
 .inline-form { align-items: end; }
 
 @media (max-width: 900px) { .cards { grid-template-columns: 1fr 1fr; } .grid2 { grid-template-columns: 1fr; } }

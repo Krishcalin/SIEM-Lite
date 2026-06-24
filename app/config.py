@@ -17,6 +17,9 @@ class Settings:
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "512"))
     auto_purge: bool = _bool("AUTO_PURGE", False)
 
+    # Detection engine: evaluate enabled rules inline as events are ingested.
+    detection_enabled: bool = _bool("DETECTION_ENABLED", True)
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

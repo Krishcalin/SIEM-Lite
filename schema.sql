@@ -91,3 +91,51 @@ ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS source_type text NOT NULL DE
 ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS source_addr text;
 ALTER TABLE ingest_batches ALTER COLUMN filename    DROP NOT NULL;
 ALTER TABLE ingest_batches ALTER COLUMN file_sha256 DROP NOT NULL;
+
+-- ============================================================================
+--  Detection & alerting (Phase 2).
+-- ============================================================================
+
+-- Rule registry: metadata + enable flag per detection rule. The rule logic lives
+-- in the YAML files under rules/; this table tracks enablement and is synced from
+-- those files on startup (enabled flags are preserved across restarts).
+CREATE TABLE IF NOT EXISTS detection_rules (
+    rule_id    text PRIMARY KEY,
+    title      text   NOT NULL,
+    level      text,
+    source     text,
+    tactics    text[] NOT NULL DEFAULT '{}',
+    techniques text[] NOT NULL DEFAULT '{}',
+    enabled    boolean NOT NULL DEFAULT true
+);
+
+-- Alerts raised when an event matches a rule. Low-volume relative to events, so
+-- not partitioned. One alert per (rule, originating event) via the unique index;
+-- re-ingesting the same event does not duplicate alerts.
+CREATE TABLE IF NOT EXISTS alerts (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at  timestamptz NOT NULL DEFAULT now(),   -- when the alert was raised
+    event_time  timestamptz,                          -- originating event time
+    rule_id     text        NOT NULL,
+    rule_title  text        NOT NULL,
+    level       text        NOT NULL,
+    tactics     text[]      NOT NULL DEFAULT '{}',
+    techniques  text[]      NOT NULL DEFAULT '{}',
+    vendor      text,
+    src_ip      inet,
+    dst_ip      inet,
+    user_name   text,
+    host_name   text,
+    message     text,
+    dedup_hash  text        NOT NULL,                 -- links to the originating event
+    batch_id    bigint,
+    status      text        NOT NULL DEFAULT 'open'   -- open | ack | closed
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS alerts_dedup_idx   ON alerts (rule_id, dedup_hash);
+CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts (created_at DESC);
+CREATE INDEX IF NOT EXISTS alerts_status_idx  ON alerts (status);
+CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (level);
+CREATE INDEX IF NOT EXISTS alerts_rule_idx    ON alerts (rule_id);
+CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);
+CREATE INDEX IF NOT EXISTS alerts_srcip_idx   ON alerts (src_ip);
