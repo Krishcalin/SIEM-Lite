@@ -1,14 +1,15 @@
-"""Upload ingest orchestration: per-file batch + sha around the shared pipeline.
+"""Ingest orchestration: per-batch sha + lifecycle around the shared pipeline.
 
 The detect → parse → normalize → insert core lives in `pipeline`; this module
-adds the file-specific concerns (content hash, one batch per uploaded file,
-informational duplicate-file detection) and the result summary the UI shows.
-Live sources (syslog / HTTP API, Phase 1) reuse `pipeline` directly with their
-own batch lifecycle.
+adds the per-batch concerns (content hash, one batch per upload or API POST,
+informational duplicate detection, source tagging) and the result summary the
+UI / API returns. The same `ingest()` serves uploads (`source_type="upload"`)
+and the HTTP ingest API (`source_type="api"`).
 """
 from __future__ import annotations
 
 import hashlib
+from typing import Optional
 
 from . import db, pipeline
 
@@ -18,13 +19,15 @@ _VENDOR_OF = {
 }
 
 
-def ingest(filename: str, content: str, fmt: str) -> dict:
-    """Parse and store one uploaded file. Returns a result summary."""
+def ingest(content: str, fmt: str, *, filename: Optional[str] = None,
+           source_type: str = "upload", source_addr: Optional[str] = None) -> dict:
+    """Parse and store one batch of content. Returns a result summary."""
     events = pipeline.parse_events(content, fmt)  # validates fmt before any DB work
 
     sha = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
     prior = db.find_batch_by_sha(sha)  # informational: same bytes seen before
-    batch_id = db.create_batch(filename, sha, _VENDOR_OF.get(fmt), fmt)
+    batch_id = db.create_batch(filename, sha, _VENDOR_OF.get(fmt), fmt,
+                               source_type=source_type, source_addr=source_addr)
 
     with db.pool().connection() as conn:
         try:
@@ -42,7 +45,7 @@ def ingest(filename: str, content: str, fmt: str) -> dict:
 
     return {
         "batch_id": batch_id, "filename": filename, "format": fmt,
-        "vendor": _VENDOR_OF.get(fmt), "sha256": sha,
+        "vendor": _VENDOR_OF.get(fmt), "sha256": sha, "source_type": source_type,
         "total": total, "inserted": inserted, "duplicates": duplicates, "errors": 0,
         "already_ingested": bool(prior),
     }

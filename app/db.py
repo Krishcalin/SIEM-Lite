@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import ipaddress
+import secrets
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -14,6 +15,7 @@ from psycopg_pool import ConnectionPool
 from .config import settings
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
+from .util import hash_api_key
 
 _pool: Optional[ConnectionPool] = None
 _SCHEMA = (Path(__file__).resolve().parent.parent / "schema.sql").read_text(encoding="utf-8")
@@ -93,12 +95,15 @@ def insert_events(conn, events: list[NormalizedEvent], batch_id: int) -> None:
 # --------------------------------------------------------------------------- #
 #  Batch tracking                                                              #
 # --------------------------------------------------------------------------- #
-def create_batch(filename: str, sha: str, vendor: Optional[str], fmt: str) -> int:
+def create_batch(filename: Optional[str], sha: Optional[str], vendor: Optional[str],
+                 fmt: str, source_type: str = "upload",
+                 source_addr: Optional[str] = None) -> int:
     with pool().connection() as conn:
         row = conn.execute(
-            "INSERT INTO ingest_batches (filename, file_sha256, vendor, fmt, status) "
-            "VALUES (%s, %s, %s, %s, 'pending') RETURNING id",
-            (filename, sha, vendor, fmt)).fetchone()
+            "INSERT INTO ingest_batches "
+            "(filename, file_sha256, vendor, fmt, status, source_type, source_addr) "
+            "VALUES (%s, %s, %s, %s, 'pending', %s, %s) RETURNING id",
+            (filename, sha, vendor, fmt, source_type, source_addr)).fetchone()
         conn.commit()
         return row["id"]
 
@@ -132,6 +137,54 @@ def recent_batches(limit: int = 50) -> list[dict]:
         return conn.execute(
             "SELECT * FROM ingest_batches ORDER BY uploaded_at DESC LIMIT %s",
             (limit,)).fetchall()
+
+
+# --------------------------------------------------------------------------- #
+#  API keys (HTTP ingest auth)                                                 #
+# --------------------------------------------------------------------------- #
+def create_api_key(name: str, source_label: Optional[str] = None) -> dict:
+    """Mint a new key. Returns the row plus the plaintext `key` (shown ONCE);
+    only the sha256 is stored."""
+    raw = "lo_" + secrets.token_urlsafe(32)
+    sha = hash_api_key(raw)
+    prefix = raw[:11]  # "lo_" + 8 chars — a non-secret label for the UI
+    with pool().connection() as conn:
+        row = conn.execute(
+            "INSERT INTO api_keys (name, key_sha256, key_prefix, source_label) "
+            "VALUES (%s, %s, %s, %s) "
+            "RETURNING id, name, key_prefix, source_label, enabled, created_at",
+            (name, sha, prefix, source_label)).fetchone()
+        conn.commit()
+    row["key"] = raw
+    return row
+
+
+def verify_api_key(key: str) -> Optional[dict]:
+    """Return the key row if `key` matches an enabled key (and stamp last_used),
+    else None."""
+    sha = hash_api_key(key)
+    with pool().connection() as conn:
+        row = conn.execute(
+            "SELECT id, name, key_prefix, source_label, enabled FROM api_keys "
+            "WHERE key_sha256 = %s", (sha,)).fetchone()
+        if row is None or not row["enabled"]:
+            return None
+        conn.execute("UPDATE api_keys SET last_used_at = now() WHERE id = %s", (row["id"],))
+        conn.commit()
+    return row
+
+
+def list_api_keys() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT id, name, key_prefix, source_label, enabled, created_at, last_used_at "
+            "FROM api_keys ORDER BY created_at DESC").fetchall()
+
+
+def set_api_key_enabled(key_id: int, enabled: bool) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE api_keys SET enabled = %s WHERE id = %s", (enabled, key_id))
+        conn.commit()
 
 
 # --------------------------------------------------------------------------- #

@@ -6,9 +6,14 @@ Guidance for Claude Code (and other agents) working in this repository.
 
 **LogOcean** — a self-hosted log parser, indexer, and long-term store for
 **network, endpoint, cloud, and identity** logs from many vendors (**23 parsers**,
-see `app/parsers/`). The operator manually exports logs from each console and
-uploads them through a web UI; the app parses, normalizes, full-text indexes, and
-stores them in PostgreSQL with a **≥ 3-year retention** policy.
+see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
+**HTTP ingest API** (`POST /api/v1/ingest`), or the **syslog receiver**
+(UDP/TCP/TLS) — and all share one parse → normalize → store pipeline. The app
+parses, normalizes, full-text indexes, and stores events in PostgreSQL with a
+**≥ 3-year retention** policy.
+
+Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion) is
+complete; Phase 2 is a Sigma-based detection/alerting engine.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -17,27 +22,40 @@ stores them in PostgreSQL with a **≥ 3-year retention** policy.
 
 ## Architecture / data flow
 
+Three inputs share one core. `pipeline.py` is the source-agnostic
+parse→normalize→insert path; upload, the HTTP API, and the syslog receiver each
+add their own batch lifecycle around it.
+
 ```
-upload (web) ─► detect.py (format) ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
-            ─► normalize.py (dedup hash + FTS blob) ─► db.insert_events
-            ─► events (month-partitioned) + search_tsv (GIN) ─► search / export
+ upload (web) ───────────────┐
+ POST /api/v1/ingest (key) ──┤─► detect.py ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
+ syslog UDP/TCP/TLS ─► queue ┘        ─► pipeline.write_stream ─► normalize.py (dedup + FTS)
+                                       ─► db.insert_events ─► events (month-partitioned, GIN)
+                                       ─► search / export
 ```
 
-One normalized schema across all sources; the **full original record is always kept**
+Live sources (syslog) buffer in a bounded async queue (`streaming.py`) drained by
+writer workers that batch-insert; queue counters are on `GET /health`. One
+normalized schema across all sources; the **full original record is always kept**
 in `events.raw` (jsonb) so nothing is lost and any field stays searchable.
 
 ## Repository layout
 
 ```
 app/
-  main.py        FastAPI routes + UI (dashboard, upload, search, event, admin)
-  config.py      env-driven settings (DB_DSN, RETENTION_YEARS, PAGE_SIZE, ...)
+  main.py        FastAPI routes + UI (dashboard, upload, search, event, admin) + lifespan
+  api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
+  config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
-  util.py        tolerant parse_ts / clean_ip / to_int / first
+  util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key
   detect.py      best-effort vendor+format auto-detection
   normalize.py   dedup_hash() + tsv_text()
-  db.py          pool, schema/partition mgmt, insert, search, stats, purge
-  ingest.py      orchestration: detect -> parse -> normalize -> bulk insert -> batch stats
+  pipeline.py    source-agnostic core: parse_events / apply_fallback_time / write_stream
+  ingest.py      per-batch orchestration (sha, batch, source tagging) around pipeline
+  streaming.py   bounded async ingest queue + batching writer workers (backpressure)
+  db.py          pool, schema/partition mgmt, insert, search, stats, purge, api_keys
+  receivers/
+    syslog.py    UDP/TCP/TLS syslog receiver -> queue (RFC 6587 framing)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
@@ -45,9 +63,10 @@ app/
                  okta_system_log, github_audit, gitlab_audit  (23 total)
   templates/     base, dashboard, upload, search, event, admin
   static/style.css
-schema.sql       partitioned events table, FTS + indexes, ingest_batches
+schema.sql       partitioned events table, FTS + indexes, ingest_batches, api_keys
 samples/         one example file per format (used by tests)
-tests/           test_parsers.py (parsers + detection; NO database needed)
+tests/           test_parsers.py, test_api_auth.py, test_streaming.py, test_syslog.py
+                 (all run with NO database needed)
 docker-compose.yml, Dockerfile, requirements.txt, .env.example
 ```
 
@@ -164,8 +183,15 @@ pip install pytest python-dateutil
 PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 ```
 
-Tests parse the bundled samples and assert normalized fields + auto-detection;
-**no database is required**. Run them after any parser/detector change.
+- `test_parsers.py` — parsers + auto-detection over the bundled samples.
+- `test_api_auth.py` — API-key hashing + header extraction.
+- `test_streaming.py` — ingest-queue grouping, the async worker loop, backpressure drop.
+- `test_syslog.py` — TCP framing (RFC 6587 octet-counting + newline) and format resolution.
+
+All tests are **DB-free** (the async-queue test mocks the writer). `psycopg` must
+be importable to load `db`/`streaming`, but no live Postgres is needed; full
+DB-integration tests (TestClient + Postgres) run in CI/Docker. Run the suite
+after any parser/detector/pipeline change.
 
 ## Security / ops notes
 

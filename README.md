@@ -7,17 +7,22 @@
 [![tests](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml/badge.svg)](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml)
 
 A self-hosted **log parser, indexer, and long-term store** for **network, endpoint,
-cloud, and identity** logs from many vendors. You manually export logs from each
-console and upload them through a web UI; LogOcean parses and normalizes them, indexes
-them for full-text + structured search, and retains them in PostgreSQL for **≥ 3 years**.
+cloud, and identity** logs from many vendors. Logs arrive three ways — **web upload**,
+the **HTTP ingest API**, or the **syslog receiver** (UDP/TCP/TLS) — and LogOcean
+parses and normalizes them, indexes them for full-text + structured search, and
+retains them in PostgreSQL for **≥ 3 years**.
 
 ```
- export logs           upload (web)         parse + normalize        store (Postgres)
- ───────────►  file  ──────────────►  auto-detect ─► common ─► month-partitioned
- any vendor                            format        schema      events + FTS index
-                                                                       │
-                                              search ◄── filters + full-text ◄──┘
+ upload (web) ───────────────┐
+ POST /api/v1/ingest (key) ──┤─► auto-detect ─► parse ─► normalize ─► store (Postgres)
+ syslog UDP/TCP/TLS ─► queue ┘     format                common      month-partitioned
+                                                          schema      events + FTS index
+                                                                           │
+                                                  search ◄── filters + full-text ◄──┘
 ```
+
+> Being grown toward a Wazuh-like agentless SIEM: Phase 1 (live ingestion) is done;
+> Phase 2 adds a Sigma-based detection/alerting engine.
 
 ## Features
 
@@ -86,6 +91,33 @@ uvicorn app.main:app --reload
 
 The schema (tables, partitions, indexes) is created automatically on startup.
 
+## Live ingestion (HTTP API & syslog)
+
+Besides manual upload, LogOcean accepts logs in near-real-time through two front
+doors that share the same detect → parse → normalize → store pipeline.
+
+**HTTP ingest API.** Create a key on the **Admin** page, then POST raw log content:
+
+```bash
+curl -X POST "http://localhost:8000/api/v1/ingest?format=auto&filename=fw.log" \
+     -H "X-API-Key: lo_..." --data-binary @fw.log
+# -> {"batch_id": 42, "format": "...", "total": N, "inserted": N, ...}
+```
+
+`format` may be `auto` or any format key; auth is `X-API-Key` or `Authorization:
+Bearer`. Only the sha256 of each key is stored (the plaintext is shown once).
+
+**Syslog receiver.** Set `SYSLOG_ENABLED=true` to listen on UDP+TCP (default
+port 5514; TLS optional). Point a collector or device at it:
+
+```bash
+logger -n localhost -P 5514 -d "<134>1 2026-06-24T10:00:00Z fw test message"
+```
+
+Messages flow through a bounded async queue with writer workers that batch-insert,
+so a burst never blocks the receiver; queue counters are on `GET /health`. TCP
+framing supports both octet-counting (RFC 6587) and newline-delimited streams.
+
 ## How to export the logs to upload
 
 | Source | How to export | Upload as |
@@ -123,8 +155,15 @@ explicitly in the upload form.
 | `DB_DSN` | `postgresql://logocean:logocean@localhost:5432/logocean` | PostgreSQL connection |
 | `RETENTION_YEARS` | `3` | Retention floor; purge cannot go below this |
 | `PAGE_SIZE` | `100` | Search results per page |
-| `MAX_UPLOAD_MB` | `512` | Reject larger uploads |
+| `MAX_UPLOAD_MB` | `512` | Reject larger uploads / API payloads |
 | `AUTO_PURGE` | `false` | If true, drop partitions older than `RETENTION_YEARS` on startup |
+| `INGEST_QUEUE_MAX` | `10000` | Async ingest queue capacity (live sources) |
+| `INGEST_WORKERS` | `2` | Writer workers draining the queue |
+| `INGEST_FLUSH_MAX` / `INGEST_FLUSH_MS` | `2000` / `1000` | Flush a buffer at N events or N ms |
+| `SYSLOG_ENABLED` | `false` | Listen for syslog (UDP+TCP) |
+| `SYSLOG_UDP_PORT` / `SYSLOG_TCP_PORT` | `5514` / `5514` | Syslog ports (0 disables a transport) |
+| `SYSLOG_FORMAT` | `auto` | Fixed parser for messages, or `auto` (per-message detect) |
+| `SYSLOG_TLS_CERT` / `SYSLOG_TLS_KEY` | — | Enable TLS on syslog-over-TCP |
 
 ## Project layout
 
@@ -135,14 +174,18 @@ Log-Parser-Storage/
 ├── schema.sql              # partitioned events table, FTS, indexes, batches
 ├── requirements.txt
 ├── app/
-│   ├── main.py             # FastAPI routes + UI
+│   ├── main.py             # FastAPI routes + UI + lifespan
+│   ├── api.py              # HTTP ingest API (POST /api/v1/ingest, API-key auth)
 │   ├── config.py
-│   ├── db.py               # pool, partitions, insert, search, stats, purge
-│   ├── ingest.py           # detect → parse → normalize → bulk insert
+│   ├── db.py               # pool, partitions, insert, search, stats, purge, api_keys
+│   ├── pipeline.py         # source-agnostic parse → normalize → insert core
+│   ├── ingest.py           # per-batch orchestration (sha, batch, source tagging)
+│   ├── streaming.py        # bounded async ingest queue + batching writer workers
+│   ├── receivers/syslog.py # UDP/TCP/TLS syslog receiver → queue
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
-│   ├── util.py             # tolerant time/IP/int coercion
+│   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
@@ -150,7 +193,7 @@ Log-Parser-Storage/
 │   ├── templates/          # dashboard, upload, search, event, admin
 │   └── static/style.css
 ├── samples/                # one example file per format
-└── tests/test_parsers.py   # parser + detection unit tests (no DB needed)
+└── tests/                  # test_parsers, test_api_auth, test_streaming, test_syslog (no DB needed)
 ```
 
 ## Tests
@@ -160,8 +203,9 @@ pip install pytest python-dateutil
 PYTHONPATH=. python -m pytest tests/ -q       # PowerShell: $env:PYTHONPATH="."
 ```
 
-The tests parse the bundled samples and assert the normalized fields and the
-format auto-detection — they do not require a database.
+The suite covers parsers + auto-detection (over the bundled samples), API-key
+auth, the async ingest queue (grouping, worker loop, backpressure), and syslog
+TCP framing. It does **not** require a database (the queue test mocks the writer).
 
 ## Data model & retention notes
 

@@ -1,6 +1,7 @@
 """Shared parsing helpers — tolerant timestamp / IP / int coercion."""
 from __future__ import annotations
 
+import hashlib
 import ipaddress
 import json
 import re
@@ -8,6 +9,21 @@ from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 from dateutil import parser as _dtparser
+
+
+def hash_api_key(key: str) -> str:
+    """sha256 hex of an API key. Only this hash is stored; the plaintext key is
+    shown once at creation and never persisted."""
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+
+def extract_api_key(x_api_key: Optional[str], authorization: Optional[str]) -> Optional[str]:
+    """Pull an API key from the X-API-Key header or an `Authorization: Bearer` header."""
+    if x_api_key and x_api_key.strip():
+        return x_api_key.strip()
+    if authorization and authorization[:7].lower() == "bearer ":
+        return authorization[7:].strip() or None
+    return None
 
 
 def parse_ts(value: Any) -> Optional[datetime]:

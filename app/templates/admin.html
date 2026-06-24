@@ -31,15 +31,60 @@
 </section>
 
 <section>
-  <h2>Recent uploads</h2>
+  <h2>API keys</h2>
+  <p>Keys authenticate the HTTP ingest endpoint
+     (<code>POST /api/v1/ingest</code>, header <code>X-API-Key</code> or
+     <code>Authorization: Bearer</code>). Only the hash is stored — copy a new key now,
+     it is not shown again.</p>
+
+  {% if new_key %}
+  <div class="alert ok">
+    New key <b>{{ new_key.name }}</b> created. Copy it now — it will not be shown again:
+    <pre class="raw">{{ new_key.key }}</pre>
+  </div>
+  {% endif %}
+
+  <form method="post" action="/admin/api-keys" class="panel inline-form">
+    <label>Name <input type="text" name="name" placeholder="forwarder-01" required></label>
+    <label>Source label <input type="text" name="source_label" placeholder="optional"></label>
+    <button type="submit" class="btn">Create key</button>
+  </form>
+
   <table>
-    <tr><th>#</th><th>Uploaded (UTC)</th><th>File</th><th>Format</th><th class="r">Parsed</th>
-        <th class="r">Stored</th><th class="r">Dup</th><th class="r">Err</th><th>Status</th></tr>
+    <tr><th>#</th><th>Name</th><th>Prefix</th><th>Source</th><th>Created (UTC)</th>
+        <th>Last used (UTC)</th><th>Status</th><th></th></tr>
+    {% for k in api_keys %}
+    <tr>
+      <td>{{ k.id }}</td>
+      <td>{{ k.name }}</td>
+      <td><code>{{ k.key_prefix }}…</code></td>
+      <td>{{ k.source_label or '—' }}</td>
+      <td class="nowrap">{{ k.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="nowrap">{{ k.last_used_at.strftime('%Y-%m-%d %H:%M') if k.last_used_at else '—' }}</td>
+      <td><span class="badge {{ 'done' if k.enabled else 'error' }}">{{ 'enabled' if k.enabled else 'disabled' }}</span></td>
+      <td>
+        <form method="post" action="/admin/api-keys/{{ k.id }}/toggle">
+          <input type="hidden" name="enabled" value="{{ 'false' if k.enabled else 'true' }}">
+          <button type="submit" class="btn">{{ 'Disable' if k.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="8" class="muted">No API keys yet.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>Recent ingests</h2>
+  <table>
+    <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>
+        <th class="r">Parsed</th><th class="r">Stored</th><th class="r">Dup</th>
+        <th class="r">Err</th><th>Status</th></tr>
     {% for b in batches %}
     <tr>
       <td>{{ b.id }}</td>
       <td class="nowrap">{{ b.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td>{{ b.filename }}</td>
+      <td>{{ b.source_type or 'upload' }}</td>
+      <td>{{ b.filename or b.source_addr or '—' }}</td>
       <td>{{ format_labels.get(b.fmt, b.fmt) }}</td>
       <td class="r">{{ "{:,}".format(b.total_rows or 0) }}</td>
       <td class="r">{{ "{:,}".format(b.inserted_rows or 0) }}</td>
@@ -47,7 +92,7 @@
       <td class="r">{{ "{:,}".format(b.error_rows or 0) }}</td>
       <td><span class="badge {{ b.status }}">{{ b.status }}</span></td>
     </tr>
-    {% else %}<tr><td colspan="9" class="muted">No uploads yet.</td></tr>{% endfor %}
+    {% else %}<tr><td colspan="10" class="muted">No ingests yet.</td></tr>{% endfor %}
   </table>
 </section>
 {% endblock %}

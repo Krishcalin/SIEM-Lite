@@ -66,3 +66,28 @@ CREATE INDEX IF NOT EXISTS events_batch_idx    ON events (batch_id);
 
 -- Dedup within partitions (must include the partition key on a partitioned table).
 CREATE UNIQUE INDEX IF NOT EXISTS events_dedup_idx ON events (dedup_hash, event_time);
+
+-- ============================================================================
+--  Live ingestion (Phase 1): API keys + source tracking on batches.
+-- ============================================================================
+
+-- API keys for the HTTP ingest endpoint. Only the sha256 of the key is stored;
+-- the plaintext is shown once at creation. `key_prefix` is a short, non-secret
+-- label for the UI to identify a key.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name         text        NOT NULL,
+    key_sha256   text        NOT NULL UNIQUE,
+    key_prefix   text        NOT NULL,
+    source_label text,
+    enabled      boolean     NOT NULL DEFAULT true,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    last_used_at timestamptz
+);
+
+-- A batch can now come from an upload, the syslog receiver, or the HTTP API.
+-- Live sources have no file, so filename/sha become nullable.
+ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS source_type text NOT NULL DEFAULT 'upload';
+ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS source_addr text;
+ALTER TABLE ingest_batches ALTER COLUMN filename    DROP NOT NULL;
+ALTER TABLE ingest_batches ALTER COLUMN file_sha256 DROP NOT NULL;

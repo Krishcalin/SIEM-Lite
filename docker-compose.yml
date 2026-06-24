@@ -26,11 +26,20 @@ services:
       PAGE_SIZE: "100"
       MAX_UPLOAD_MB: "512"
       AUTO_PURGE: "false"
+      # Live syslog ingestion (off by default). Set SYSLOG_ENABLED=true to listen.
+      SYSLOG_ENABLED: "false"
+      SYSLOG_UDP_PORT: "5514"
+      SYSLOG_TCP_PORT: "5514"
+      SYSLOG_FORMAT: "auto"
     depends_on:
       db:
         condition: service_healthy
     ports:
       - "8000:8000"
+      # Syslog (only used when SYSLOG_ENABLED=true). 5514 avoids needing root;
+      # map "514:5514/udp" if collectors must reach the standard port.
+      - "5514:5514/udp"
+      - "5514:5514/tcp"
 
 volumes:
   pgdata:

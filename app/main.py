@@ -15,10 +15,11 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import db, ingest
+from . import api, db, ingest, streaming
 from .config import settings
 from .detect import detect_format
 from .parsers import FORMAT_LABELS
+from .receivers import syslog
 from .util import parse_ts
 
 log = logging.getLogger("logocean")
@@ -61,10 +62,25 @@ async def lifespan(app: FastAPI):
     db.init_schema()
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
-    yield
+
+    queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
+                                  settings.ingest_flush_max, settings.ingest_flush_ms)
+    await queue.start()
+    streaming.set_queue(queue)
+    receiver = syslog.SyslogReceiver(queue) if settings.syslog_enabled else None
+    if receiver is not None:
+        await receiver.start()
+    try:
+        yield
+    finally:
+        if receiver is not None:
+            await receiver.stop()
+        await queue.stop()
+        streaming.set_queue(None)
 
 
 app = FastAPI(title="LogOcean", lifespan=lifespan)
+app.include_router(api.router)  # POST /api/v1/ingest (HTTP live ingestion)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.globals["format_labels"] = FORMAT_LABELS
@@ -77,7 +93,8 @@ def _ctx(request: Request, **kw):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    q = streaming.get_queue()
+    return {"status": "ok", "ingest_queue": q.stats.as_dict() if q else None}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -110,9 +127,11 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
                 request, result=None,
                 error="Could not auto-detect the format. Please pick one explicitly."))
 
+    src = request.client.host if request.client else None
     try:
         # Parsing + DB I/O is blocking and CPU-bound — keep it off the event loop.
-        result = await run_in_threadpool(ingest.ingest, file.filename, content, chosen)
+        result = await run_in_threadpool(
+            ingest.ingest, content, chosen, filename=file.filename, source_addr=src)
     except Exception:  # noqa: BLE001
         log.exception("ingest failed for %r (format=%s)", file.filename, chosen)
         return templates.TemplateResponse("upload.html", _ctx(
@@ -192,11 +211,15 @@ def event_detail(request: Request, event_id: int):
 # --------------------------------------------------------------------------- #
 #  Admin / retention                                                           #
 # --------------------------------------------------------------------------- #
-@app.get("/admin", response_class=HTMLResponse)
-def admin(request: Request, purged: Optional[str] = None):
+def _render_admin(request: Request, *, purged=None, new_key=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
-        purged=purged.split(",") if purged else None))
+        api_keys=db.list_api_keys(), purged=purged, new_key=new_key))
+
+
+@app.get("/admin", response_class=HTMLResponse)
+def admin(request: Request, purged: Optional[str] = None):
+    return _render_admin(request, purged=purged.split(",") if purged else None)
 
 
 @app.post("/admin/purge")
@@ -205,3 +228,17 @@ def admin_purge(years: int = Form(...)):
     dropped = db.purge_older_than(years)
     qs = ("?purged=" + ",".join(dropped)) if dropped else "?purged="
     return RedirectResponse(url="/admin" + qs, status_code=303)
+
+
+@app.post("/admin/api-keys", response_class=HTMLResponse)
+def admin_create_api_key(request: Request, name: str = Form(...), source_label: str = Form("")):
+    # Render directly (no redirect) so the plaintext key is shown once and never
+    # placed in a URL / browser history.
+    created = db.create_api_key(name.strip() or "unnamed", source_label.strip() or None)
+    return _render_admin(request, new_key=created)
+
+
+@app.post("/admin/api-keys/{key_id}/toggle")
+def admin_toggle_api_key(key_id: int, enabled: str = Form(...)):
+    db.set_api_key_enabled(key_id, enabled == "true")
+    return RedirectResponse(url="/admin", status_code=303)
