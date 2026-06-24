@@ -36,7 +36,11 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             continue
         etype = h.group("etype")
         rest = h.group("rest")
-        kv = {k.lower(): v for k, v in _KV.findall(rest)}
+        # Only scan key=value pairs in the portion *before* the free-text note, so
+        # a `?a=b` query string or `key=value` inside the note isn't mined as a field.
+        note = _NOTE.search(rest)
+        kv_part = rest[:note.start()] if note else rest
+        kv = {k.lower(): v for k, v in _KV.findall(kv_part)}
         if not kv and "=" not in rest:
             continue   # not a Meraki key=value body
 
@@ -45,8 +49,6 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
         proto = kv.get("protocol") or kv.get("proto")
         if proto:
             proto = proto.split("/")[0].lower()    # "tcp/ip" -> "tcp"
-
-        note = _NOTE.search(rest)
         pat = kv.get("disposition") or kv.get("action")
         if not pat and (pm := _PATTERN.search(rest)):
             pat = pm.group(1)

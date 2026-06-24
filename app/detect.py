@@ -160,7 +160,7 @@ def _first_json_record(text: str) -> Optional[dict]:
     t = text.strip()
     try:
         obj = json.loads(t)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         obj = None
     if obj is not None:
         if isinstance(obj, list):
@@ -177,7 +177,7 @@ def _first_json_record(text: str) -> Optional[dict]:
             continue
         try:
             r = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         if isinstance(r, dict):
             return r

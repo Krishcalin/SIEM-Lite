@@ -118,9 +118,11 @@ def iter_json_records(content: str, *wrapper_keys: str) -> Iterator[dict]:
     text = content.strip()
     if not text:
         return
+    # RecursionError guards against a deeply-nested payload (json's decoder recurses)
+    # exhausting the stack and aborting the whole ingest — treat it as unparseable.
     try:
         obj = json.loads(text)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, RecursionError):
         obj = None
     if obj is not None:
         yield from _unwrap_json(obj, wrapper_keys)
@@ -131,6 +133,6 @@ def iter_json_records(content: str, *wrapper_keys: str) -> Iterator[dict]:
             continue
         try:
             rec = json.loads(line)
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, RecursionError):
             continue
         yield from _unwrap_json(rec, wrapper_keys)

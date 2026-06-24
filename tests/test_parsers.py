@@ -454,6 +454,43 @@ def test_generic_json():
     assert flat.bytes_total == 2048 and flat.event_time.year == 2026
 
 
+def test_generic_json_array_valued_fields():
+    """Array-valued ECS fields (e.g. host.ip: [...]) resolve to their first scalar."""
+    doc = ('{"@timestamp": "2026-06-24T10:00:00Z", '
+           '"source": {"ip": ["45.83.122.7", "10.0.0.1"]}, '
+           '"event": {"action": ["login"]}, "host": {"ip": ["10.20.30.40"]}}')
+    ev = next(generic_json.parse(doc))
+    assert ev.src_ip == "45.83.122.7"      # first scalar of the list
+    assert ev.action == "login"
+
+
+def test_generic_json_deeply_nested_does_not_crash():
+    """A pathologically deep object is skipped, not allowed to blow the stack."""
+    depth = 5000
+    doc = "{" + '"a":{' * depth + '"x":1' + "}" * depth + "}"
+    evs = list(generic_json.parse(doc))     # must not raise RecursionError
+    assert evs == []                        # unparseable bomb is dropped, not crashed
+
+
+def test_generic_json_flatten_depth_cap():
+    """Nesting within json's parse limit but past the flatten cap still maps shallow fields."""
+    doc = ('{"event": {"action": "login"}, '
+           '"a":{"b":{"c":{"d":{"e":{"f":{"g":1}}}}}}}')
+    ev = next(generic_json.parse(doc))      # deep branch ignored, shallow field resolves
+    assert ev.action == "login"
+
+
+def test_meraki_note_query_string_not_mined():
+    """A `key=value` inside the free-text note must not become a parsed field."""
+    line = ("<134>1 2026-06-24T10:00:00Z MX84-CORP urls "
+            "src=10.20.30.40:51000 dst=93.184.216.34:443 "
+            "request: GET https://example.com/?utm=phish&id=9")
+    ev = next(meraki.parse(line))
+    assert ev.src_ip == "10.20.30.40" and ev.dst_ip == "93.184.216.34"
+    assert "utm" not in ev.raw and "id" not in ev.raw   # note's query string ignored
+    assert "example.com" in (ev.message or "")
+
+
 def test_detect_format():
     assert detect_format("t.csv", _read("paloalto_traffic.csv")) == "paloalto_csv"
     assert detect_format("s.log", _read("paloalto_syslog.log")) == "paloalto_syslog"
