@@ -18,7 +18,7 @@ from starlette.concurrency import run_in_threadpool
 from . import api, db, ingest, streaming
 from .config import settings
 from .detect import detect_format
-from .detection import runtime as detection_runtime
+from .detection import correlation, runtime as detection_runtime
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .util import parse_ts
@@ -63,8 +63,13 @@ async def lifespan(app: FastAPI):
     db.init_schema()
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
+    correlator = None
     if settings.detection_enabled:
         detection_runtime.load_and_sync(BASE.parent / "rules")
+        corr_rules = detection_runtime.get_correlation_rules()
+        if corr_rules:
+            correlator = correlation.CorrelationScheduler(
+                corr_rules, settings.correlation_interval)
 
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
@@ -73,9 +78,13 @@ async def lifespan(app: FastAPI):
     receiver = syslog.SyslogReceiver(queue) if settings.syslog_enabled else None
     if receiver is not None:
         await receiver.start()
+    if correlator is not None:
+        await correlator.start()
     try:
         yield
     finally:
+        if correlator is not None:
+            await correlator.stop()
         if receiver is not None:
             await receiver.stop()
         await queue.stop()

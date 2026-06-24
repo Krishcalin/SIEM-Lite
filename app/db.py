@@ -297,6 +297,44 @@ def alert_severity_counts() -> dict:
     return {r["level"]: int(r["n"]) for r in rows}
 
 
+# Columns a correlation rule may filter / group on (whitelist: never f-string
+# user-supplied column names into SQL without this gate).
+_CORR_COLS = {"vendor", "product", "log_type", "severity", "action", "src_ip",
+              "dst_ip", "src_port", "dst_port", "protocol", "app", "user_name",
+              "host_name", "rule_name"}
+_CORR_IP_COLS = {"src_ip", "dst_ip"}
+
+
+def correlate(match: dict, group_by: list[str], window_seconds: int,
+              threshold: int) -> list[dict]:
+    """Aggregate events in the last `window_seconds`, grouped by `group_by`,
+    returning groups with at least `threshold` events. Column names are
+    whitelisted; all values are parameterized."""
+    cols = [c for c in group_by if c in _CORR_COLS]
+    if not cols:
+        return []
+    select = [f"host({c}) AS {c}" if c in _CORR_IP_COLS else c for c in cols]
+    where = ["event_time >= now() - make_interval(secs => %(_win)s)"]
+    p: dict[str, Any] = {"_win": int(window_seconds), "_th": int(threshold)}
+    for i, (col, val) in enumerate(match.items()):
+        if col not in _CORR_COLS:
+            continue
+        key = f"m{i}"
+        if isinstance(val, list):
+            where.append(f"lower({col}::text) = ANY(%({key})s)")
+            p[key] = [str(v).lower() for v in val]
+        else:
+            where.append(f"lower({col}::text) = lower(%({key})s)")
+            p[key] = str(val)
+    where += [f"{c} IS NOT NULL" for c in cols]
+    q = (f"SELECT {', '.join(select)}, count(*) AS n, "
+         f"min(event_time) AS first_seen, max(event_time) AS last_seen "
+         f"FROM events WHERE {' AND '.join(where)} "
+         f"GROUP BY {', '.join(cols)} HAVING count(*) >= %(_th)s")
+    with pool().connection() as conn:
+        return conn.execute(q, p).fetchall()
+
+
 # --------------------------------------------------------------------------- #
 #  Search                                                                      #
 # --------------------------------------------------------------------------- #

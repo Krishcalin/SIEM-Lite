@@ -12,8 +12,10 @@ see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
 parses, normalizes, full-text indexes, and stores events in PostgreSQL with a
 **≥ 3-year retention** policy.
 
-Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion) is
-complete; Phase 2 is a Sigma-based detection/alerting engine.
+Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion) and
+Phase 2 (Sigma-based **detection & alerting**) are complete — ingested events are
+evaluated against detection rules and correlation rules, raising alerts you can
+triage in the UI (`/alerts`).
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -30,14 +32,21 @@ add their own batch lifecycle around it.
  upload (web) ───────────────┐
  POST /api/v1/ingest (key) ──┤─► detect.py ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
  syslog UDP/TCP/TLS ─► queue ┘        ─► pipeline.write_stream ─► normalize.py (dedup + FTS)
-                                       ─► db.insert_events ─► events (month-partitioned, GIN)
-                                       ─► search / export
+                                       ├─► db.insert_events ─► events (month-partitioned, GIN)
+                                       └─► detection engine (per event) ─► alerts ─► /alerts
+ scheduler (every CORRELATION_INTERVAL) ─► correlation rules (SQL over events) ─► alerts
 ```
 
 Live sources (syslog) buffer in a bounded async queue (`streaming.py`) drained by
 writer workers that batch-insert; queue counters are on `GET /health`. One
 normalized schema across all sources; the **full original record is always kept**
 in `events.raw` (jsonb) so nothing is lost and any field stays searchable.
+
+**Detection** (`app/detection/`) runs two ways: per-event rules (Sigma-subset)
+are evaluated inline in `pipeline.write_stream` as events are stored, and
+correlation/threshold rules are evaluated on a schedule by SQL aggregation over
+`events`. Both raise rows in `alerts` (deduped per rule+event / rule+group+window).
+Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement.
 
 ## Repository layout
 
@@ -53,20 +62,25 @@ app/
   pipeline.py    source-agnostic core: parse_events / apply_fallback_time / write_stream
   ingest.py      per-batch orchestration (sha, batch, source tagging) around pipeline
   streaming.py   bounded async ingest queue + batching writer workers (backpressure)
-  db.py          pool, schema/partition mgmt, insert, search, stats, purge, api_keys
+  db.py          pool, schema/partition mgmt, insert, search, stats, purge, api_keys, alerts
   receivers/
     syslog.py    UDP/TCP/TLS syslog receiver -> queue (RFC 6587 framing)
+  detection/
+    engine.py    Sigma-subset evaluator (per-event): flatten, match, condition grammar
+    correlation.py  threshold/window rules over events (SQL) + background scheduler
+    runtime.py   load rules, sync the registry, hold the engine singleton
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
                  aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
                  okta_system_log, github_audit, gitlab_audit  (23 total)
-  templates/     base, dashboard, upload, search, event, admin
+  templates/     base, dashboard, upload, search, event, alerts, alert, admin
   static/style.css
-schema.sql       partitioned events table, FTS + indexes, ingest_batches, api_keys
+rules/           detection + correlation rules (Sigma-subset YAML)
+schema.sql       partitioned events, FTS + indexes, ingest_batches, api_keys, alerts, detection_rules
 samples/         one example file per format (used by tests)
-tests/           test_parsers.py, test_api_auth.py, test_streaming.py, test_syslog.py
-                 (all run with NO database needed)
+tests/           test_parsers, test_api_auth, test_streaming, test_syslog, test_detection,
+                 test_pipeline, test_correlation  (all run with NO database needed)
 docker-compose.yml, Dockerfile, requirements.txt, .env.example
 ```
 
@@ -176,6 +190,17 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
    a stray field value like `SYSTEM` must not trip another vendor's detector).
 4. Add a `samples/` fixture and a test in `tests/test_parsers.py`.
 
+## Adding a detection rule
+
+Drop a YAML file in `rules/`. **Per-event** rules use the Sigma-subset format
+(`detection:` with selections + `condition:`); reference normalized field names
+(`action`, `src_ip`, `user_name`, …) or any `raw` key (case-insensitive), and tag
+with `attack.tNNNN` / `attack.<tactic>`. **Correlation** rules use a `correlation:`
+block (`match` / `group_by` / `window` / `threshold`) over normalized columns.
+Rules are loaded on startup and synced into `detection_rules`; enable/disable from
+the Admin page (applies live). Match logic is unit-tested in `tests/test_detection.py`
+(per-event) and `tests/test_correlation.py` (correlation) — no DB needed.
+
 ## Testing
 
 ```bash
@@ -187,11 +212,14 @@ PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 - `test_api_auth.py` — API-key hashing + header extraction.
 - `test_streaming.py` — ingest-queue grouping, the async worker loop, backpressure drop.
 - `test_syslog.py` — TCP framing (RFC 6587 octet-counting + newline) and format resolution.
+- `test_detection.py` — Sigma-subset matching, condition grammar, the rule library.
+- `test_pipeline.py` — inline detection in `write_stream` (DB inserts mocked).
+- `test_correlation.py` — correlation rule loading, window parsing, alert dedup.
 
-All tests are **DB-free** (the async-queue test mocks the writer). `psycopg` must
-be importable to load `db`/`streaming`, but no live Postgres is needed; full
-DB-integration tests (TestClient + Postgres) run in CI/Docker. Run the suite
-after any parser/detector/pipeline change.
+All tests are **DB-free** (the async-queue and pipeline tests mock the writers).
+`psycopg` must be importable to load `db`/`streaming`, but no live Postgres is
+needed; full DB-integration tests (TestClient + Postgres) run in CI/Docker. Run
+the suite after any parser/detector/pipeline/rule change.
 
 ## Security / ops notes
 

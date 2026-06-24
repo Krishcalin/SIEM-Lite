@@ -21,8 +21,10 @@ retains them in PostgreSQL for **≥ 3 years**.
                                                   search ◄── filters + full-text ◄──┘
 ```
 
-> Being grown toward a Wazuh-like agentless SIEM: Phase 1 (live ingestion) is done;
-> Phase 2 adds a Sigma-based detection/alerting engine.
+> Being grown toward a Wazuh-like agentless SIEM. Live ingestion **and** a
+> Sigma-based **detection & alerting** engine are in place: ingested events are
+> matched against detection + correlation rules, raising alerts you triage at
+> `/alerts`.
 
 ## Features
 
@@ -118,6 +120,44 @@ Messages flow through a bounded async queue with writer workers that batch-inser
 so a burst never blocks the receiver; queue counters are on `GET /health`. TCP
 framing supports both octet-counting (RFC 6587) and newline-delimited streams.
 
+## Detection & alerting
+
+Every ingested event is evaluated against **detection rules**, and a background
+scheduler runs **correlation rules** over the event store. Matches raise **alerts**
+you can filter, drill into (down to the originating event), and triage
+(acknowledge / close) at **`/alerts`**; open-alert counts show on the dashboard.
+
+Rules are YAML files in `rules/` (a Sigma-compatible subset), tagged with MITRE
+ATT&CK, and enable/disable from the Admin page (applies immediately):
+
+```yaml
+# per-event rule
+title: RDP Connection Allowed
+id: lo-rdp-allowed
+level: medium
+detection:
+  selection: { dst_port: 3389 }
+  permitted: { action: [allow, accept] }
+  condition: selection and permitted
+tags: [attack.t1021.001, attack.lateral_movement]
+```
+```yaml
+# correlation (threshold) rule — e.g. brute force
+title: Brute Force - Failed Logon Burst
+id: lo-corr-bruteforce-logon
+level: high
+correlation:
+  match: { action: failed-logon }
+  group_by: [src_ip]
+  window: 5m
+  threshold: 5
+tags: [attack.t1110, attack.credential_access]
+```
+
+Ships with seed rules for failed-logon brute force, denied-connection floods,
+RDP exposure, ingress-tool transfer, event-log clearing, and security-tool
+tampering. Detection can be turned off with `DETECTION_ENABLED=false`.
+
 ## How to export the logs to upload
 
 | Source | How to export | Upload as |
@@ -157,6 +197,8 @@ explicitly in the upload form.
 | `PAGE_SIZE` | `100` | Search results per page |
 | `MAX_UPLOAD_MB` | `512` | Reject larger uploads / API payloads |
 | `AUTO_PURGE` | `false` | If true, drop partitions older than `RETENTION_YEARS` on startup |
+| `DETECTION_ENABLED` | `true` | Evaluate detection + correlation rules and raise alerts |
+| `CORRELATION_INTERVAL` | `60` | Seconds between correlation-rule evaluations |
 | `INGEST_QUEUE_MAX` | `10000` | Async ingest queue capacity (live sources) |
 | `INGEST_WORKERS` | `2` | Writer workers draining the queue |
 | `INGEST_FLUSH_MAX` / `INGEST_FLUSH_MS` | `2000` / `1000` | Flush a buffer at N events or N ms |
@@ -182,6 +224,7 @@ Log-Parser-Storage/
 │   ├── ingest.py           # per-batch orchestration (sha, batch, source tagging)
 │   ├── streaming.py        # bounded async ingest queue + batching writer workers
 │   ├── receivers/syslog.py # UDP/TCP/TLS syslog receiver → queue
+│   ├── detection/          # engine.py (per-event Sigma-subset), correlation.py, runtime.py
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -190,10 +233,11 @@ Log-Parser-Storage/
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
-│   ├── templates/          # dashboard, upload, search, event, admin
+│   ├── templates/          # dashboard, upload, search, event, alerts, alert, admin
 │   └── static/style.css
+├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── samples/                # one example file per format
-└── tests/                  # test_parsers, test_api_auth, test_streaming, test_syslog (no DB needed)
+└── tests/                  # test_{parsers,api_auth,streaming,syslog,detection,pipeline,correlation}
 ```
 
 ## Tests
@@ -204,8 +248,10 @@ PYTHONPATH=. python -m pytest tests/ -q       # PowerShell: $env:PYTHONPATH="."
 ```
 
 The suite covers parsers + auto-detection (over the bundled samples), API-key
-auth, the async ingest queue (grouping, worker loop, backpressure), and syslog
-TCP framing. It does **not** require a database (the queue test mocks the writer).
+auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
+framing, the detection engine (Sigma-subset matching + condition grammar),
+inline detection in the pipeline, and correlation-rule loading/dedup. It does
+**not** require a database (the queue and pipeline tests mock the writers).
 
 ## Data model & retention notes
 

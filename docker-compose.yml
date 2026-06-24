@@ -26,6 +26,9 @@ services:
       PAGE_SIZE: "100"
       MAX_UPLOAD_MB: "512"
       AUTO_PURGE: "false"
+      # Detection & alerting (on by default).
+      DETECTION_ENABLED: "true"
+      CORRELATION_INTERVAL: "60"
       # Live syslog ingestion (off by default). Set SYSLOG_ENABLED=true to listen.
       SYSLOG_ENABLED: "false"
       SYSLOG_UDP_PORT: "5514"

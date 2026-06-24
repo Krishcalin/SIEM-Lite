@@ -1,0 +1,20 @@
+title: Denied Connection Flood from Source
+id: lo-corr-conn-flood
+level: medium
+description: A single source produced 20+ denied/blocked/dropped connections in five minutes — scanning or a blocked attack.
+correlation:
+  match:
+    action:
+      - deny
+      - denied
+      - drop
+      - dropped
+      - blocked
+      - block
+  group_by:
+    - src_ip
+  window: 5m
+  threshold: 20
+tags:
+  - attack.t1046
+  - attack.discovery
