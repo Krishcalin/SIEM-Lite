@@ -1,14 +1,14 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="LogVault" width="800"/>
+  <img src="docs/banner.svg" alt="LogOcean" width="800"/>
 </p>
 
-# LogVault
+# LogOcean
 
 [![tests](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml/badge.svg)](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml)
 
 A self-hosted **log parser, indexer, and long-term store** for **network, endpoint,
 cloud, and identity** logs from many vendors. You manually export logs from each
-console and upload them through a web UI; LogVault parses and normalizes them, indexes
+console and upload them through a web UI; LogOcean parses and normalizes them, indexes
 them for full-text + structured search, and retains them in PostgreSQL for **≥ 3 years**.
 
 ```
@@ -80,7 +80,7 @@ python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activ
 pip install -r requirements.txt
 
 # point at a Postgres you control:
-export DB_DSN="postgresql://logvault:logvault@localhost:5432/logvault"   # PowerShell: $env:DB_DSN=...
+export DB_DSN="postgresql://logocean:logocean@localhost:5432/logocean"   # PowerShell: $env:DB_DSN=...
 uvicorn app.main:app --reload
 ```
 
@@ -120,7 +120,7 @@ explicitly in the upload form.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `DB_DSN` | `postgresql://logvault:logvault@localhost:5432/logvault` | PostgreSQL connection |
+| `DB_DSN` | `postgresql://logocean:logocean@localhost:5432/logocean` | PostgreSQL connection |
 | `RETENTION_YEARS` | `3` | Retention floor; purge cannot go below this |
 | `PAGE_SIZE` | `100` | Search results per page |
 | `MAX_UPLOAD_MB` | `512` | Reject larger uploads |

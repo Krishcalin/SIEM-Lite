@@ -1,3 +1,3 @@
-"""LogVault — parse, index, and store Palo Alto NGFW & CrowdStrike EDR logs."""
+"""LogOcean — parse, index, and store multi-source security logs."""
 
 __version__ = "1.0.0"

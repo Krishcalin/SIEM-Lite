@@ -1,10 +1,10 @@
-# CLAUDE.md — SIEM-Lite / LogVault
+# CLAUDE.md — SIEM-Lite / LogOcean
 
 Guidance for Claude Code (and other agents) working in this repository.
 
 ## What this is
 
-**LogVault** — a self-hosted log parser, indexer, and long-term store for
+**LogOcean** — a self-hosted log parser, indexer, and long-term store for
 **network, endpoint, cloud, and identity** logs from many vendors (**23 parsers**,
 see `app/parsers/`). The operator manually exports logs from each console and
 uploads them through a web UI; the app parses, normalizes, full-text indexes, and

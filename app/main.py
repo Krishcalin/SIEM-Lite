@@ -1,8 +1,9 @@
-"""LogVault FastAPI application: dashboard, upload, search, event detail, admin."""
+"""LogOcean FastAPI application: dashboard, upload, search, event detail, admin."""
 from __future__ import annotations
 
 import csv
 import io
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -12,6 +13,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.concurrency import run_in_threadpool
 
 from . import db, ingest
 from .config import settings
@@ -19,7 +21,39 @@ from .detect import detect_format
 from .parsers import FORMAT_LABELS
 from .util import parse_ts
 
+log = logging.getLogger("logocean")
 BASE = Path(__file__).resolve().parent
+
+
+async def _read_capped(file: UploadFile, limit: int) -> Optional[bytes]:
+    """Read an upload in 1 MB chunks, aborting once it exceeds `limit` bytes.
+
+    Returns the bytes, or None if the file is over the limit. Bounds peak memory
+    to ~limit + one chunk instead of buffering an arbitrarily large body first.
+    """
+    chunks: list[bytes] = []
+    total = 0
+    while True:
+        chunk = await file.read(1024 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        if total > limit:
+            return None
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+# Leading characters a spreadsheet may interpret as a formula (CSV injection).
+_CSV_FORMULA_LEAD = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _csv_safe(value) -> str:
+    """Neutralize spreadsheet formula injection in exported CSV cells."""
+    s = "" if value is None else str(value)
+    if s and s[0] in _CSV_FORMULA_LEAD:
+        return "'" + s
+    return s
 
 
 @asynccontextmanager
@@ -30,7 +64,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="LogVault", lifespan=lifespan)
+app = FastAPI(title="LogOcean", lifespan=lifespan)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.globals["format_labels"] = FORMAT_LABELS
@@ -61,12 +95,11 @@ def upload_form(request: Request):
 
 @app.post("/upload", response_class=HTMLResponse)
 async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form("auto")):
-    raw = await file.read()
-    size_mb = len(raw) / (1024 * 1024)
-    if size_mb > settings.max_upload_mb:
+    raw = await _read_capped(file, settings.max_upload_mb * 1024 * 1024)
+    if raw is None:
         return templates.TemplateResponse("upload.html", _ctx(
             request, result=None,
-            error=f"File is {size_mb:.0f} MB, over the {settings.max_upload_mb} MB limit."))
+            error=f"File exceeds the {settings.max_upload_mb} MB limit."))
 
     content = raw.decode("utf-8", "replace")
     chosen = fmt
@@ -78,10 +111,13 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
                 error="Could not auto-detect the format. Please pick one explicitly."))
 
     try:
-        result = ingest.ingest(file.filename, content, chosen)
-    except Exception as exc:  # noqa: BLE001
+        # Parsing + DB I/O is blocking and CPU-bound — keep it off the event loop.
+        result = await run_in_threadpool(ingest.ingest, file.filename, content, chosen)
+    except Exception:  # noqa: BLE001
+        log.exception("ingest failed for %r (format=%s)", file.filename, chosen)
         return templates.TemplateResponse("upload.html", _ctx(
-            request, result=None, error=f"Ingest failed: {exc}"))
+            request, result=None,
+            error="Ingest failed. The file could not be processed — see server logs for details."))
     return templates.TemplateResponse("upload.html", _ctx(request, result=result, error=None))
 
 
@@ -138,11 +174,11 @@ def search_csv(request: Request):
         w.writerow(cols)
         yield buf.getvalue(); buf.seek(0); buf.truncate(0)
         for row in db.search_iter(f):
-            w.writerow([row.get(c, "") for c in cols])
+            w.writerow([_csv_safe(row.get(c, "")) for c in cols])
             yield buf.getvalue(); buf.seek(0); buf.truncate(0)
 
     return StreamingResponse(gen(), media_type="text/csv", headers={
-        "Content-Disposition": "attachment; filename=logvault_export.csv"})
+        "Content-Disposition": "attachment; filename=logocean_export.csv"})
 
 
 @app.get("/event/{event_id}", response_class=HTMLResponse)

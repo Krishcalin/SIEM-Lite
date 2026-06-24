@@ -1,5 +1,5 @@
 -- ============================================================================
---  LogVault schema — partitioned event store, full-text index, ingest batches.
+--  LogOcean schema — partitioned event store, full-text index, ingest batches.
 --  Idempotent: safe to run on every startup.
 -- ============================================================================
 

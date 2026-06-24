@@ -2,15 +2,18 @@ services:
   db:
     image: postgres:16
     environment:
-      POSTGRES_USER: logvault
-      POSTGRES_PASSWORD: logvault
-      POSTGRES_DB: logvault
+      POSTGRES_USER: logocean
+      POSTGRES_PASSWORD: logocean
+      POSTGRES_DB: logocean
     volumes:
       - pgdata:/var/lib/postgresql/data
-    ports:
-      - "5432:5432"
+    # The DB is only reached by the app over the internal compose network; it is
+    # deliberately NOT published to the host. For local DB access, uncomment and
+    # bind to loopback only:
+    # ports:
+    #   - "127.0.0.1:5432:5432"
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U logvault"]
+      test: ["CMD-SHELL", "pg_isready -U logocean"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -18,7 +21,7 @@ services:
   app:
     build: .
     environment:
-      DB_DSN: postgresql://logvault:logvault@db:5432/logvault
+      DB_DSN: postgresql://logocean:logocean@db:5432/logocean
       RETENTION_YEARS: "3"
       PAGE_SIZE: "100"
       MAX_UPLOAD_MB: "512"

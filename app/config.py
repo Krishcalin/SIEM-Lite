@@ -11,7 +11,7 @@ def _bool(name: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
-    db_dsn: str = os.getenv("DB_DSN", "postgresql://logvault:logvault@localhost:5432/logvault")
+    db_dsn: str = os.getenv("DB_DSN", "postgresql://logocean:logocean@localhost:5432/logocean")
     retention_years: int = int(os.getenv("RETENTION_YEARS", "3"))
     page_size: int = int(os.getenv("PAGE_SIZE", "100"))
     max_upload_mb: int = int(os.getenv("MAX_UPLOAD_MB", "512"))
