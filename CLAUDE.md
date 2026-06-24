@@ -5,10 +5,10 @@ Guidance for Claude Code (and other agents) working in this repository.
 ## What this is
 
 **LogVault** — a self-hosted log parser, indexer, and long-term store for
-**Palo Alto NGFW** and **CrowdStrike Falcon EDR** logs. The operator manually
-exports logs from each vendor console and uploads them through a web UI; the app
-parses, normalizes, full-text indexes, and stores them in PostgreSQL with a
-**≥ 3-year retention** policy.
+**network, endpoint, cloud, and identity** logs from many vendors (**23 parsers**,
+see `app/parsers/`). The operator manually exports logs from each console and
+uploads them through a web UI; the app parses, normalizes, full-text indexes, and
+stores them in PostgreSQL with a **≥ 3-year retention** policy.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -23,7 +23,7 @@ upload (web) ─► detect.py (format) ─► parsers/<vendor>_<fmt>.py ─► N
             ─► events (month-partitioned) + search_tsv (GIN) ─► search / export
 ```
 
-One normalized schema for both vendors; the **full original record is always kept**
+One normalized schema across all sources; the **full original record is always kept**
 in `events.raw` (jsonb) so nothing is lost and any field stays searchable.
 
 ## Repository layout
