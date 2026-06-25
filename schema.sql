@@ -139,3 +139,19 @@ CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (level);
 CREATE INDEX IF NOT EXISTS alerts_rule_idx    ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);
 CREATE INDEX IF NOT EXISTS alerts_srcip_idx   ON alerts (src_ip);
+
+-- Audit trail of agentless response actions taken when an alert matched a
+-- playbook. revert_at is reserved for future stateful auto-revert.
+CREATE TABLE IF NOT EXISTS response_actions (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    alert_id    bigint,
+    playbook_id text        NOT NULL,
+    action_type text        NOT NULL,   -- block_ip | disable_user | log | ...
+    target      text,                   -- the IP / user / host acted on
+    status      text        NOT NULL,   -- success | failed | skipped
+    detail      text,
+    revert_at   timestamptz
+);
+CREATE INDEX IF NOT EXISTS response_created_idx ON response_actions (created_at DESC);
+CREATE INDEX IF NOT EXISTS response_alert_idx   ON response_actions (alert_id);

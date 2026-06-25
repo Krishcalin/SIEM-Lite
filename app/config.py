@@ -22,6 +22,28 @@ class Settings:
     # How often (seconds) the scheduler evaluates correlation (threshold) rules.
     correlation_interval: int = int(os.getenv("CORRELATION_INTERVAL", "60"))
 
+    # Notifications: send newly-raised alerts (>= min level) to channels.
+    notify_enabled: bool = _bool("NOTIFY_ENABLED", False)
+    notify_min_level: str = os.getenv("NOTIFY_MIN_LEVEL", "high").lower()
+    notify_queue_max: int = int(os.getenv("NOTIFY_QUEUE_MAX", "1000"))
+    # Webhook channel (Slack / Teams / Discord / generic incoming webhook or SOAR).
+    webhook_url: str = os.getenv("WEBHOOK_URL", "")
+    webhook_style: str = os.getenv("WEBHOOK_STYLE", "slack").lower()   # slack | json
+    # Email channel (SMTP). Needs host + from + to (comma-separated) to activate.
+    smtp_host: str = os.getenv("SMTP_HOST", "")
+    smtp_port: int = int(os.getenv("SMTP_PORT", "587"))
+    smtp_user: str = os.getenv("SMTP_USER", "")
+    smtp_password: str = os.getenv("SMTP_PASSWORD", "")
+    smtp_from: str = os.getenv("SMTP_FROM", "")
+    smtp_to: str = os.getenv("SMTP_TO", "")
+    smtp_tls: bool = _bool("SMTP_TLS", True)
+
+    # Agentless response: run playbooks on matching alerts; webhook actions POST
+    # to your automation/SOAR endpoint. `log` actions need no endpoint.
+    response_enabled: bool = _bool("RESPONSE_ENABLED", False)
+    response_webhook_url: str = os.getenv("RESPONSE_WEBHOOK_URL", "")
+    response_queue_max: int = int(os.getenv("RESPONSE_QUEUE_MAX", "1000"))
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

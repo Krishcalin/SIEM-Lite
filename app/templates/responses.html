@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+{% block title %}Responses — LogOcean{% endblock %}
+{% block body %}
+<h1>Response actions</h1>
+<p class="muted">Agentless actions taken by playbooks when an alert matched. Webhook
+   actions POST the intent to your automation/SOAR endpoint; <code>log</code> actions
+   only record here.</p>
+
+<table class="results">
+  <tr>
+    <th>Time (UTC)</th><th>Playbook</th><th>Action</th><th>Target</th>
+    <th>Status</th><th>Detail</th><th>Alert</th>
+  </tr>
+  {% for r in rows %}
+  <tr>
+    <td class="nowrap">{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td>{{ r.playbook_id }}</td>
+    <td>{{ r.action_type }}</td>
+    <td class="nowrap">{{ r.target or '—' }}</td>
+    <td><span class="badge {{ 'done' if r.status == 'success' else 'error' if r.status == 'failed' else 'pending' }}">{{ r.status }}</span></td>
+    <td class="msg">{{ r.detail or '' }}</td>
+    <td>{% if r.alert_id %}<a href="/alert/{{ r.alert_id }}">#{{ r.alert_id }}</a>{% else %}—{% endif %}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="7" class="muted">No response actions yet.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

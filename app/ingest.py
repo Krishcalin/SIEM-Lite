@@ -11,7 +11,7 @@ from __future__ import annotations
 import hashlib
 from typing import Optional
 
-from . import db, pipeline
+from . import alert_actions, db, pipeline
 
 _VENDOR_OF = {
     "paloalto_csv": "paloalto", "paloalto_syslog": "paloalto",
@@ -31,21 +31,22 @@ def ingest(content: str, fmt: str, *, filename: Optional[str] = None,
 
     with db.pool().connection() as conn:
         try:
-            total = pipeline.write_stream(conn, events, batch_id)
+            result = pipeline.write_stream(conn, events, batch_id)
             conn.commit()
         except Exception as exc:  # noqa: BLE001 — record failure on the batch, then re-raise
             conn.rollback()
             db.update_batch(batch_id, status="error", notes=str(exc)[:500])
             raise
+    alert_actions.dispatch(result.alerts)  # after commit: notify + run response playbooks
 
     inserted = db.count_batch_rows(batch_id)
-    duplicates = max(total - inserted, 0)
-    db.update_batch(batch_id, status="done", total_rows=total, inserted_rows=inserted,
+    duplicates = max(result.total - inserted, 0)
+    db.update_batch(batch_id, status="done", total_rows=result.total, inserted_rows=inserted,
                     duplicate_rows=duplicates, error_rows=0)
 
     return {
         "batch_id": batch_id, "filename": filename, "format": fmt,
         "vendor": _VENDOR_OF.get(fmt), "sha256": sha, "source_type": source_type,
-        "total": total, "inserted": inserted, "duplicates": duplicates, "errors": 0,
+        "total": result.total, "inserted": inserted, "duplicates": duplicates, "errors": 0,
         "already_ingested": bool(prior),
     }

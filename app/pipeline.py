@@ -9,13 +9,18 @@ a stream of NormalizedEvents into stored rows.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Iterable, Iterator, Optional
+from typing import Iterable, Iterator, NamedTuple, Optional
 
-from . import db
+from . import alert_actions, db
 from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
 from .normalize import dedup_hash
 from .parsers import PARSERS
+
+
+class WriteResult(NamedTuple):
+    total: int                 # events seen (inserted-or-deduped)
+    alerts: list               # newly-raised alerts (empty unless notifications active)
 
 # Rows per INSERT batch. One executemany per chunk keeps memory flat on big files.
 CHUNK = 5000
@@ -41,19 +46,28 @@ def apply_fallback_time(evt: NormalizedEvent, fallback: datetime) -> NormalizedE
 
 
 def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
-                 fallback: Optional[datetime] = None) -> int:
+                 fallback: Optional[datetime] = None) -> WriteResult:
     """Insert `events` (chunked) into `batch_id` on an open connection.
 
     The caller owns the transaction (commit/rollback) and the batch lifecycle.
-    Returns the number of events seen (inserted-or-deduped); the count actually
-    stored is `db.count_batch_rows(batch_id)` since ON CONFLICT hides dedup at
-    the SQL layer. `fallback` (default: now, UTC) stamps events without a time.
+    Returns a WriteResult: `total` events seen (inserted-or-deduped; the count
+    actually stored is `db.count_batch_rows(batch_id)` since ON CONFLICT hides
+    dedup) and `alerts`, the newly-raised alerts — gathered only when a
+    notification dispatcher is active, and dispatched by the caller AFTER commit.
+    `fallback` (default: now, UTC) stamps events without a time.
     """
     fb = fallback or datetime.now(timezone.utc)
     engine = detruntime.get_engine()           # None if detection disabled/not loaded
+    track_alerts = alert_actions.active()
     total = 0
     chunk: list[NormalizedEvent] = []
-    alerts: list[dict] = []
+    pending: list[dict] = []
+    new_alerts: list[dict] = []
+
+    def flush() -> None:
+        db.insert_events(conn, chunk, batch_id)
+        new_alerts.extend(db.insert_alerts(conn, pending, return_inserted=track_alerts))
+
     for evt in events:
         total += 1
         apply_fallback_time(evt, fb)
@@ -62,13 +76,11 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
             matched = engine.evaluate_event(evt)
             if matched:
                 dh = dedup_hash(evt)           # same identity used for the event row
-                alerts.extend(detengine.alert_from_match(r, evt, dh, batch_id)
-                              for r in matched)
+                pending.extend(detengine.alert_from_match(r, evt, dh, batch_id)
+                               for r in matched)
         if len(chunk) >= CHUNK:
-            db.insert_events(conn, chunk, batch_id)
-            db.insert_alerts(conn, alerts); alerts = []
-            chunk = []
-    if chunk:
-        db.insert_events(conn, chunk, batch_id)
-    db.insert_alerts(conn, alerts)
-    return total
+            flush()
+            chunk, pending = [], []
+    if chunk or pending:
+        flush()
+    return WriteResult(total, new_alerts)

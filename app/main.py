@@ -15,12 +15,13 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, db, ingest, streaming
+from . import api, db, ingest, notify, streaming
 from .config import settings
 from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
+from .response import engine as response_engine
 from .util import parse_ts
 
 log = logging.getLogger("logocean")
@@ -71,6 +72,26 @@ async def lifespan(app: FastAPI):
             correlator = correlation.CorrelationScheduler(
                 corr_rules, settings.correlation_interval)
 
+    dispatcher = None
+    if settings.notify_enabled:
+        dispatcher = notify.build_dispatcher()
+        if dispatcher.channels:
+            dispatcher.start()
+            notify.set_dispatcher(dispatcher)
+        else:
+            log.warning("NOTIFY_ENABLED is set but no channels are configured")
+            dispatcher = None
+
+    responder = None
+    if settings.response_enabled:
+        responder = response_engine.build_engine(BASE.parent / "playbooks")
+        if responder.playbooks:
+            responder.start()
+            response_engine.set_engine(responder)
+        else:
+            log.warning("RESPONSE_ENABLED is set but no playbooks were found")
+            responder = None
+
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
     await queue.start()
@@ -89,6 +110,12 @@ async def lifespan(app: FastAPI):
             await receiver.stop()
         await queue.stop()
         streaming.set_queue(None)
+        if dispatcher is not None:
+            dispatcher.stop()
+            notify.set_dispatcher(None)
+        if responder is not None:
+            responder.stop()
+            response_engine.set_engine(None)
 
 
 app = FastAPI(title="LogOcean", lifespan=lifespan)
@@ -106,7 +133,12 @@ def _ctx(request: Request, **kw):
 @app.get("/health")
 def health():
     q = streaming.get_queue()
-    return {"status": "ok", "ingest_queue": q.stats.as_dict() if q else None}
+    d = notify.get_dispatcher()
+    r = response_engine.get_engine()
+    return {"status": "ok",
+            "ingest_queue": q.stats.as_dict() if q else None,
+            "notifications": d.stats() if d else None,
+            "responses": r.stats() if r else None}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -254,7 +286,8 @@ def alert_detail(request: Request, alert_id: int):
     if a is None:
         return HTMLResponse("Alert not found", status_code=404)
     event_id = db.event_id_for(a["dedup_hash"], a["event_time"])
-    return templates.TemplateResponse("alert.html", _ctx(request, a=a, event_id=event_id))
+    return templates.TemplateResponse("alert.html", _ctx(
+        request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id)))
 
 
 @app.post("/alert/{alert_id}/status")
@@ -262,6 +295,12 @@ def alert_set_status(alert_id: int, status: str = Form(...)):
     if status in ("open", "ack", "closed"):
         db.set_alert_status(alert_id, status)
     return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+@app.get("/responses", response_class=HTMLResponse)
+def responses(request: Request):
+    return templates.TemplateResponse("responses.html", _ctx(
+        request, rows=db.recent_responses(200)))
 
 
 # --------------------------------------------------------------------------- #

@@ -237,12 +237,25 @@ ON CONFLICT (rule_id, dedup_hash) DO NOTHING
 """
 
 
-def insert_alerts(conn, alerts: list[dict]) -> None:
-    """Insert alerts within the caller's transaction (idempotent per rule+event)."""
+def insert_alerts(conn, alerts: list[dict], return_inserted: bool = False) -> list[dict]:
+    """Insert alerts within the caller's transaction (idempotent per rule+event).
+
+    With `return_inserted`, insert row-by-row with RETURNING and return only the
+    alerts that were actually new (ON CONFLICT skips dedup) — so callers can
+    notify on newly-raised alerts only. Otherwise use a fast executemany."""
     if not alerts:
-        return
+        return []
+    if not return_inserted:
+        with conn.cursor() as cur:
+            cur.executemany(_ALERT_INSERT, alerts)
+        return []
+    new: list[dict] = []
     with conn.cursor() as cur:
-        cur.executemany(_ALERT_INSERT, alerts)
+        for a in alerts:
+            row = cur.execute(_ALERT_INSERT + " RETURNING id", a).fetchone()
+            if row:  # None when the ON CONFLICT clause skipped a duplicate
+                new.append({**a, "id": row["id"]})
+    return new
 
 
 def _alert_where(f: dict) -> tuple[str, dict]:
@@ -303,6 +316,30 @@ _CORR_COLS = {"vendor", "product", "log_type", "severity", "action", "src_ip",
               "dst_ip", "src_port", "dst_port", "protocol", "app", "user_name",
               "host_name", "rule_name"}
 _CORR_IP_COLS = {"src_ip", "dst_ip"}
+
+
+def insert_response_action(rec: dict) -> None:
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO response_actions "
+            "(alert_id, playbook_id, action_type, target, status, detail, revert_at) "
+            "VALUES (%(alert_id)s, %(playbook_id)s, %(action_type)s, %(target)s, "
+            "%(status)s, %(detail)s, %(revert_at)s)", rec)
+        conn.commit()
+
+
+def recent_responses(limit: int = 200) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM response_actions ORDER BY created_at DESC LIMIT %s",
+            (limit,)).fetchall()
+
+
+def responses_for_alert(alert_id: int) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM response_actions WHERE alert_id = %s ORDER BY created_at DESC",
+            (alert_id,)).fetchall()
 
 
 def correlate(match: dict, group_by: list[str], window_seconds: int,

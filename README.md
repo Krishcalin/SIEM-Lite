@@ -21,10 +21,11 @@ retains them in PostgreSQL for **≥ 3 years**.
                                                   search ◄── filters + full-text ◄──┘
 ```
 
-> Being grown toward a Wazuh-like agentless SIEM. Live ingestion **and** a
-> Sigma-based **detection & alerting** engine are in place: ingested events are
-> matched against detection + correlation rules, raising alerts you triage at
-> `/alerts`.
+> Being grown toward a Wazuh-like agentless SIEM. Live ingestion, a Sigma-based
+> **detection & alerting** engine, and **notifications + agentless response** are
+> in place: ingested events are matched against detection + correlation rules,
+> raising alerts you triage at `/alerts`; new alerts are pushed to your channels
+> and can trigger response playbooks (audited at `/responses`).
 
 ## Features
 
@@ -158,6 +159,29 @@ Ships with seed rules for failed-logon brute force, denied-connection floods,
 RDP exposure, ingress-tool transfer, event-log clearing, and security-tool
 tampering. Detection can be turned off with `DETECTION_ENABLED=false`.
 
+### Notifications & agentless response
+
+Newly-raised alerts at or above `NOTIFY_MIN_LEVEL` are delivered to **notification
+channels** — a webhook (Slack/Teams/Discord/generic, `WEBHOOK_URL`) and/or email
+(`SMTP_*`) — by a background worker, so slow delivery never blocks ingest. Set
+`NOTIFY_ENABLED=true` and configure a channel.
+
+Alerts can also trigger **response playbooks** (`playbooks/*.yml`). A playbook
+matches alerts (by rule id / severity / technique) and runs an **agentless**
+action: a structured webhook POST to your automation/SOAR/firewall/IAM endpoint
+(`RESPONSE_WEBHOOK_URL`) carrying the intent, or a `log` action that only records.
+LogOcean stays agentless and lets your platform enforce. Every action is audited
+at **`/responses`** and on the alert's page.
+
+```yaml
+# playbooks/block_bruteforce_source.yml
+title: Block brute-force source IP
+id: pb-block-bruteforce
+match: { rule_id: [lo-corr-bruteforce-logon], min_level: high }
+action: { type: block_ip, target: src_ip }   # POSTs {action, target, alert} to your SOAR
+revert_after: 600
+```
+
 ## How to export the logs to upload
 
 | Source | How to export | Upload as |
@@ -199,6 +223,10 @@ explicitly in the upload form.
 | `AUTO_PURGE` | `false` | If true, drop partitions older than `RETENTION_YEARS` on startup |
 | `DETECTION_ENABLED` | `true` | Evaluate detection + correlation rules and raise alerts |
 | `CORRELATION_INTERVAL` | `60` | Seconds between correlation-rule evaluations |
+| `NOTIFY_ENABLED` / `NOTIFY_MIN_LEVEL` | `false` / `high` | Send new alerts (>= level) to channels |
+| `WEBHOOK_URL` / `WEBHOOK_STYLE` | — / `slack` | Notification webhook (Slack-text or full JSON) |
+| `SMTP_HOST` … `SMTP_TO` | — | Email notification channel (host + from + to to activate) |
+| `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
 | `INGEST_QUEUE_MAX` | `10000` | Async ingest queue capacity (live sources) |
 | `INGEST_WORKERS` | `2` | Writer workers draining the queue |
 | `INGEST_FLUSH_MAX` / `INGEST_FLUSH_MS` | `2000` / `1000` | Flush a buffer at N events or N ms |
@@ -225,6 +253,9 @@ Log-Parser-Storage/
 │   ├── streaming.py        # bounded async ingest queue + batching writer workers
 │   ├── receivers/syslog.py # UDP/TCP/TLS syslog receiver → queue
 │   ├── detection/          # engine.py (per-event Sigma-subset), correlation.py, runtime.py
+│   ├── alert_actions.py    # fan new alerts to notifications + response
+│   ├── notify/             # webhook + email channels, background dispatcher
+│   ├── response/           # agentless response playbooks + audit log
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -236,8 +267,10 @@ Log-Parser-Storage/
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, admin
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
+├── playbooks/              # agentless response playbooks
 ├── samples/                # one example file per format
-└── tests/                  # test_{parsers,api_auth,streaming,syslog,detection,pipeline,correlation}
+└── tests/                  # test_{parsers,api_auth,streaming,syslog,detection,pipeline,
+                            #        correlation,notify,response}
 ```
 
 ## Tests
@@ -250,8 +283,9 @@ PYTHONPATH=. python -m pytest tests/ -q       # PowerShell: $env:PYTHONPATH="."
 The suite covers parsers + auto-detection (over the bundled samples), API-key
 auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
 framing, the detection engine (Sigma-subset matching + condition grammar),
-inline detection in the pipeline, and correlation-rule loading/dedup. It does
-**not** require a database (the queue and pipeline tests mock the writers).
+inline detection in the pipeline, correlation-rule loading/dedup, notification
+routing + dispatcher, and response playbook matching/execution. It does **not**
+require a database (the queue, pipeline, and worker tests mock the writers).
 
 ## Data model & retention notes
 

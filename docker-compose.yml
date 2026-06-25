@@ -29,6 +29,10 @@ services:
       # Detection & alerting (on by default).
       DETECTION_ENABLED: "true"
       CORRELATION_INTERVAL: "60"
+      # Notifications + agentless response (off by default). Configure via .env —
+      # see .env.example (NOTIFY_*, WEBHOOK_URL, SMTP_*, RESPONSE_*).
+      NOTIFY_ENABLED: "false"
+      RESPONSE_ENABLED: "false"
       # Live syslog ingestion (off by default). Set SYSLOG_ENABLED=true to listen.
       SYSLOG_ENABLED: "false"
       SYSLOG_UDP_PORT: "5514"

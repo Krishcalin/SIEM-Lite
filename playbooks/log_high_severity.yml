@@ -1,0 +1,9 @@
+title: Record high-severity alerts
+id: pb-log-high
+description: >
+  Audit-log every high/critical alert as a response action. The `log` action needs
+  no external endpoint, so it works out of the box and demonstrates the response trail.
+match:
+  min_level: high
+action:
+  type: log

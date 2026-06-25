@@ -12,10 +12,12 @@ see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
 parses, normalizes, full-text indexes, and stores events in PostgreSQL with a
 **≥ 3-year retention** policy.
 
-Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion) and
-Phase 2 (Sigma-based **detection & alerting**) are complete — ingested events are
-evaluated against detection rules and correlation rules, raising alerts you can
-triage in the UI (`/alerts`).
+Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion),
+Phase 2 (Sigma-based **detection & alerting**), and Phase 3 (**notifications &
+agentless response**) are complete — ingested events are evaluated against
+detection + correlation rules, raising alerts you triage in the UI (`/alerts`);
+newly-raised alerts are sent to notification channels and can trigger response
+playbooks (audited at `/responses`).
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -48,6 +50,13 @@ correlation/threshold rules are evaluated on a schedule by SQL aggregation over
 `events`. Both raise rows in `alerts` (deduped per rule+event / rule+group+window).
 Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement.
 
+**Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
+post-commit via `insert_alerts(return_inserted=True)`) to two background workers:
+`notify` (webhook/email channels, filtered by `NOTIFY_MIN_LEVEL`) and `response`
+(agentless playbooks in `playbooks/*.yml` — a webhook POST to your automation/SOAR
+endpoint or a `log` action, audited in `response_actions`). Both run on their own
+threads so slow network I/O never blocks ingest.
+
 ## Repository layout
 
 ```
@@ -69,6 +78,9 @@ app/
     engine.py    Sigma-subset evaluator (per-event): flatten, match, condition grammar
     correlation.py  threshold/window rules over events (SQL) + background scheduler
     runtime.py   load rules, sync the registry, hold the engine singleton
+  alert_actions.py  fan newly-raised alerts to notifications + response
+  notify/        channels.py (webhook/email) + dispatcher.py (background thread)
+  response/      engine.py — agentless playbooks + audit log (background thread)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
@@ -77,10 +89,11 @@ app/
   templates/     base, dashboard, upload, search, event, alerts, alert, admin
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
-schema.sql       partitioned events, FTS + indexes, ingest_batches, api_keys, alerts, detection_rules
+playbooks/       agentless response playbooks (match + action YAML)
+schema.sql       events, ingest_batches, api_keys, alerts, detection_rules, response_actions
 samples/         one example file per format (used by tests)
 tests/           test_parsers, test_api_auth, test_streaming, test_syslog, test_detection,
-                 test_pipeline, test_correlation  (all run with NO database needed)
+                 test_pipeline, test_correlation, test_notify, test_response  (no DB needed)
 docker-compose.yml, Dockerfile, requirements.txt, .env.example
 ```
 
@@ -201,6 +214,15 @@ Rules are loaded on startup and synced into `detection_rules`; enable/disable fr
 the Admin page (applies live). Match logic is unit-tested in `tests/test_detection.py`
 (per-event) and `tests/test_correlation.py` (correlation) — no DB needed.
 
+## Adding a response playbook
+
+Drop a YAML file in `playbooks/` with a `match` (any of `rule_id` / `min_level` /
+`techniques`) and an `action` (`type: log`, or a webhook intent like `block_ip`
+with a `target` alert field). Webhook actions POST `{playbook_id, action, target,
+alert}` to `RESPONSE_WEBHOOK_URL` (your automation/SOAR endpoint) — LogOcean stays
+agentless and lets that platform enforce. Every run is audited in `response_actions`
+and shown at `/responses`. Matching/execution is tested in `tests/test_response.py`.
+
 ## Testing
 
 ```bash
@@ -215,6 +237,8 @@ PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 - `test_detection.py` — Sigma-subset matching, condition grammar, the rule library.
 - `test_pipeline.py` — inline detection in `write_stream` (DB inserts mocked).
 - `test_correlation.py` — correlation rule loading, window parsing, alert dedup.
+- `test_notify.py` — severity routing, payload builders, the dispatcher thread.
+- `test_response.py` — playbook loading/matching, action execution, the worker.
 
 All tests are **DB-free** (the async-queue and pipeline tests mock the writers).
 `psycopg` must be importable to load `db`/`streaming`, but no live Postgres is

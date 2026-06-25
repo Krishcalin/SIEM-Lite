@@ -32,7 +32,7 @@ from typing import Optional
 import yaml
 from starlette.concurrency import run_in_threadpool
 
-from .. import db
+from .. import alert_actions, db
 from .engine import _parse_tags
 
 log = logging.getLogger("logocean")
@@ -116,9 +116,10 @@ def run_rule(rule: CorrelationRule, now: Optional[float] = None) -> int:
     bucket = int((now if now is not None else time.time()) // rule.window)
     alerts = [correlation_alert(rule, r, bucket) for r in rows]
     with db.pool().connection() as conn:
-        db.insert_alerts(conn, alerts)
+        new = db.insert_alerts(conn, alerts, return_inserted=True)
         conn.commit()
-    return len(alerts)
+    alert_actions.dispatch(new)             # after commit; only newly-raised alerts
+    return len(new)
 
 
 class CorrelationScheduler:

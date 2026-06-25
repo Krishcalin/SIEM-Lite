@@ -1,0 +1,14 @@
+title: Block brute-force source IP
+id: pb-block-bruteforce
+description: >
+  On a brute-force alert, ask the automation/SOAR endpoint to block the offending
+  source IP. Sends a structured webhook ({action: block_ip, target: <src_ip>, alert});
+  your automation decides how to enforce it. Reverts after 10 minutes (advisory).
+match:
+  rule_id:
+    - lo-corr-bruteforce-logon
+  min_level: high
+action:
+  type: block_ip
+  target: src_ip
+revert_after: 600
