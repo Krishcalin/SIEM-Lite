@@ -19,7 +19,8 @@ complete — ingested events are evaluated against detection + correlation rules
 raising alerts you triage in the UI (`/alerts`); newly-raised alerts are sent to
 notification channels and can trigger response playbooks (audited at `/responses`);
 and scheduled collectors pull vendor logs (Okta/GitHub/GitLab) while other tools
-push findings via the ingest API.
+push findings via the ingest API. Phase 5 (in progress) adds **built-in auth +
+RBAC** (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions).
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -74,6 +75,7 @@ app/
   api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
   config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
+  auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key
   detect.py      best-effort vendor+format auto-detection
   normalize.py   dedup_hash() + tsv_text()
@@ -96,13 +98,13 @@ app/
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
                  aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
                  okta_system_log, github_audit, gitlab_audit  (23 total)
-  templates/     base, dashboard, upload, search, event, alerts, alert, admin
+  templates/     base, dashboard, upload, search, event, alerts, alert, responses, admin, login
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
 clients/         logocean_push.py — copy-into-your-tool helper to push to the API
 schema.sql       events, ingest_batches, api_keys, alerts, detection_rules,
-                 response_actions, collectors
+                 response_actions, collectors, users, sessions
 samples/         one example file per format (used by tests)
 tests/           test_parsers, test_api_auth, test_streaming, test_syslog, test_detection,
                  test_pipeline, test_correlation, test_notify, test_response, test_collectors
@@ -264,6 +266,7 @@ PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 - `test_notify.py` — severity routing, payload builders, the dispatcher thread.
 - `test_response.py` — playbook loading/matching, action execution, the worker.
 - `test_collectors.py` — URL building, cursor advancement, the run→ingest glue.
+- `test_auth.py` — password hashing/verify, role ranking, the RBAC dependency.
 
 All tests are **DB-free** (the async-queue and pipeline tests mock the writers).
 `psycopg` must be importable to load `db`/`streaming`, but no live Postgres is
@@ -272,6 +275,9 @@ the suite after any parser/detector/pipeline/rule change.
 
 ## Security / ops notes
 
-- No built-in auth — run behind SSO / a reverse proxy or on a trusted host.
+- `AUTH_ENABLED=true` turns on built-in login + RBAC (admin/analyst/viewer; the
+  `auth_guard` middleware protects the UI, `require_role(...)` gates mutating
+  routes, `/api/*` keeps its API-key auth). Off by default — then run behind SSO /
+  a reverse proxy or on a trusted host.
 - The Postgres volume IS the 3-year archive — back it up.
 - Don't commit `.env`, uploads, or `pgdata/` (already in `.gitignore`).

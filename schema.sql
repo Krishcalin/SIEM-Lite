@@ -170,3 +170,26 @@ CREATE TABLE IF NOT EXISTS collectors (
     last_count  integer     NOT NULL DEFAULT 0,
     last_error  text
 );
+
+-- ============================================================================
+--  Authentication & RBAC (Phase 5).
+-- ============================================================================
+-- Operators of the LogOcean UI. Only the password hash is stored (pbkdf2).
+CREATE TABLE IF NOT EXISTS users (
+    id            bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    username      text        NOT NULL UNIQUE,
+    password_hash text        NOT NULL,
+    role          text        NOT NULL DEFAULT 'viewer',   -- admin | analyst | viewer
+    enabled       boolean     NOT NULL DEFAULT true,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    last_login    timestamptz
+);
+
+-- Server-side sessions: a random token in an HttpOnly cookie maps to a user.
+CREATE TABLE IF NOT EXISTS sessions (
+    token      text PRIMARY KEY,
+    user_id    bigint      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz NOT NULL
+);
+CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);

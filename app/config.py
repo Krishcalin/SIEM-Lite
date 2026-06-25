@@ -56,6 +56,16 @@ class Settings:
     gitlab_url: str = os.getenv("GITLAB_URL", "")          # https://gitlab.com
     gitlab_token: str = os.getenv("GITLAB_TOKEN", "")
 
+    # Authentication (Phase 5). Off by default (front with SSO/proxy); set
+    # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
+    # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged
+    # if ADMIN_PASSWORD is unset).
+    auth_enabled: bool = _bool("AUTH_ENABLED", False)
+    session_ttl_hours: int = int(os.getenv("SESSION_TTL_HOURS", "12"))
+    session_cookie_secure: bool = _bool("SESSION_COOKIE_SECURE", False)  # True behind HTTPS
+    admin_user: str = os.getenv("ADMIN_USER", "admin")
+    admin_password: str = os.getenv("ADMIN_PASSWORD", "")
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

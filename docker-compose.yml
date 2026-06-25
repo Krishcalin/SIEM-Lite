@@ -36,6 +36,9 @@ services:
       # Agentless collectors (off by default). Set creds + COLLECTORS_ENABLED in
       # .env — see .env.example (OKTA_*, GITHUB_*, GITLAB_*).
       COLLECTORS_ENABLED: "false"
+      # Built-in auth + RBAC (off by default; front with SSO/proxy otherwise).
+      # Set AUTH_ENABLED + ADMIN_PASSWORD in .env to enable login.
+      AUTH_ENABLED: "false"
       # Live syslog ingestion (off by default). Set SYSLOG_ENABLED=true to listen.
       SYSLOG_ENABLED: "false"
       SYSLOG_UDP_PORT: "5514"

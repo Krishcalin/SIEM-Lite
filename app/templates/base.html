@@ -9,15 +9,21 @@
 <body>
   <header class="topbar">
     <a class="brand" href="/">🛡️ LogOcean</a>
+    {% if not auth_enabled or user %}
     <nav>
       <a href="/">Dashboard</a>
       <a href="/upload">Upload</a>
       <a href="/search">Search</a>
       <a href="/alerts">Alerts</a>
       <a href="/responses">Responses</a>
-      <a href="/admin">Admin</a>
+      {% if not auth_enabled or user.role == 'admin' %}<a href="/admin">Admin</a>{% endif %}
     </nav>
-    <span class="retention">retention ≥ {{ retention_years }}y</span>
+    {% endif %}
+    <span class="retention">
+      {% if user %}{{ user.username }} <span class="muted">({{ user.role }})</span> ·
+        <a href="/logout">Logout</a> · {% endif %}
+      retention ≥ {{ retention_years }}y
+    </span>
   </header>
   <main>
     {% block body %}{% endblock %}

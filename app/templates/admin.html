@@ -30,6 +30,45 @@
      span {{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }} → {{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }}</p>
 </section>
 
+{% if auth_enabled %}
+<section>
+  <h2>Users</h2>
+  {% if user_error %}<div class="alert err">{{ user_error }}</div>{% endif %}
+  <form method="post" action="/admin/users" class="panel inline-form">
+    <label>Username <input type="text" name="username" required></label>
+    <label>Password <input type="password" name="password" required></label>
+    <label>Role
+      <select name="role">{% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}</select>
+    </label>
+    <button type="submit" class="btn">Create user</button>
+  </form>
+  <table>
+    <tr><th>User</th><th>Role</th><th>Created</th><th>Last login (UTC)</th><th>Status</th><th></th></tr>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.username }}</td>
+      <td>
+        <form method="post" action="/admin/users/{{ u.id }}/role" style="display:inline">
+          <select name="role" onchange="this.form.submit()">
+            {% for r in roles %}<option value="{{ r }}" {{ 'selected' if u.role == r }}>{{ r }}</option>{% endfor %}
+          </select>
+        </form>
+      </td>
+      <td class="nowrap">{{ u.created_at.strftime('%Y-%m-%d') }}</td>
+      <td class="nowrap">{{ u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else '—' }}</td>
+      <td><span class="badge {{ 'done' if u.enabled else 'error' }}">{{ 'enabled' if u.enabled else 'disabled' }}</span></td>
+      <td>
+        <form method="post" action="/admin/users/{{ u.id }}/toggle">
+          <input type="hidden" name="enabled" value="{{ 'false' if u.enabled else 'true' }}">
+          <button type="submit" class="btn">{{ 'Disable' if u.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+</section>
+{% endif %}
+
 <section>
   <h2>API keys</h2>
   <p>Keys authenticate the HTTP ingest endpoint

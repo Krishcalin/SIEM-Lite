@@ -248,6 +248,9 @@ explicitly in the upload form.
 | `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
 | `COLLECTORS_ENABLED` / `COLLECTOR_INTERVAL` | `false` / `300` | Scheduled pull collectors; poll period (s) |
 | `OKTA_*` / `GITHUB_*` / `GITLAB_*` | — | Per-collector credentials (a collector activates when set) |
+| `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
+| `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
+| `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
 | `INGEST_QUEUE_MAX` | `10000` | Async ingest queue capacity (live sources) |
 | `INGEST_WORKERS` | `2` | Writer workers draining the queue |
 | `INGEST_FLUSH_MAX` / `INGEST_FLUSH_MS` | `2000` / `1000` | Flush a buffer at N events or N ms |
@@ -281,12 +284,13 @@ Log-Parser-Storage/
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
+│   ├── auth.py             # password hashing (pbkdf2), roles, RBAC dependency
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
-│   ├── templates/          # dashboard, upload, search, event, alerts, alert, admin
+│   ├── templates/          # dashboard, upload, search, event, alerts, alert, responses, admin, login
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
@@ -307,9 +311,9 @@ The suite covers parsers + auto-detection (over the bundled samples), API-key
 auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
 framing, the detection engine (Sigma-subset matching + condition grammar),
 inline detection in the pipeline, correlation-rule loading/dedup, notification
-routing + dispatcher, response playbook matching/execution, and collector URL/
-cursor logic. It does **not** require a database (the queue, pipeline, and worker
-tests mock the writers).
+routing + dispatcher, response playbook matching/execution, collector URL/cursor
+logic, and auth (password hashing, role ranking, the RBAC dependency). It does
+**not** require a database (the queue, pipeline, and worker tests mock the writers).
 
 ## Data model & retention notes
 
@@ -348,6 +352,9 @@ tests mock the writers).
 
 ## Security
 
-Intended for an internal/analyst host. There is no authentication built in — run it
-behind your SSO/reverse proxy or on a trusted network, and keep the Postgres volume
-backed up (it is your 3-year archive).
+Set `AUTH_ENABLED=true` for **built-in login + RBAC** (roles: `admin` / `analyst` /
+`viewer`). An admin is bootstrapped on first run from `ADMIN_USER`/`ADMIN_PASSWORD`
+(a random password is logged if blank); manage users from the Admin page. Passwords
+are pbkdf2-hashed and sessions are server-side (revocable). Use `SESSION_COOKIE_SECURE=true`
+behind HTTPS. With auth off, run behind your SSO/reverse proxy or on a trusted network.
+Either way, keep the Postgres volume backed up (it is your 3-year archive).

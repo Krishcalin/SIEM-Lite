@@ -318,6 +318,86 @@ _CORR_COLS = {"vendor", "product", "log_type", "severity", "action", "src_ip",
 _CORR_IP_COLS = {"src_ip", "dst_ip"}
 
 
+# --------------------------------------------------------------------------- #
+#  Users & sessions (auth)                                                     #
+# --------------------------------------------------------------------------- #
+def count_users() -> int:
+    with pool().connection() as conn:
+        return int(conn.execute("SELECT count(*) AS n FROM users").fetchone()["n"])
+
+
+def create_user(username: str, password_hash: str, role: str) -> int:
+    with pool().connection() as conn:
+        row = conn.execute(
+            "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) "
+            "RETURNING id", (username, password_hash, role)).fetchone()
+        conn.commit()
+        return row["id"]
+
+
+def get_user_by_name(username: str) -> Optional[dict]:
+    with pool().connection() as conn:
+        return conn.execute("SELECT * FROM users WHERE username = %s", (username,)).fetchone()
+
+
+def list_users() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT id, username, role, enabled, created_at, last_login "
+            "FROM users ORDER BY username").fetchall()
+
+
+def set_user_enabled(user_id: int, enabled: bool) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE users SET enabled = %s WHERE id = %s", (enabled, user_id))
+        conn.commit()
+
+
+def set_user_role(user_id: int, role: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE users SET role = %s WHERE id = %s", (role, user_id))
+        conn.commit()
+
+
+def set_user_password(user_id: int, password_hash: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE users SET password_hash = %s WHERE id = %s",
+                     (password_hash, user_id))
+        conn.execute("DELETE FROM sessions WHERE user_id = %s", (user_id,))  # force re-login
+        conn.commit()
+
+
+def update_last_login(user_id: int) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE users SET last_login = now() WHERE id = %s", (user_id,))
+        conn.commit()
+
+
+def create_session(token: str, user_id: int, expires_at) -> None:
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO sessions (token, user_id, expires_at) VALUES (%s, %s, %s)",
+            (token, user_id, expires_at))
+        conn.commit()
+
+
+def get_session_user(token: str) -> Optional[dict]:
+    """Return the enabled user for a non-expired session token, else None."""
+    if not token:
+        return None
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT u.id, u.username, u.role, u.enabled FROM sessions s "
+            "JOIN users u ON u.id = s.user_id "
+            "WHERE s.token = %s AND s.expires_at > now() AND u.enabled", (token,)).fetchone()
+
+
+def delete_session(token: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        conn.commit()
+
+
 def sync_collectors(names: Iterable[str]) -> None:
     """Ensure a state row exists for each available collector (preserving cursor)."""
     with pool().connection() as conn:

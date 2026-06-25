@@ -4,18 +4,21 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 from urllib.parse import urlencode
 
-from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, collectors, db, ingest, notify, streaming
+from . import api, auth, collectors, db, ingest, notify, streaming
+from .auth import require_role
 from .config import settings
 from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
@@ -62,6 +65,12 @@ def _csv_safe(value) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     db.init_schema()
+    if settings.auth_enabled and db.count_users() == 0:
+        pw = settings.admin_password or secrets.token_urlsafe(12)
+        db.create_user(settings.admin_user, auth.hash_password(pw), "admin")
+        if not settings.admin_password:
+            log.warning("Bootstrapped admin user %r with generated password: %s",
+                        settings.admin_user, pw)
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
     correlator = None
@@ -139,10 +148,68 @@ app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.globals["format_labels"] = FORMAT_LABELS
 templates.env.globals["retention_years"] = settings.retention_years
+templates.env.globals["auth_enabled"] = settings.auth_enabled
+
+# Paths reachable without a session (login, static assets, health, and the
+# API which authenticates with its own keys).
+_AUTH_EXEMPT = ("/login", "/logout", "/health")
+
+
+@app.middleware("http")
+async def auth_guard(request: Request, call_next):
+    """Populate request.state.user from the session cookie; redirect unauthenticated
+    UI requests to /login. A no-op when AUTH_ENABLED is false."""
+    request.state.user = None
+    if not settings.auth_enabled:
+        return await call_next(request)
+    path = request.url.path
+    exempt = path in _AUTH_EXEMPT or path.startswith(("/static", "/api/"))
+    token = request.cookies.get("session")
+    if token:
+        request.state.user = await run_in_threadpool(db.get_session_user, token)
+    if not exempt and request.state.user is None:
+        return RedirectResponse(url="/login", status_code=303)
+    return await call_next(request)
 
 
 def _ctx(request: Request, **kw):
-    return {"request": request, **kw}
+    return {"request": request, "user": getattr(request.state, "user", None), **kw}
+
+
+# --------------------------------------------------------------------------- #
+#  Auth (login / logout)                                                       #
+# --------------------------------------------------------------------------- #
+@app.get("/login", response_class=HTMLResponse)
+def login_form(request: Request):
+    return templates.TemplateResponse("login.html", _ctx(request, error=None))
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def login(request: Request, username: str = Form(...), password: str = Form(...)):
+    user = await run_in_threadpool(db.get_user_by_name, username)
+    if not (user and user["enabled"] and auth.verify_password(password, user["password_hash"])):
+        return templates.TemplateResponse(
+            "login.html", _ctx(request, error="Invalid username or password."),
+            status_code=401)
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
+    await run_in_threadpool(db.create_session, token, user["id"], expires)
+    await run_in_threadpool(db.update_last_login, user["id"])
+    resp = RedirectResponse(url="/", status_code=303)
+    resp.set_cookie("session", token, httponly=True, samesite="lax",
+                    secure=settings.session_cookie_secure,
+                    max_age=settings.session_ttl_hours * 3600)
+    return resp
+
+
+@app.get("/logout")
+def logout(request: Request):
+    token = request.cookies.get("session")
+    if token:
+        db.delete_session(token)
+    resp = RedirectResponse(url="/login", status_code=303)
+    resp.delete_cookie("session")
+    return resp
 
 
 @app.get("/health")
@@ -173,7 +240,8 @@ def upload_form(request: Request):
 
 
 @app.post("/upload", response_class=HTMLResponse)
-async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form("auto")):
+async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form("auto"),
+                 _user=Depends(require_role("analyst"))):
     raw = await _read_capped(file, settings.max_upload_mb * 1024 * 1024)
     if raw is None:
         return templates.TemplateResponse("upload.html", _ctx(
@@ -308,7 +376,8 @@ def alert_detail(request: Request, alert_id: int):
 
 
 @app.post("/alert/{alert_id}/status")
-def alert_set_status(alert_id: int, status: str = Form(...)):
+def alert_set_status(alert_id: int, status: str = Form(...),
+                     _user=Depends(require_role("analyst"))):
     if status in ("open", "ack", "closed"):
         db.set_alert_status(alert_id, status)
     return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
@@ -327,16 +396,19 @@ def _render_admin(request: Request, *, purged=None, new_key=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
-        collectors=db.list_collectors(), purged=purged, new_key=new_key))
+        collectors=db.list_collectors(),
+        users=db.list_users() if settings.auth_enabled else [],
+        roles=auth.ROLES, purged=purged, new_key=new_key))
 
 
 @app.get("/admin", response_class=HTMLResponse)
-def admin(request: Request, purged: Optional[str] = None):
+def admin(request: Request, purged: Optional[str] = None,
+          _user=Depends(require_role("admin"))):
     return _render_admin(request, purged=purged.split(",") if purged else None)
 
 
 @app.post("/admin/purge")
-def admin_purge(years: int = Form(...)):
+def admin_purge(years: int = Form(...), _user=Depends(require_role("admin"))):
     years = max(years, settings.retention_years)  # never purge below the retention floor
     dropped = db.purge_older_than(years)
     qs = ("?purged=" + ",".join(dropped)) if dropped else "?purged="
@@ -344,7 +416,8 @@ def admin_purge(years: int = Form(...)):
 
 
 @app.post("/admin/api-keys", response_class=HTMLResponse)
-def admin_create_api_key(request: Request, name: str = Form(...), source_label: str = Form("")):
+def admin_create_api_key(request: Request, name: str = Form(...), source_label: str = Form(""),
+                         _user=Depends(require_role("admin"))):
     # Render directly (no redirect) so the plaintext key is shown once and never
     # placed in a URL / browser history.
     created = db.create_api_key(name.strip() or "unnamed", source_label.strip() or None)
@@ -352,19 +425,58 @@ def admin_create_api_key(request: Request, name: str = Form(...), source_label: 
 
 
 @app.post("/admin/api-keys/{key_id}/toggle")
-def admin_toggle_api_key(key_id: int, enabled: str = Form(...)):
+def admin_toggle_api_key(key_id: int, enabled: str = Form(...),
+                         _user=Depends(require_role("admin"))):
     db.set_api_key_enabled(key_id, enabled == "true")
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.post("/admin/rules/{rule_id}/toggle")
-def admin_toggle_rule(rule_id: str, enabled: str = Form(...)):
+def admin_toggle_rule(rule_id: str, enabled: str = Form(...),
+                      _user=Depends(require_role("admin"))):
     db.set_rule_enabled(rule_id, enabled == "true")
     detection_runtime.refresh_enabled()   # apply to the in-memory engine immediately
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.post("/admin/collectors/{name}/toggle")
-def admin_toggle_collector(name: str, enabled: str = Form(...)):
+def admin_toggle_collector(name: str, enabled: str = Form(...),
+                           _user=Depends(require_role("admin"))):
     db.set_collector_enabled(name, enabled == "true")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  User management (admin)                                                     #
+# --------------------------------------------------------------------------- #
+@app.post("/admin/users", response_class=HTMLResponse)
+def admin_create_user(request: Request, username: str = Form(...), password: str = Form(...),
+                      role: str = Form("viewer"), _user=Depends(require_role("admin"))):
+    username, role = username.strip(), (role if role in auth.ROLES else "viewer")
+    error = None
+    if not username or not password:
+        error = "Username and password are required."
+    elif db.get_user_by_name(username):
+        error = f"User {username!r} already exists."
+    else:
+        db.create_user(username, auth.hash_password(password), role)
+    return _render_admin(request) if error is None else templates.TemplateResponse(
+        "admin.html", _ctx(request, batches=db.recent_batches(100), stats=db.stats(),
+                           api_keys=db.list_api_keys(), rules=db.list_rules(),
+                           collectors=db.list_collectors(), users=db.list_users(),
+                           roles=auth.ROLES, purged=None, new_key=None, user_error=error))
+
+
+@app.post("/admin/users/{user_id}/role")
+def admin_set_user_role(user_id: int, role: str = Form(...),
+                        _user=Depends(require_role("admin"))):
+    if role in auth.ROLES:
+        db.set_user_role(user_id, role)
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/users/{user_id}/toggle")
+def admin_toggle_user(user_id: int, enabled: str = Form(...),
+                      _user=Depends(require_role("admin"))):
+    db.set_user_enabled(user_id, enabled == "true")
     return RedirectResponse(url="/admin", status_code=303)
