@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Compliance — LogOcean{% endblock %}
+{% block body %}
+<h1>Compliance coverage</h1>
+<p class="muted">Controls mapped from the MITRE ATT&amp;CK techniques on your
+   detection rules. A control is <b>covered</b> when an enabled rule maps to one of
+   its techniques; <b>Alerts</b> is the attributable alert volume in the last 30 days.
+   This is a curated mapping — extend <code>app/compliance.py</code> as you add rules.</p>
+
+<div class="cards">
+  {% for fw in frameworks %}
+  {% set r = report[fw] %}
+  <div class="card">
+    <div class="num">{{ r.covered }}/{{ r.total }}</div>
+    <div class="lbl">{{ fw }} covered</div>
+  </div>
+  {% endfor %}
+</div>
+
+{% for fw in frameworks %}
+{% set r = report[fw] %}
+<section>
+  <h2>{{ fw }} <span class="muted">— {{ r.covered }} / {{ r.total }} controls covered</span></h2>
+  <table>
+    <tr><th>Control</th><th>Name</th><th>Techniques</th><th>Coverage</th><th class="r">Alerts (30d)</th></tr>
+    {% for c in r.controls %}
+    <tr>
+      <td class="nowrap">{{ c.id }}</td>
+      <td>{{ c.name }}</td>
+      <td class="muted">{{ c.techniques|join(', ') }}</td>
+      <td><span class="badge {{ 'done' if c.covered else 'error' }}">{{ 'covered' if c.covered else 'gap' }}</span></td>
+      <td class="r">{{ "{:,}".format(c.alerts) }}</td>
+    </tr>
+    {% else %}<tr><td colspan="5" class="muted">No mapped controls.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endfor %}
+{% endblock %}

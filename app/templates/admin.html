@@ -189,4 +189,20 @@
     {% else %}<tr><td colspan="10" class="muted">No ingests yet.</td></tr>{% endfor %}
   </table>
 </section>
+
+<section>
+  <h2>Audit log</h2>
+  <table>
+    <tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr>
+    {% for a in audit %}
+    <tr>
+      <td class="nowrap">{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+      <td>{{ a.username or '—' }}</td>
+      <td>{{ a.action }}</td>
+      <td class="msg">{{ a.detail or '' }}</td>
+      <td class="nowrap muted">{{ a.ip or '—' }}</td>
+    </tr>
+    {% else %}<tr><td colspan="5" class="muted">No audit entries yet.</td></tr>{% endfor %}
+  </table>
+</section>
 {% endblock %}

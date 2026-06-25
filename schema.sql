@@ -193,3 +193,14 @@ CREATE TABLE IF NOT EXISTS sessions (
     expires_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions (user_id);
+
+-- Audit trail of security-relevant actions (login, purge, config changes, triage).
+CREATE TABLE IF NOT EXISTS audit_log (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    username   text,                    -- actor (NULL pre-auth, e.g. a failed login)
+    action     text        NOT NULL,    -- login | logout | purge | rule.toggle | ...
+    detail     text,
+    ip         text
+);
+CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log (created_at DESC);

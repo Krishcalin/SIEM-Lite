@@ -310,6 +310,17 @@ def alert_severity_counts() -> dict:
     return {r["level"]: int(r["n"]) for r in rows}
 
 
+def alert_technique_counts(days: int = 30) -> dict:
+    """Recent alert counts per MITRE technique (techniques is a text[]), for the
+    compliance view."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT t AS technique, count(*) AS n FROM alerts, unnest(techniques) t "
+            "WHERE created_at >= now() - make_interval(days => %s) GROUP BY t",
+            (days,)).fetchall()
+    return {r["technique"]: int(r["n"]) for r in rows}
+
+
 # Columns a correlation rule may filter / group on (whitelist: never f-string
 # user-supplied column names into SQL without this gate).
 _CORR_COLS = {"vendor", "product", "log_type", "severity", "action", "src_ip",
@@ -396,6 +407,21 @@ def delete_session(token: str) -> None:
     with pool().connection() as conn:
         conn.execute("DELETE FROM sessions WHERE token = %s", (token,))
         conn.commit()
+
+
+def add_audit(username: Optional[str], action: str,
+              detail: Optional[str] = None, ip: Optional[str] = None) -> None:
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO audit_log (username, action, detail, ip) VALUES (%s, %s, %s, %s)",
+            (username, action, detail, ip))
+        conn.commit()
+
+
+def recent_audit(limit: int = 200) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
 
 
 def sync_collectors(names: Iterable[str]) -> None:

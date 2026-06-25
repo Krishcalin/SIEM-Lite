@@ -17,7 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, auth, collectors, db, ingest, notify, streaming
+from . import api, auth, collectors, compliance, db, ingest, notify, streaming
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
@@ -176,6 +176,17 @@ def _ctx(request: Request, **kw):
     return {"request": request, "user": getattr(request.state, "user", None), **kw}
 
 
+def _audit(request: Request, action: str, detail: Optional[str] = None,
+           username: Optional[str] = None) -> None:
+    """Record a security-relevant action. `username` overrides the session user
+    (e.g. a failed login where there is no session yet). Blocking; call directly
+    from sync routes, or via run_in_threadpool from async ones."""
+    user = getattr(request.state, "user", None)
+    actor = username or (user.get("username") if user else None)
+    ip = request.client.host if request.client else None
+    db.add_audit(actor, action, detail, ip)
+
+
 # --------------------------------------------------------------------------- #
 #  Auth (login / logout)                                                       #
 # --------------------------------------------------------------------------- #
@@ -188,6 +199,7 @@ def login_form(request: Request):
 async def login(request: Request, username: str = Form(...), password: str = Form(...)):
     user = await run_in_threadpool(db.get_user_by_name, username)
     if not (user and user["enabled"] and auth.verify_password(password, user["password_hash"])):
+        await run_in_threadpool(_audit, request, "login.failed", None, username)
         return templates.TemplateResponse(
             "login.html", _ctx(request, error="Invalid username or password."),
             status_code=401)
@@ -195,6 +207,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
     await run_in_threadpool(db.create_session, token, user["id"], expires)
     await run_in_threadpool(db.update_last_login, user["id"])
+    await run_in_threadpool(_audit, request, "login", None, user["username"])
     resp = RedirectResponse(url="/", status_code=303)
     resp.set_cookie("session", token, httponly=True, samesite="lax",
                     secure=settings.session_cookie_secure,
@@ -206,6 +219,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
 def logout(request: Request):
     token = request.cookies.get("session")
     if token:
+        _audit(request, "logout")
         db.delete_session(token)
     resp = RedirectResponse(url="/login", status_code=303)
     resp.delete_cookie("session")
@@ -267,6 +281,9 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
         return templates.TemplateResponse("upload.html", _ctx(
             request, result=None,
             error="Ingest failed. The file could not be processed — see server logs for details."))
+    await run_in_threadpool(
+        _audit, request, "upload",
+        f"{file.filename}: {result['inserted']} stored ({chosen})")
     return templates.TemplateResponse("upload.html", _ctx(request, result=result, error=None))
 
 
@@ -376,10 +393,11 @@ def alert_detail(request: Request, alert_id: int):
 
 
 @app.post("/alert/{alert_id}/status")
-def alert_set_status(alert_id: int, status: str = Form(...),
+def alert_set_status(request: Request, alert_id: int, status: str = Form(...),
                      _user=Depends(require_role("analyst"))):
     if status in ("open", "ack", "closed"):
         db.set_alert_status(alert_id, status)
+        _audit(request, "alert.status", f"alert {alert_id} -> {status}")
     return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
 
 
@@ -389,16 +407,28 @@ def responses(request: Request):
         request, rows=db.recent_responses(200)))
 
 
+@app.get("/compliance", response_class=HTMLResponse)
+def compliance_view(request: Request):
+    enabled_techniques: set[str] = set()
+    for r in db.list_rules():
+        if r["enabled"]:
+            enabled_techniques.update(t.upper() for t in (r["techniques"] or []))
+    report = compliance.build_report(enabled_techniques, db.alert_technique_counts(30))
+    return templates.TemplateResponse("compliance.html", _ctx(
+        request, report=report, frameworks=compliance.FRAMEWORKS))
+
+
 # --------------------------------------------------------------------------- #
 #  Admin / retention                                                           #
 # --------------------------------------------------------------------------- #
-def _render_admin(request: Request, *, purged=None, new_key=None):
+def _render_admin(request: Request, *, purged=None, new_key=None, user_error=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
         collectors=db.list_collectors(),
         users=db.list_users() if settings.auth_enabled else [],
-        roles=auth.ROLES, purged=purged, new_key=new_key))
+        roles=auth.ROLES, audit=db.recent_audit(50),
+        purged=purged, new_key=new_key, user_error=user_error))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -408,9 +438,11 @@ def admin(request: Request, purged: Optional[str] = None,
 
 
 @app.post("/admin/purge")
-def admin_purge(years: int = Form(...), _user=Depends(require_role("admin"))):
+def admin_purge(request: Request, years: int = Form(...),
+                _user=Depends(require_role("admin"))):
     years = max(years, settings.retention_years)  # never purge below the retention floor
     dropped = db.purge_older_than(years)
+    _audit(request, "purge", f"dropped {len(dropped)} partition(s) older than {years}y")
     qs = ("?purged=" + ",".join(dropped)) if dropped else "?purged="
     return RedirectResponse(url="/admin" + qs, status_code=303)
 
@@ -421,28 +453,35 @@ def admin_create_api_key(request: Request, name: str = Form(...), source_label: 
     # Render directly (no redirect) so the plaintext key is shown once and never
     # placed in a URL / browser history.
     created = db.create_api_key(name.strip() or "unnamed", source_label.strip() or None)
+    _audit(request, "api_key.create", created["name"])
     return _render_admin(request, new_key=created)
 
 
 @app.post("/admin/api-keys/{key_id}/toggle")
-def admin_toggle_api_key(key_id: int, enabled: str = Form(...),
+def admin_toggle_api_key(request: Request, key_id: int, enabled: str = Form(...),
                          _user=Depends(require_role("admin"))):
-    db.set_api_key_enabled(key_id, enabled == "true")
+    on = enabled == "true"
+    db.set_api_key_enabled(key_id, on)
+    _audit(request, "api_key.toggle", f"key {key_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.post("/admin/rules/{rule_id}/toggle")
-def admin_toggle_rule(rule_id: str, enabled: str = Form(...),
+def admin_toggle_rule(request: Request, rule_id: str, enabled: str = Form(...),
                       _user=Depends(require_role("admin"))):
-    db.set_rule_enabled(rule_id, enabled == "true")
+    on = enabled == "true"
+    db.set_rule_enabled(rule_id, on)
     detection_runtime.refresh_enabled()   # apply to the in-memory engine immediately
+    _audit(request, "rule.toggle", f"{rule_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.post("/admin/collectors/{name}/toggle")
-def admin_toggle_collector(name: str, enabled: str = Form(...),
+def admin_toggle_collector(request: Request, name: str, enabled: str = Form(...),
                            _user=Depends(require_role("admin"))):
-    db.set_collector_enabled(name, enabled == "true")
+    on = enabled == "true"
+    db.set_collector_enabled(name, on)
+    _audit(request, "collector.toggle", f"{name} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -460,23 +499,23 @@ def admin_create_user(request: Request, username: str = Form(...), password: str
         error = f"User {username!r} already exists."
     else:
         db.create_user(username, auth.hash_password(password), role)
-    return _render_admin(request) if error is None else templates.TemplateResponse(
-        "admin.html", _ctx(request, batches=db.recent_batches(100), stats=db.stats(),
-                           api_keys=db.list_api_keys(), rules=db.list_rules(),
-                           collectors=db.list_collectors(), users=db.list_users(),
-                           roles=auth.ROLES, purged=None, new_key=None, user_error=error))
+        _audit(request, "user.create", f"{username} ({role})")
+    return _render_admin(request, user_error=error)
 
 
 @app.post("/admin/users/{user_id}/role")
-def admin_set_user_role(user_id: int, role: str = Form(...),
+def admin_set_user_role(request: Request, user_id: int, role: str = Form(...),
                         _user=Depends(require_role("admin"))):
     if role in auth.ROLES:
         db.set_user_role(user_id, role)
+        _audit(request, "user.role", f"user {user_id} -> {role}")
     return RedirectResponse(url="/admin", status_code=303)
 
 
 @app.post("/admin/users/{user_id}/toggle")
-def admin_toggle_user(user_id: int, enabled: str = Form(...),
+def admin_toggle_user(request: Request, user_id: int, enabled: str = Form(...),
                       _user=Depends(require_role("admin"))):
-    db.set_user_enabled(user_id, enabled == "true")
+    on = enabled == "true"
+    db.set_user_enabled(user_id, on)
+    _audit(request, "user.toggle", f"user {user_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)

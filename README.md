@@ -26,7 +26,9 @@ retains them in PostgreSQL for **≥ 3 years**.
 > **agentless collectors** are in place: events are matched against detection +
 > correlation rules, raising alerts you triage at `/alerts`; new alerts are pushed
 > to your channels and can trigger response playbooks (audited at `/responses`);
-> and collectors pull vendor logs while other tools push findings to the API.
+> collectors pull vendor logs while other tools push findings to the API; and
+> built-in auth/RBAC plus a `/compliance` coverage view (MITRE→PCI/NIST/CIS/HIPAA)
+> round it out.
 
 ## Features
 
@@ -285,12 +287,14 @@ Log-Parser-Storage/
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
 │   ├── auth.py             # password hashing (pbkdf2), roles, RBAC dependency
+│   ├── compliance.py       # MITRE technique → framework control mapping + report
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
-│   ├── templates/          # dashboard, upload, search, event, alerts, alert, responses, admin, login
+│   ├── templates/          # dashboard, upload, search, event, alerts, alert, responses,
+│   │                       #   compliance, admin, login
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
@@ -312,8 +316,9 @@ auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
 framing, the detection engine (Sigma-subset matching + condition grammar),
 inline detection in the pipeline, correlation-rule loading/dedup, notification
 routing + dispatcher, response playbook matching/execution, collector URL/cursor
-logic, and auth (password hashing, role ranking, the RBAC dependency). It does
-**not** require a database (the queue, pipeline, and worker tests mock the writers).
+logic, auth (password hashing, role ranking, the RBAC dependency), the audit
+helper, and the compliance coverage report. It does **not** require a database
+(the queue, pipeline, and worker tests mock the writers).
 
 ## Data model & retention notes
 
@@ -356,5 +361,7 @@ Set `AUTH_ENABLED=true` for **built-in login + RBAC** (roles: `admin` / `analyst
 `viewer`). An admin is bootstrapped on first run from `ADMIN_USER`/`ADMIN_PASSWORD`
 (a random password is logged if blank); manage users from the Admin page. Passwords
 are pbkdf2-hashed and sessions are server-side (revocable). Use `SESSION_COOKIE_SECURE=true`
-behind HTTPS. With auth off, run behind your SSO/reverse proxy or on a trusted network.
-Either way, keep the Postgres volume backed up (it is your 3-year archive).
+behind HTTPS. Security-relevant actions (login/logout, purge, key/rule/collector/user
+changes, alert triage, upload) are recorded in an **audit log** on the Admin page.
+With auth off, run behind your SSO/reverse proxy or on a trusted network. Either way,
+keep the Postgres volume backed up (it is your 3-year archive).
