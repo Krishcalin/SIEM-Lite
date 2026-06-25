@@ -44,6 +44,18 @@ class Settings:
     response_webhook_url: str = os.getenv("RESPONSE_WEBHOOK_URL", "")
     response_queue_max: int = int(os.getenv("RESPONSE_QUEUE_MAX", "1000"))
 
+    # Agentless collectors: scheduled pull of logs from vendor APIs into the
+    # ingest pipeline. A collector activates only when its credentials are set.
+    collectors_enabled: bool = _bool("COLLECTORS_ENABLED", False)
+    collector_interval: int = int(os.getenv("COLLECTOR_INTERVAL", "300"))      # seconds
+    collector_lookback_hours: int = int(os.getenv("COLLECTOR_LOOKBACK_HOURS", "24"))
+    okta_domain: str = os.getenv("OKTA_DOMAIN", "")        # https://acme.okta.com
+    okta_token: str = os.getenv("OKTA_TOKEN", "")
+    github_org: str = os.getenv("GITHUB_ORG", "")
+    github_token: str = os.getenv("GITHUB_TOKEN", "")
+    gitlab_url: str = os.getenv("GITLAB_URL", "")          # https://gitlab.com
+    gitlab_token: str = os.getenv("GITLAB_TOKEN", "")
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

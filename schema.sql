@@ -155,3 +155,18 @@ CREATE TABLE IF NOT EXISTS response_actions (
 );
 CREATE INDEX IF NOT EXISTS response_created_idx ON response_actions (created_at DESC);
 CREATE INDEX IF NOT EXISTS response_alert_idx   ON response_actions (alert_id);
+
+-- ============================================================================
+--  Agentless collectors (Phase 4): per-source pull state / checkpoint.
+-- ============================================================================
+-- One row per collector. `cursor` is the incremental checkpoint (e.g. the last
+-- event timestamp pulled) so each run only fetches new records.
+CREATE TABLE IF NOT EXISTS collectors (
+    name        text PRIMARY KEY,
+    enabled     boolean     NOT NULL DEFAULT true,
+    cursor      text,
+    last_run    timestamptz,
+    last_status text,
+    last_count  integer     NOT NULL DEFAULT 0,
+    last_error  text
+);

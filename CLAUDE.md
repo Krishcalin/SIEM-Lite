@@ -13,11 +13,13 @@ parses, normalizes, full-text indexes, and stores events in PostgreSQL with a
 **≥ 3-year retention** policy.
 
 Being grown toward a Wazuh-like SIEM (agentless): Phase 1 (live ingestion),
-Phase 2 (Sigma-based **detection & alerting**), and Phase 3 (**notifications &
-agentless response**) are complete — ingested events are evaluated against
-detection + correlation rules, raising alerts you triage in the UI (`/alerts`);
-newly-raised alerts are sent to notification channels and can trigger response
-playbooks (audited at `/responses`).
+Phase 2 (Sigma-based **detection & alerting**), Phase 3 (**notifications &
+agentless response**), and Phase 4 (**agentless collectors & feeds**) are
+complete — ingested events are evaluated against detection + correlation rules,
+raising alerts you triage in the UI (`/alerts`); newly-raised alerts are sent to
+notification channels and can trigger response playbooks (audited at `/responses`);
+and scheduled collectors pull vendor logs (Okta/GitHub/GitLab) while other tools
+push findings via the ingest API.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -57,6 +59,13 @@ post-commit via `insert_alerts(return_inserted=True)`) to two background workers
 endpoint or a `log` action, audited in `response_actions`). Both run on their own
 threads so slow network I/O never blocks ingest.
 
+**Collectors** (`app/collectors/`) are agentless pull connectors: a scheduler runs
+each enabled, credential-configured collector every `COLLECTOR_INTERVAL`, fetching
+new records since a stored `cursor` (the `collectors` table) and feeding them
+through `ingest.ingest(..., source_type="collector")` — so pulled logs get the same
+detect/alert/respond treatment. Inbound *push* feeds (other tools → the ingest API)
+use `clients/logocean_push.py`.
+
 ## Repository layout
 
 ```
@@ -81,6 +90,7 @@ app/
   alert_actions.py  fan newly-raised alerts to notifications + response
   notify/        channels.py (webhook/email) + dispatcher.py (background thread)
   response/      engine.py — agentless playbooks + audit log (background thread)
+  collectors/    base.py + sources.py (Okta/GitHub/GitLab) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
@@ -90,10 +100,12 @@ app/
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
-schema.sql       events, ingest_batches, api_keys, alerts, detection_rules, response_actions
+clients/         logocean_push.py — copy-into-your-tool helper to push to the API
+schema.sql       events, ingest_batches, api_keys, alerts, detection_rules,
+                 response_actions, collectors
 samples/         one example file per format (used by tests)
 tests/           test_parsers, test_api_auth, test_streaming, test_syslog, test_detection,
-                 test_pipeline, test_correlation, test_notify, test_response  (no DB needed)
+                 test_pipeline, test_correlation, test_notify, test_response, test_collectors
 docker-compose.yml, Dockerfile, requirements.txt, .env.example
 ```
 
@@ -223,6 +235,18 @@ alert}` to `RESPONSE_WEBHOOK_URL` (your automation/SOAR endpoint) — LogOcean s
 agentless and lets that platform enforce. Every run is audited in `response_actions`
 and shown at `/responses`. Matching/execution is tested in `tests/test_response.py`.
 
+## Adding a collector
+
+Subclass `collectors.base.Collector` in `app/collectors/sources.py` with `name`,
+`fmt` (an existing parser key), `configured()`, and `fetch(cursor) -> FetchResult`
+(content text + advanced cursor). Keep the HTTP call in `_http_get` and make the
+URL builder + cursor advancement pure functions so they're testable without
+network (see Okta/GitHub/GitLab + `tests/test_collectors.py`). Register it in
+`runner.build_collectors()` and add its credentials to `config.py`/`.env.example`.
+The framework persists the cursor, feeds the response through `ingest.ingest`, and
+shows status on the Admin page. For sources needing SigV4/OAuth (AWS/Entra/M365),
+prefer the **push** path: have an external job pull + POST to the ingest API.
+
 ## Testing
 
 ```bash
@@ -239,6 +263,7 @@ PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 - `test_correlation.py` — correlation rule loading, window parsing, alert dedup.
 - `test_notify.py` — severity routing, payload builders, the dispatcher thread.
 - `test_response.py` — playbook loading/matching, action execution, the worker.
+- `test_collectors.py` — URL building, cursor advancement, the run→ingest glue.
 
 All tests are **DB-free** (the async-queue and pipeline tests mock the writers).
 `psycopg` must be importable to load `db`/`streaming`, but no live Postgres is

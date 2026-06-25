@@ -15,7 +15,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, db, ingest, notify, streaming
+from . import api, collectors, db, ingest, notify, streaming
 from .config import settings
 from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
@@ -92,6 +92,16 @@ async def lifespan(app: FastAPI):
             log.warning("RESPONSE_ENABLED is set but no playbooks were found")
             responder = None
 
+    collector_sched = None
+    if settings.collectors_enabled:
+        built = collectors.build_collectors()
+        if built:
+            db.sync_collectors([c.name for c in built])
+            collector_sched = collectors.CollectorScheduler(built, settings.collector_interval)
+            collectors.set_scheduler(collector_sched)
+        else:
+            log.warning("COLLECTORS_ENABLED is set but no collector credentials are configured")
+
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
     await queue.start()
@@ -101,9 +111,14 @@ async def lifespan(app: FastAPI):
         await receiver.start()
     if correlator is not None:
         await correlator.start()
+    if collector_sched is not None:
+        await collector_sched.start()
     try:
         yield
     finally:
+        if collector_sched is not None:
+            await collector_sched.stop()
+            collectors.set_scheduler(None)
         if correlator is not None:
             await correlator.stop()
         if receiver is not None:
@@ -135,10 +150,12 @@ def health():
     q = streaming.get_queue()
     d = notify.get_dispatcher()
     r = response_engine.get_engine()
+    cs = collectors.get_scheduler()
     return {"status": "ok",
             "ingest_queue": q.stats.as_dict() if q else None,
             "notifications": d.stats() if d else None,
-            "responses": r.stats() if r else None}
+            "responses": r.stats() if r else None,
+            "collectors": len(cs.collectors) if cs else None}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -310,7 +327,7 @@ def _render_admin(request: Request, *, purged=None, new_key=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
-        purged=purged, new_key=new_key))
+        collectors=db.list_collectors(), purged=purged, new_key=new_key))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -344,4 +361,10 @@ def admin_toggle_api_key(key_id: int, enabled: str = Form(...)):
 def admin_toggle_rule(rule_id: str, enabled: str = Form(...)):
     db.set_rule_enabled(rule_id, enabled == "true")
     detection_runtime.refresh_enabled()   # apply to the in-memory engine immediately
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/collectors/{name}/toggle")
+def admin_toggle_collector(name: str, enabled: str = Form(...)):
+    db.set_collector_enabled(name, enabled == "true")
     return RedirectResponse(url="/admin", status_code=303)

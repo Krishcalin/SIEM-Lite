@@ -318,6 +318,46 @@ _CORR_COLS = {"vendor", "product", "log_type", "severity", "action", "src_ip",
 _CORR_IP_COLS = {"src_ip", "dst_ip"}
 
 
+def sync_collectors(names: Iterable[str]) -> None:
+    """Ensure a state row exists for each available collector (preserving cursor)."""
+    with pool().connection() as conn:
+        for n in names:
+            conn.execute("INSERT INTO collectors (name) VALUES (%s) "
+                         "ON CONFLICT (name) DO NOTHING", (n,))
+        conn.commit()
+
+
+def get_collector(name: str) -> Optional[dict]:
+    with pool().connection() as conn:
+        return conn.execute("SELECT * FROM collectors WHERE name = %s", (name,)).fetchone()
+
+
+def update_collector(name: str, **fields: Any) -> None:
+    """Update a collector's state; `last_run` is always stamped to now()."""
+    sets = "last_run = now()" + "".join(f", {k} = %({k})s" for k in fields)
+    fields["name"] = name
+    with pool().connection() as conn:
+        conn.execute(f"UPDATE collectors SET {sets} WHERE name = %(name)s", fields)
+        conn.commit()
+
+
+def list_collectors() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute("SELECT * FROM collectors ORDER BY name").fetchall()
+
+
+def enabled_collector_names() -> set[str]:
+    with pool().connection() as conn:
+        rows = conn.execute("SELECT name FROM collectors WHERE enabled").fetchall()
+    return {r["name"] for r in rows}
+
+
+def set_collector_enabled(name: str, enabled: bool) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE collectors SET enabled = %s WHERE name = %s", (enabled, name))
+        conn.commit()
+
+
 def insert_response_action(rec: dict) -> None:
     with pool().connection() as conn:
         conn.execute(

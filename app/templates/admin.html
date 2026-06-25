@@ -100,6 +100,35 @@
 </section>
 
 <section>
+  <h2>Collectors</h2>
+  <p>Agentless pull connectors fetch vendor logs on a schedule into the ingest
+     pipeline. A collector appears here once its credentials are configured
+     (see <code>.env</code>) and <code>COLLECTORS_ENABLED=true</code>.</p>
+  <table>
+    <tr><th>Collector</th><th>Status</th><th>Last run (UTC)</th><th class="r">Last count</th>
+        <th>Cursor</th><th></th></tr>
+    {% for c in collectors %}
+    <tr>
+      <td>{{ c.name }}</td>
+      <td>
+        <span class="badge {{ 'done' if c.last_status == 'ok' else 'error' if c.last_status == 'error' else 'pending' }}">{{ c.last_status or 'idle' }}</span>
+        {% if not c.enabled %}<span class="badge error">disabled</span>{% endif %}
+      </td>
+      <td class="nowrap">{{ c.last_run.strftime('%Y-%m-%d %H:%M') if c.last_run else '—' }}</td>
+      <td class="r">{{ "{:,}".format(c.last_count or 0) }}</td>
+      <td class="msg muted">{{ c.cursor or '—' }}</td>
+      <td>
+        <form method="post" action="/admin/collectors/{{ c.name }}/toggle">
+          <input type="hidden" name="enabled" value="{{ 'false' if c.enabled else 'true' }}">
+          <button type="submit" class="btn">{{ 'Disable' if c.enabled else 'Enable' }}</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="muted">No collectors configured.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section>
   <h2>Recent ingests</h2>
   <table>
     <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>

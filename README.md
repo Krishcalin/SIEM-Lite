@@ -22,10 +22,11 @@ retains them in PostgreSQL for **≥ 3 years**.
 ```
 
 > Being grown toward a Wazuh-like agentless SIEM. Live ingestion, a Sigma-based
-> **detection & alerting** engine, and **notifications + agentless response** are
-> in place: ingested events are matched against detection + correlation rules,
-> raising alerts you triage at `/alerts`; new alerts are pushed to your channels
-> and can trigger response playbooks (audited at `/responses`).
+> **detection & alerting** engine, **notifications + agentless response**, and
+> **agentless collectors** are in place: events are matched against detection +
+> correlation rules, raising alerts you triage at `/alerts`; new alerts are pushed
+> to your channels and can trigger response playbooks (audited at `/responses`);
+> and collectors pull vendor logs while other tools push findings to the API.
 
 ## Features
 
@@ -182,6 +183,24 @@ action: { type: block_ip, target: src_ip }   # POSTs {action, target, alert} to 
 revert_after: 600
 ```
 
+## Agentless collectors & feeds
+
+Two agentless ways to get logs in without manual upload:
+
+- **Pull collectors** — set `COLLECTORS_ENABLED=true` and a collector's credentials
+  (`OKTA_*`, `GITHUB_*`, `GITLAB_*`). A scheduler fetches new records every
+  `COLLECTOR_INTERVAL` seconds, checkpointing a per-source cursor so each run only
+  pulls what's new, and feeds them through the same parse→detect→alert pipeline.
+  Status + enable/disable are on the **Admin** page. (Token-based REST sources today;
+  AWS/Entra/M365, which need SigV4/OAuth, are best fed via push.)
+- **Push feeds** — point your own tools (RHEL/Windows/SBOM/AWS audit scanners) at
+  the ingest API. Copy [`clients/logocean_push.py`](clients/logocean_push.py):
+
+  ```python
+  from logocean_push import push
+  push("http://logocean:8000", "lo_...", findings)   # list of dicts -> generic_json
+  ```
+
 ## How to export the logs to upload
 
 | Source | How to export | Upload as |
@@ -227,6 +246,8 @@ explicitly in the upload form.
 | `WEBHOOK_URL` / `WEBHOOK_STYLE` | — / `slack` | Notification webhook (Slack-text or full JSON) |
 | `SMTP_HOST` … `SMTP_TO` | — | Email notification channel (host + from + to to activate) |
 | `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
+| `COLLECTORS_ENABLED` / `COLLECTOR_INTERVAL` | `false` / `300` | Scheduled pull collectors; poll period (s) |
+| `OKTA_*` / `GITHUB_*` / `GITLAB_*` | — | Per-collector credentials (a collector activates when set) |
 | `INGEST_QUEUE_MAX` | `10000` | Async ingest queue capacity (live sources) |
 | `INGEST_WORKERS` | `2` | Writer workers draining the queue |
 | `INGEST_FLUSH_MAX` / `INGEST_FLUSH_MS` | `2000` / `1000` | Flush a buffer at N events or N ms |
@@ -256,6 +277,7 @@ Log-Parser-Storage/
 │   ├── alert_actions.py    # fan new alerts to notifications + response
 │   ├── notify/             # webhook + email channels, background dispatcher
 │   ├── response/           # agentless response playbooks + audit log
+│   ├── collectors/         # pull connectors (Okta/GitHub/GitLab) + scheduler
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -268,9 +290,10 @@ Log-Parser-Storage/
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
+├── clients/                # logocean_push.py — push helper for your own tools
 ├── samples/                # one example file per format
 └── tests/                  # test_{parsers,api_auth,streaming,syslog,detection,pipeline,
-                            #        correlation,notify,response}
+                            #        correlation,notify,response,collectors}
 ```
 
 ## Tests
@@ -284,8 +307,9 @@ The suite covers parsers + auto-detection (over the bundled samples), API-key
 auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
 framing, the detection engine (Sigma-subset matching + condition grammar),
 inline detection in the pipeline, correlation-rule loading/dedup, notification
-routing + dispatcher, and response playbook matching/execution. It does **not**
-require a database (the queue, pipeline, and worker tests mock the writers).
+routing + dispatcher, response playbook matching/execution, and collector URL/
+cursor logic. It does **not** require a database (the queue, pipeline, and worker
+tests mock the writers).
 
 ## Data model & retention notes
 
