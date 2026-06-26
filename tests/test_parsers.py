@@ -465,11 +465,25 @@ def test_generic_json_array_valued_fields():
 
 
 def test_generic_json_deeply_nested_does_not_crash():
-    """A pathologically deep object is skipped, not allowed to blow the stack."""
+    """A pathologically deep object is dropped pre-parse (version-stable: newer
+    CPython no longer raises RecursionError at this depth, so the guard can't rely
+    on the json decoder to reject it)."""
     depth = 5000
     doc = "{" + '"a":{' * depth + '"x":1' + "}" * depth + "}"
-    evs = list(generic_json.parse(doc))     # must not raise RecursionError
-    assert evs == []                        # unparseable bomb is dropped, not crashed
+    evs = list(generic_json.parse(doc))     # must not raise, and must be dropped
+    assert evs == []                        # bomb rejected, not parsed into an event
+    # auto-detection routes it to the generic mapper (which drops it) without crashing
+    assert detect_format("bomb.json", doc) == "generic_json"
+
+
+def test_generic_json_depth_guard_boundary_and_ndjson():
+    """Nesting within the cap parses; NDJSON is unaffected (depth resets per record)."""
+    deep_ok = ('{"event":{"action":"login"},'
+               + '"n":{' * 50 + '"x":1' + "}" * 50 + "}")     # ~50 levels, under the cap
+    assert next(generic_json.parse(deep_ok)).action == "login"
+    nd = "\n".join('{"message":"m%d","user.name":"u%d"}' % (i, i) for i in range(20))
+    evs = list(generic_json.parse(nd))
+    assert len(evs) == 20 and evs[0].user_name == "u0"
 
 
 def test_generic_json_flatten_depth_cap():

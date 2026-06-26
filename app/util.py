@@ -124,6 +124,38 @@ def _unwrap_json(obj: Any, wrapper_keys: tuple[str, ...]) -> Iterator[dict]:
         yield obj
 
 
+# Reject documents nested past this many levels. Real logs (ECS is ~5-6 deep)
+# never approach it; a pathological bomb does. This is an explicit, version-stable
+# guard — newer CPython no longer raises RecursionError at moderate depths, so the
+# decoder alone can no longer be relied on to reject a deeply nested payload.
+_MAX_JSON_DEPTH = 100
+
+
+def _exceeds_json_depth(text: str, limit: int) -> bool:
+    """True if `text`'s structural nesting exceeds `limit`. O(n), string-aware
+    (braces inside JSON string literals don't count) — so it can drop a deeply
+    nested bomb before json.loads ever sees it."""
+    depth = 0
+    in_str = escaped = False
+    for ch in text:
+        if in_str:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_str = False
+        elif ch == '"':
+            in_str = True
+        elif ch in "{[":
+            depth += 1
+            if depth > limit:
+                return True
+        elif ch in "}]" and depth > 0:
+            depth -= 1
+    return False
+
+
 def iter_json_records(content: str, *wrapper_keys: str) -> Iterator[dict]:
     """Yield dict records from a JSON document of any common shape.
 
@@ -134,8 +166,12 @@ def iter_json_records(content: str, *wrapper_keys: str) -> Iterator[dict]:
     text = content.strip()
     if not text:
         return
-    # RecursionError guards against a deeply-nested payload (json's decoder recurses)
-    # exhausting the stack and aborting the whole ingest — treat it as unparseable.
+    # Drop a deeply-nested (attacker-crafted) payload before parsing it, so json's
+    # recursive decoder can't exhaust the stack and abort the whole ingest. NDJSON
+    # streams are unaffected: depth resets between records, so the max stays small.
+    if _exceeds_json_depth(text, _MAX_JSON_DEPTH):
+        return
+    # Belt-and-suspenders: also treat a RecursionError as unparseable.
     try:
         obj = json.loads(text)
     except (json.JSONDecodeError, RecursionError):

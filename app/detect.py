@@ -13,6 +13,8 @@ import json
 import re
 from typing import Optional
 
+from .util import _exceeds_json_depth, _MAX_JSON_DEPTH
+
 # Header tokens that strongly identify a CSV's vendor.
 _PAN_CSV_MARKERS = {"receive time", "source address", "threat/content type",
                     "destination address", "rule"}
@@ -158,6 +160,8 @@ def _detect_json(text: str) -> Optional[str]:
 
 def _first_json_record(text: str) -> Optional[dict]:
     t = text.strip()
+    if _exceeds_json_depth(t, _MAX_JSON_DEPTH):   # drop a deeply-nested bomb pre-parse
+        return None
     try:
         obj = json.loads(t)
     except (json.JSONDecodeError, RecursionError):
