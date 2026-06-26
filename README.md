@@ -318,25 +318,47 @@ Log-Parser-Storage/
 ├── playbooks/              # agentless response playbooks
 ├── clients/                # logocean_push.py — push helper for your own tools
 ├── samples/                # one example file per format
-└── tests/                  # test_{parsers,api_auth,streaming,syslog,detection,pipeline,
-                            #        correlation,notify,response,collectors}
+└── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
+                            #   pipeline,correlation,notify,response,collectors,auth,...}
+                            # integration (real Postgres): conftest.py +
+                            #   test_integration_{db,api}.py
 ```
 
 ## Tests
 
+The suite has two tiers. **Unit tests** are DB-free and run anywhere;
+**integration tests** (marked `integration`) exercise a real PostgreSQL and
+self-skip when `DB_DSN` is unset.
+
 ```bash
 pip install pytest python-dateutil
-PYTHONPATH=. python -m pytest tests/ -q       # PowerShell: $env:PYTHONPATH="."
+# Unit only (no database) — the default local experience:
+PYTHONPATH=. python -m pytest tests/ -m "not integration" -q   # PowerShell: $env:PYTHONPATH="."
+
+# Integration (needs Postgres + httpx); point DB_DSN at a throwaway database:
+pip install httpx
+DB_DSN=postgresql://logocean:logocean@localhost:5432/logocean \
+  PYTHONPATH=. python -m pytest tests/ -m integration -q
 ```
 
-The suite covers parsers + auto-detection (over the bundled samples), API-key
-auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
-framing, the detection engine (Sigma-subset matching + condition grammar),
-inline detection in the pipeline, correlation-rule loading/dedup, notification
-routing + dispatcher, response playbook matching/execution, collector URL/cursor
-logic, auth (password hashing, role ranking, the RBAC dependency), the audit
-helper, and the compliance coverage report. It does **not** require a database
-(the queue, pipeline, and worker tests mock the writers).
+The **unit** tests cover parsers + auto-detection (over the bundled samples),
+API-key auth, the async ingest queue (grouping, worker loop, backpressure),
+syslog TCP framing, the detection engine (Sigma-subset matching, all field
+modifiers + condition grammar), inline detection in the pipeline,
+correlation-rule loading/dedup, notification routing + dispatcher, response
+playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
+Microsoft OAuth helpers), auth (password hashing, role ranking, the RBAC
+dependency), the audit helper, and the compliance coverage report — all without
+a database (the queue, pipeline, and worker tests mock the writers).
+
+The **integration** tests run against an actual PostgreSQL 16 and verify what
+mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
+search, ON CONFLICT dedup, retention purge dropping whole partitions, the
+correlation SQL, the pipeline write path raising alert rows, alert
+insert/dedup/queries, the auth/collector/registry round-trips, and the HTTP
+stack end-to-end (TestClient → API-key auth → ingest → detect). CI runs the unit
+tier on Python 3.11–3.13 and the integration tier against a Postgres service
+container (`.github/workflows/tests.yml`).
 
 ## Data model & retention notes
 

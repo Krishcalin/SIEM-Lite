@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   pytest:
-    name: pytest (Python ${{ matrix.python-version }})
+    name: unit (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -39,7 +39,45 @@ jobs:
       - name: Byte-compile the app (syntax check, incl. modules tests don't import)
         run: python -m compileall app -q
 
-      - name: Run parser + detection tests
-        run: python -m pytest tests/ -q
+      - name: Run unit tests (DB-free)
+        run: python -m pytest tests/ -m "not integration" -q
         env:
           PYTHONPATH: .
+
+  integration:
+    name: integration (PostgreSQL 16)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: logocean
+          POSTGRES_PASSWORD: logocean
+          POSTGRES_DB: logocean
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U logocean"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest httpx
+
+      - name: Run integration tests against PostgreSQL
+        run: python -m pytest tests/ -m integration -q
+        env:
+          PYTHONPATH: .
+          DB_DSN: postgresql://logocean:logocean@localhost:5432/logocean

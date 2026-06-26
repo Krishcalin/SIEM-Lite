@@ -123,8 +123,12 @@ clients/         logocean_push.py — copy-into-your-tool helper to push to the 
 schema.sql       events, ingest_batches, api_keys, alerts, detection_rules,
                  response_actions, collectors, users, sessions, audit_log
 samples/         one example file per format (used by tests)
-tests/           test_parsers, test_api_auth, test_streaming, test_syslog, test_detection,
-                 test_pipeline, test_correlation, test_notify, test_response, test_collectors
+tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
+                 test_detection, test_pipeline, test_correlation, test_notify, test_response,
+                 test_collectors, test_auth, test_audit, test_compliance
+                 integration (real Postgres, marked `integration`): conftest.py +
+                 test_integration_db.py + test_integration_api.py
+pytest.ini       registers the `integration` marker
 docker-compose.yml, Dockerfile, requirements.txt, .env.example
 ```
 
@@ -270,10 +274,19 @@ prefer the **push** path: have an external job pull + POST to the ingest API.
 
 ## Testing
 
+Two tiers: **unit** (DB-free, run anywhere) and **integration** (marked
+`integration`, need a live PostgreSQL — they self-skip when `DB_DSN` is unset).
+
 ```bash
 pip install pytest python-dateutil
-PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
+PYTHONPATH=. python -m pytest tests/ -m "not integration" -q   # unit (default)
+
+pip install httpx                                              # for the API integration test
+DB_DSN=postgresql://logocean:logocean@localhost:5432/logocean \
+  PYTHONPATH=. python -m pytest tests/ -m integration -q       # integration
 ```
+
+Unit:
 
 - `test_parsers.py` — parsers + auto-detection over the bundled samples.
 - `test_api_auth.py` — API-key hashing + header extraction.
@@ -289,10 +302,22 @@ PYTHONPATH=. python -m pytest tests/ -q      # PowerShell: $env:PYTHONPATH="."
 - `test_audit.py` — the `_audit` helper's actor/IP resolution (DB write mocked).
 - `test_compliance.py` — technique→control mapping + the coverage report builder.
 
-All tests are **DB-free** (the async-queue and pipeline tests mock the writers).
-`psycopg` must be importable to load `db`/`streaming`, but no live Postgres is
-needed; full DB-integration tests (TestClient + Postgres) run in CI/Docker. Run
-the suite after any parser/detector/pipeline/rule change.
+Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
+
+- `test_integration_db.py` — schema/partition creation, GIN FTS + inet/CIDR
+  search, ON CONFLICT dedup, retention purge (drops whole partitions), the
+  correlation SQL, the pipeline write path raising alerts, alert
+  insert/dedup/queries, and the rule-registry/api-key/user-session/collector/
+  batch round-trips — all against a real Postgres.
+- `test_integration_api.py` — the FastAPI stack via TestClient against a real
+  DB: `/health`, API-key auth (401/200), and ingest→detect end-to-end.
+
+The unit tier is **DB-free** (the async-queue and pipeline tests mock the
+writers); `psycopg` need only be importable. The integration tier runs against a
+real PostgreSQL 16 — locally via `DB_DSN`, and in CI as a service container (see
+`.github/workflows/tests.yml`: a `pytest` job per Python 3.11–3.13 for unit, plus
+an `integration` job with Postgres). Run the relevant tier after any
+parser/detector/pipeline/rule/`db.py` change.
 
 ## Security / ops notes
 
