@@ -91,7 +91,8 @@ app/
   models.py      NormalizedEvent dataclass (the common schema)
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   compliance.py  MITRE technique -> framework control mapping + coverage report
-  util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key
+  util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key;
+                 iter_json_records (+ _exceeds_json_depth deep-nesting guard)
   detect.py      best-effort vendor+format auto-detection
   normalize.py   dedup_hash() + tsv_text()
   pipeline.py    source-agnostic core: parse_events / apply_fallback_time / write_stream
@@ -152,6 +153,12 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
 - **SQL safety:** all user input is parameterized; never string-format user values
   into SQL. Partition names are computed from timestamps (not user input), so the
   f-string DDL in `db.ensure_partitions` is safe.
+- **JSON input safety:** `util.iter_json_records` (and `detect._first_json_record`)
+  reject a payload nested past `_MAX_JSON_DEPTH` (100) via `util._exceeds_json_depth`
+  *before* `json.loads` — a version-stable guard against deep-nesting DoS (do **not**
+  rely on the interpreter raising `RecursionError`; CPython ≥3.12 doesn't at moderate
+  depths). NDJSON is unaffected (depth resets per record). Keep new JSON parsers on
+  `iter_json_records` so they inherit this.
 
 ## Storage & retention (important)
 

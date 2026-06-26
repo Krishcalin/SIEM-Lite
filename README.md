@@ -405,3 +405,10 @@ behind HTTPS. Security-relevant actions (login/logout, purge, key/rule/collector
 changes, alert triage, upload) are recorded in an **audit log** on the Admin page.
 With auth off, run behind your SSO/reverse proxy or on a trusted network. Either way,
 keep the Postgres volume backed up (it is your 3-year archive).
+
+**Input hardening.** Ingest treats all log content as untrusted: uploads and the API
+body are size-capped (`MAX_UPLOAD_MB`) and streamed so a huge payload can't exhaust
+memory; a deeply-nested JSON "bomb" is rejected before parsing by an explicit
+depth guard (`_MAX_JSON_DEPTH`, version-stable — not reliant on the interpreter
+raising `RecursionError`); CSV exports neutralize spreadsheet formula injection; and
+correlation/search SQL uses whitelisted columns with fully parameterized values.
