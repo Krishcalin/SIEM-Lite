@@ -29,13 +29,21 @@ def iso_lookback(hours: int) -> str:
         "%Y-%m-%dT%H:%M:%S.000Z")
 
 
-def json_records(body: str) -> list:
-    """Parse a JSON array response into a list of records ([] on anything else)."""
+def json_records(body: str, key: Optional[str] = None) -> list:
+    """Parse a response into a list of records ([] on anything else).
+
+    A bare JSON array is returned as-is. When `key` is given and the body is a
+    JSON object (e.g. Microsoft Graph's ``{"value": [...]}``), that key's list is
+    returned. Anything else yields []."""
     try:
         obj = json.loads(body)
     except (json.JSONDecodeError, ValueError):
         return []
-    return obj if isinstance(obj, list) else []
+    if isinstance(obj, list):
+        return obj
+    if isinstance(obj, dict) and key and isinstance(obj.get(key), list):
+        return obj[key]
+    return []
 
 
 def max_time_iso(records: list, field: str, current: Optional[str]) -> Optional[str]:
@@ -65,5 +73,10 @@ class Collector(ABC):
 
     def _http_get(self, url: str, headers: dict) -> str:
         req = urllib.request.Request(url, headers=headers, method="GET")
+        with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — configured URL
+            return resp.read().decode("utf-8", "replace")
+
+    def _http_post(self, url: str, headers: dict, data: bytes) -> str:
+        req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — configured URL
             return resp.read().decode("utf-8", "replace")

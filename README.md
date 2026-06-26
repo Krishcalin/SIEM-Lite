@@ -189,12 +189,19 @@ revert_after: 600
 
 Two agentless ways to get logs in without manual upload:
 
-- **Pull collectors** — set `COLLECTORS_ENABLED=true` and a collector's credentials
-  (`OKTA_*`, `GITHUB_*`, `GITLAB_*`). A scheduler fetches new records every
-  `COLLECTOR_INTERVAL` seconds, checkpointing a per-source cursor so each run only
-  pulls what's new, and feeds them through the same parse→detect→alert pipeline.
-  Status + enable/disable are on the **Admin** page. (Token-based REST sources today;
-  AWS/Entra/M365, which need SigV4/OAuth, are best fed via push.)
+- **Pull collectors** — set `COLLECTORS_ENABLED=true` and a collector's credentials.
+  A scheduler fetches new records every `COLLECTOR_INTERVAL` seconds, checkpointing a
+  per-source cursor so each run only pulls what's new, and feeds them through the same
+  parse→detect→alert pipeline. Status + enable/disable are on the **Admin** page.
+  Built-in collectors (each activates only when its credentials are set):
+  - **Okta** System Log (`OKTA_*`), **GitHub** audit log (`GITHUB_*`), **GitLab**
+    audit events (`GITLAB_*`) — token-based REST.
+  - **AWS CloudTrail** (`AWS_REGION` + `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`,
+    optional `AWS_SESSION_TOKEN`) — `LookupEvents` signed with **AWS SigV4** (stdlib).
+  - **Microsoft Entra ID** sign-in logs and **Microsoft 365** unified audit log —
+    one Azure app registration (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`),
+    **OAuth2 client-credentials**. Entra uses Microsoft Graph; M365 uses the Office 365
+    Management Activity API and additionally needs `M365_ENABLED=true`.
 - **Push feeds** — point your own tools (RHEL/Windows/SBOM/AWS audit scanners) at
   the ingest API. Copy [`clients/logocean_push.py`](clients/logocean_push.py):
 

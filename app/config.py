@@ -55,6 +55,20 @@ class Settings:
     github_token: str = os.getenv("GITHUB_TOKEN", "")
     gitlab_url: str = os.getenv("GITLAB_URL", "")          # https://gitlab.com
     gitlab_token: str = os.getenv("GITLAB_TOKEN", "")
+    # AWS CloudTrail (SigV4-signed LookupEvents). Active when region + keys set.
+    aws_region: str = os.getenv("AWS_REGION", "")          # e.g. us-east-1
+    aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
+    aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")   # optional (STS)
+    # Microsoft Entra ID / 365 (OAuth2 client credentials, one app registration).
+    # Entra sign-ins activate when tenant+client+secret are set; the M365 unified
+    # audit log additionally needs M365_ENABLED (separate API permission + a
+    # started Management Activity subscription).
+    azure_tenant_id: str = os.getenv("AZURE_TENANT_ID", "")
+    azure_client_id: str = os.getenv("AZURE_CLIENT_ID", "")
+    azure_client_secret: str = os.getenv("AZURE_CLIENT_SECRET", "")
+    m365_enabled: bool = _bool("M365_ENABLED", False)
+    m365_content_type: str = os.getenv("M365_CONTENT_TYPE", "Audit.General")
 
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is

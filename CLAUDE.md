@@ -18,8 +18,8 @@ agentless response**), and Phase 4 (**agentless collectors & feeds**) are
 complete — ingested events are evaluated against detection + correlation rules,
 raising alerts you triage in the UI (`/alerts`); newly-raised alerts are sent to
 notification channels and can trigger response playbooks (audited at `/responses`);
-and scheduled collectors pull vendor logs (Okta/GitHub/GitLab) while other tools
-push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
+and scheduled collectors pull vendor logs (Okta/GitHub/GitLab, AWS CloudTrail,
+Entra ID, Microsoft 365) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
 log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
 
@@ -65,8 +65,14 @@ threads so slow network I/O never blocks ingest.
 each enabled, credential-configured collector every `COLLECTOR_INTERVAL`, fetching
 new records since a stored `cursor` (the `collectors` table) and feeding them
 through `ingest.ingest(..., source_type="collector")` — so pulled logs get the same
-detect/alert/respond treatment. Inbound *push* feeds (other tools → the ingest API)
-use `clients/logocean_push.py`.
+detect/alert/respond treatment. Token sources (Okta/GitHub/GitLab) live in
+`sources.py`; signed/OAuth sources in `cloud.py` — **AWS CloudTrail** (`LookupEvents`,
+SigV4-signed via stdlib `hmac`/`hashlib`), **Entra ID** sign-ins (Microsoft Graph) and
+**Microsoft 365** unified audit (Office 365 Management Activity API), the latter two
+using the OAuth2 client-credentials flow. Each collector re-shapes vendor JSON into the
+exact form its parser expects; all signing/URL/response logic is in pure, unit-tested
+functions (network isolated in `_http_get`/`_http_post`). Inbound *push* feeds (other
+tools → the ingest API) use `clients/logocean_push.py`.
 
 ## Repository layout
 
@@ -94,7 +100,8 @@ app/
   alert_actions.py  fan newly-raised alerts to notifications + response
   notify/        channels.py (webhook/email) + dispatcher.py (background thread)
   response/      engine.py — agentless playbooks + audit log (background thread)
-  collectors/    base.py + sources.py (Okta/GitHub/GitLab) + runner.py (scheduler)
+  collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
+                 Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,

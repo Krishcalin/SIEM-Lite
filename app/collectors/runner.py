@@ -14,6 +14,8 @@ from starlette.concurrency import run_in_threadpool
 from .. import db, ingest
 from ..config import settings
 from .base import Collector
+from .cloud import (AwsCloudTrailCollector, EntraSignInCollector,
+                    M365AuditCollector)
 from .sources import GitHubCollector, GitLabCollector, OktaCollector
 
 log = logging.getLogger("logocean")
@@ -28,7 +30,20 @@ def build_collectors() -> list[Collector]:
                         settings.collector_lookback_hours),
         GitLabCollector(settings.gitlab_url, settings.gitlab_token,
                         settings.collector_lookback_hours),
+        AwsCloudTrailCollector(settings.aws_region, settings.aws_access_key_id,
+                               settings.aws_secret_access_key,
+                               settings.aws_session_token,
+                               settings.collector_lookback_hours),
+        EntraSignInCollector(settings.azure_tenant_id, settings.azure_client_id,
+                             settings.azure_client_secret,
+                             settings.collector_lookback_hours),
     ]
+    if settings.m365_enabled:
+        candidates.append(
+            M365AuditCollector(settings.azure_tenant_id, settings.azure_client_id,
+                               settings.azure_client_secret,
+                               settings.m365_content_type,
+                               settings.collector_lookback_hours))
     return [c for c in candidates if c.configured()]
 
 
