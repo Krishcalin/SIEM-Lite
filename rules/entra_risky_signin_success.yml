@@ -1,0 +1,20 @@
+title: Entra ID Risky Sign-in Succeeded
+id: lo-entra-risky-signin
+description: A Microsoft Entra ID sign-in that Identity Protection flagged as medium/high risk succeeded. A risky sign-in that is not blocked is a likely account-takeover indicator.
+level: high
+logsource:
+  vendor: microsoft
+  product: entra
+  service: signin
+detection:
+  selection:
+    action: success
+    severity:
+      - medium
+      - high
+  condition: selection
+tags:
+  - attack.t1078.004
+  - attack.initial_access
+falsepositives:
+  - Travel / VPN causing benign risk scoring; tune with named-location policy.

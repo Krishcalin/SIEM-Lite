@@ -1,0 +1,17 @@
+title: AWS IAM Access Key Created
+id: lo-aws-access-key-created
+description: A long-lived IAM access key was created. Attackers mint access keys to persist after compromising a session; review whether the principal and target user are expected.
+level: medium
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  selection:
+    rule_name: CreateAccessKey
+    action: success
+  condition: selection
+tags:
+  - attack.t1098.001
+  - attack.persistence
+falsepositives:
+  - Routine key rotation or new service-account provisioning.

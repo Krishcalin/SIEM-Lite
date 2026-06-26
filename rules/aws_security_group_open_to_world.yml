@@ -1,0 +1,21 @@
+title: AWS Security Group Opened to the Internet
+id: lo-aws-sg-open-world
+description: A security-group ingress rule was authorized allowing 0.0.0.0/0 (or ::/0). Wide-open ingress is a frequent precursor to exposure of RDP/SSH/databases.
+level: medium
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  action_sel:
+    rule_name:
+      - AuthorizeSecurityGroupIngress
+      - ModifySecurityGroupRules
+  world:
+    - 0.0.0.0/0
+    - "::/0"
+  condition: action_sel and world
+tags:
+  - attack.t1562.007
+  - attack.defense_evasion
+falsepositives:
+  - Public-facing load balancers or CDN origins provisioned intentionally.

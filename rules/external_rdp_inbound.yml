@@ -1,0 +1,24 @@
+title: Inbound RDP From a Public Source Address
+id: lo-external-rdp-inbound
+description: An allowed RDP (3389) connection whose source IP is outside the RFC1918 private ranges — i.e. exposed to the internet. External RDP is a top initial-access and ransomware vector.
+level: high
+detection:
+  rdp:
+    dst_port: 3389
+  permitted:
+    action:
+      - allow
+      - accept
+      - permit
+  internal_src:
+    src_ip|cidr:
+      - 10.0.0.0/8
+      - 172.16.0.0/12
+      - 192.168.0.0/16
+      - 127.0.0.0/8
+  condition: rdp and permitted and not internal_src
+tags:
+  - attack.t1021.001
+  - attack.lateral_movement
+falsepositives:
+  - RDP gateways intentionally published behind MFA / a bastion.

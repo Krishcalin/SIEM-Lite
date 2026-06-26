@@ -1,0 +1,17 @@
+title: AWS Root Account Console Login
+id: lo-aws-root-console-login
+description: The AWS account root user signed in to the console. Root should be locked away with MFA and used almost never; interactive root use warrants immediate review.
+level: high
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  selection:
+    rule_name: ConsoleLogin
+    useridentity.type: Root
+  condition: selection
+tags:
+  - attack.t1078.004
+  - attack.privilege_escalation
+falsepositives:
+  - Rare, sanctioned break-glass procedures.

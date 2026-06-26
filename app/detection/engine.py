@@ -13,14 +13,23 @@ Supported subset
 - ``detection`` selections: a map (AND of field:value), a list of maps (OR), or a
   list of bare strings (keywords searched across all fields).
 - value lists = OR (any); the ``|all`` modifier turns a list into AND.
-- field modifiers: ``contains`` / ``startswith`` / ``endswith`` / ``re`` /
-  ``cased``; ``*`` and ``?`` glob in plain values; ``null`` for absent/empty.
+- field modifiers: ``contains`` / ``startswith`` / ``endswith`` / ``re``
+  (with ``i`` / ``m`` / ``s`` flags) / ``cased``; ``*`` and ``?`` glob in plain
+  values; ``null`` for absent/empty.
+- comparison & set modifiers: ``cidr`` (IP-in-network), ``lt`` / ``lte`` /
+  ``gt`` / ``gte`` (numeric), ``exists`` (field present, bool), ``fieldref``
+  (compare to another field's value).
+- encoding modifiers (for command-line obfuscation): ``base64`` /
+  ``base64offset`` and ``windash`` (``-flag`` ↔ ``/flag`` / unicode dashes),
+  typically chained with ``|contains``.
 - ``condition``: ``and`` / ``or`` / ``not`` / parentheses, plus ``1 of`` /
   ``all of`` / ``N of`` over ``them`` or a ``selection_*`` wildcard.
 - ``tags``: ``attack.tNNNN[.NNN]`` → techniques, ``attack.<tactic>`` → tactics.
 """
 from __future__ import annotations
 
+import base64
+import ipaddress
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -102,14 +111,89 @@ def _glob_to_re(e: str) -> str:
     return "".join(out)
 
 
-def _match_scalar(x: Any, expected: Any, op: Optional[str], cased: bool) -> bool:
+def _as_bool(v: Any) -> bool:
+    return v if isinstance(v, bool) else str(v).strip().lower() in ("true", "1", "yes")
+
+
+def _to_num(v: Any) -> Optional[float]:
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _match_numeric(x: Any, expected: Any, op: str) -> bool:
+    a, b = _to_num(x), _to_num(expected)
+    if a is None or b is None:
+        return False
+    return {"lt": a < b, "lte": a <= b, "gt": a > b, "gte": a >= b}[op]
+
+
+def _match_cidr(x: Any, network: Any) -> bool:
+    try:
+        return ipaddress.ip_address(str(x).strip()) in \
+            ipaddress.ip_network(str(network).strip(), strict=False)
+    except ValueError:
+        return False
+
+
+def _re_flags(mods: list[str], cased: bool) -> int:
+    flags = 0 if cased else re.IGNORECASE       # plain matching is case-insensitive
+    if "i" in mods:
+        flags |= re.IGNORECASE
+    if "m" in mods:
+        flags |= re.MULTILINE
+    if "s" in mods:
+        flags |= re.DOTALL
+    return flags
+
+
+def _base64offset(s: str) -> list[str]:
+    """The three base64 encodings of `s` at byte offsets 0/1/2, so a `contains`
+    match catches the value embedded anywhere in a larger base64 blob (the same
+    scheme pysigma uses)."""
+    raw = s.encode("utf-8", "ignore")
+    starts, ends = (0, 2, 3), (None, -3, -2)
+    return [base64.b64encode(b" " * i + raw)[starts[i]:ends[i]].decode("ascii", "ignore")
+            for i in range(3)]
+
+
+_DASHES = ("-", "/", "–", "—", "―")
+
+
+def _windash(s: str) -> list[str]:
+    """Variants of `s` with every ``-`` replaced by each Windows dash alias
+    (so a rule written with ``-flag`` also matches ``/flag``)."""
+    if "-" not in s:
+        return [s]
+    return [s.replace("-", d) for d in _DASHES]
+
+
+def _expand_expected(e: Any, mods: list[str]) -> list[Any]:
+    """Apply encoding modifiers to one expected value, yielding match candidates."""
+    if e is None:
+        return [None]
+    vals = [str(e)]
+    if "base64offset" in mods:
+        vals = _base64offset(str(e))
+    elif "base64" in mods:
+        vals = [base64.b64encode(str(e).encode("utf-8", "ignore")).decode("ascii")]
+    if "windash" in mods:
+        vals = [w for v in vals for w in _windash(v)]
+    return vals
+
+
+def _match_scalar(x: Any, expected: Any, op: Optional[str], cased: bool,
+                  re_flags: int = re.IGNORECASE, cidr: bool = False) -> bool:
+    if cidr:
+        return _match_cidr(x, expected)
     if expected is None:
         return x is None or x == ""
     if x is None:
         return False
     s, e = str(x), str(expected)
     if op == "re":
-        return re.search(e, s, 0 if cased else re.IGNORECASE) is not None
+        return re.search(e, s, re_flags) is not None
     if not cased:
         s, e = s.lower(), e.lower()
     if op == "contains":
@@ -123,19 +207,41 @@ def _match_scalar(x: Any, expected: Any, op: Optional[str], cased: bool) -> bool
     return s == e
 
 
-def _match_value(val: Any, expected: Any, op: Optional[str], cased: bool) -> bool:
+def _match_value(val: Any, expected: Any, op: Optional[str], cased: bool,
+                 re_flags: int = re.IGNORECASE, cidr: bool = False) -> bool:
     vals = val if isinstance(val, list) else [val]
-    return any(_match_scalar(x, expected, op, cased) for x in vals)
+    return any(_match_scalar(x, expected, op, cased, re_flags, cidr) for x in vals)
 
 
 def _eval_field(flat: dict, fieldspec: str, expected: Any) -> bool:
     parts = fieldspec.split("|")
     mods = [m.lower() for m in parts[1:]]
     val = _lookup(flat, parts[0])
-    op = next((m for m in mods if m in ("contains", "startswith", "endswith", "re")), None)
     cased = "cased" in mods
+
+    # boolean / relational modifiers handled outside the string-match path
+    if "exists" in mods:
+        return (val not in (None, "")) == _as_bool(expected)
+    if "fieldref" in mods:
+        refs = expected if isinstance(expected, list) else [expected]
+        return any(_match_value(val, _lookup(flat, str(r)), None, cased) for r in refs)
+
+    num = next((m for m in mods if m in ("lt", "lte", "gt", "gte")), None)
+    if num:
+        es = expected if isinstance(expected, list) else [expected]
+        res = [_match_numeric(val, e, num) for e in es]
+        return all(res) if "all" in mods else any(res)
+
+    cidr = "cidr" in mods
+    re_flags = _re_flags(mods, cased)
+    op = ("re" if "re" in mods else
+          next((m for m in mods if m in ("contains", "startswith", "endswith")), None))
+
     expecteds = expected if isinstance(expected, list) else [expected]
-    results = [_match_value(val, e, op, cased) for e in expecteds]
+    results = []
+    for e in expecteds:
+        cands = _expand_expected(e, mods)
+        results.append(any(_match_value(val, c, op, cased, re_flags, cidr) for c in cands))
     return all(results) if "all" in mods else any(results)
 
 

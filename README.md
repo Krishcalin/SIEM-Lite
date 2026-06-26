@@ -132,7 +132,13 @@ you can filter, drill into (down to the originating event), and triage
 (acknowledge / close) at **`/alerts`**; open-alert counts show on the dashboard.
 
 Rules are YAML files in `rules/` (a Sigma-compatible subset), tagged with MITRE
-ATT&CK, and enable/disable from the Admin page (applies immediately):
+ATT&CK, and enable/disable from the Admin page (applies immediately). The engine
+supports the common Sigma field modifiers so many community rules load as-is:
+`contains`/`startswith`/`endswith`/`re` (with `i`/`m`/`s` flags)/`cased`, value
+lists with `|all`, `cidr` (IP-in-network), numeric `lt`/`lte`/`gt`/`gte`,
+`exists`, `fieldref`, and the `base64`/`base64offset`/`windash` encoding
+modifiers for command-line obfuscation — plus the `and`/`or`/`not` + `N of … `
+condition grammar.
 
 ```yaml
 # per-event rule
@@ -158,9 +164,14 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with seed rules for failed-logon brute force, denied-connection floods,
-RDP exposure, ingress-tool transfer, event-log clearing, and security-tool
-tampering. Detection can be turned off with `DETECTION_ENABLED=false`.
+Ships with a starter rule pack (17 detection + 2 correlation rules) covering
+failed-logon brute force, denied-connection floods, RDP exposure (incl. external
+RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
+tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
+(logging disabled, root console login, world-open security groups, access-key
+creation), Entra ID (risky sign-in succeeded, legacy auth), Okta (admin grant,
+MFA deactivation), Microsoft 365 (mailbox forwarding rules), and GitHub (repo
+made public). Detection can be turned off with `DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
 

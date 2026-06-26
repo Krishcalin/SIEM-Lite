@@ -1,0 +1,31 @@
+title: Suspicious Encoded / Download PowerShell
+id: lo-powershell-encoded
+description: A PowerShell invocation using an encoded command or an in-memory download cradle. Encoded commands hide intent; base64offset catches the cradle even inside a larger -EncodedCommand blob.
+level: high
+detection:
+  flags:
+    message|windash|contains:
+      - "-enc"
+      - "-EncodedCommand"
+      - "-nop"
+      - "-w hidden"
+      - "-noni"
+  cradle:
+    message|contains:
+      - IEX
+      - Invoke-Expression
+      - DownloadString
+      - DownloadFile
+      - FromBase64String
+  encoded_cradle:
+    message|base64offset|contains:
+      - IEX
+      - Invoke-Expression
+      - DownloadString
+  condition: flags or cradle or encoded_cradle
+tags:
+  - attack.t1059.001
+  - attack.t1027
+  - attack.execution
+falsepositives:
+  - Administrative automation that legitimately uses encoded commands.

@@ -1,0 +1,24 @@
+title: Microsoft 365 Mailbox Forwarding Rule Created
+id: lo-m365-inbox-forwarding
+description: An Exchange Online inbox rule was created or changed to forward or redirect mail. Auto-forwarding to an external address is a classic data-exfiltration and BEC technique.
+level: high
+logsource:
+  vendor: microsoft
+  product: o365
+detection:
+  operation:
+    action:
+      - New-InboxRule
+      - Set-InboxRule
+      - Set-Mailbox
+  forwarding:
+    - ForwardTo
+    - ForwardAsAttachmentTo
+    - RedirectTo
+    - DeliverToMailboxAndForward
+  condition: operation and forwarding
+tags:
+  - attack.t1114.003
+  - attack.collection
+falsepositives:
+  - User-created delegation or vacation forwarding to an internal mailbox.

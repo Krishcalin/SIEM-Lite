@@ -1,0 +1,20 @@
+title: GitHub Repository Made Public
+id: lo-github-repo-public
+description: A GitHub repository's visibility was changed to public (or access settings were altered). Flipping a private repo public can leak source code and secrets.
+level: high
+logsource:
+  vendor: github
+  product: audit
+detection:
+  operation:
+    action:
+      - repo.access
+      - repo.change_merge_setting
+  visibility:
+    - public
+  condition: operation and visibility
+tags:
+  - attack.t1567
+  - attack.exfiltration
+falsepositives:
+  - Intentional open-sourcing of a project.

@@ -1,0 +1,18 @@
+title: Okta Administrator Privilege Granted
+id: lo-okta-admin-grant
+description: An Okta user or group was granted administrator/privileged access. Privilege grants outside an approved change are a strong persistence / privilege-escalation signal.
+level: high
+logsource:
+  vendor: okta
+detection:
+  selection:
+    log_type|contains:
+      - privilege.grant
+      - user.account.privilege
+      - group.privilege
+  condition: selection
+tags:
+  - attack.t1098.003
+  - attack.persistence
+falsepositives:
+  - Approved admin onboarding (correlate with a change request).

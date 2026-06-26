@@ -52,7 +52,14 @@ in `events.raw` (jsonb) so nothing is lost and any field stays searchable.
 are evaluated inline in `pipeline.write_stream` as events are stored, and
 correlation/threshold rules are evaluated on a schedule by SQL aggregation over
 `events`. Both raise rows in `alerts` (deduped per rule+event / rule+group+window).
-Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement.
+Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
+`engine.py` evaluator supports the common Sigma field modifiers — `contains` /
+`startswith` / `endswith` / `re` (`i`/`m`/`s` flags) / `cased`, `|all`, `cidr`,
+numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
+`base64offset` / `windash` — so most community rules load unmodified (gated only
+by whether our parsers populate the referenced field). The shipped pack is 17
+detection + 2 correlation rules across Windows, network, AWS, Entra, Okta, M365
+and GitHub.
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:
@@ -231,9 +238,11 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
 
 Drop a YAML file in `rules/`. **Per-event** rules use the Sigma-subset format
 (`detection:` with selections + `condition:`); reference normalized field names
-(`action`, `src_ip`, `user_name`, …) or any `raw` key (case-insensitive), and tag
-with `attack.tNNNN` / `attack.<tactic>`. **Correlation** rules use a `correlation:`
-block (`match` / `group_by` / `window` / `threshold`) over normalized columns.
+(`action`, `src_ip`, `user_name`, …) or any `raw` key (case-insensitive), apply
+field modifiers (`|contains`, `|cidr`, `|gte`, `|base64offset|contains`,
+`|windash`, `|exists`, `|fieldref`, …), and tag with `attack.tNNNN` /
+`attack.<tactic>`. **Correlation** rules use a `correlation:` block (`match` /
+`group_by` / `window` / `threshold`) over normalized columns.
 Rules are loaded on startup and synced into `detection_rules`; enable/disable from
 the Admin page (applies live). Match logic is unit-tested in `tests/test_detection.py`
 (per-event) and `tests/test_correlation.py` (correlation) — no DB needed.

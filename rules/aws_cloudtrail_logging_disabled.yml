@@ -1,0 +1,21 @@
+title: AWS CloudTrail Logging Disabled or Deleted
+id: lo-aws-logging-disabled
+description: A CloudTrail trail or VPC flow log was stopped, deleted or reconfigured — a common defense-evasion step to blind detection before further activity.
+level: high
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  selection:
+    rule_name:
+      - StopLogging
+      - DeleteTrail
+      - UpdateTrail
+      - PutEventSelectors
+      - DeleteFlowLogs
+  condition: selection
+tags:
+  - attack.t1562.008
+  - attack.defense_evasion
+falsepositives:
+  - Planned trail maintenance or IaC changes (correlate with a change ticket).

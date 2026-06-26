@@ -1,0 +1,18 @@
+title: Okta MFA Factor Deactivated or Reset
+id: lo-okta-mfa-deactivated
+description: An Okta MFA factor was deactivated or reset. Removing MFA is a common takeover step so an attacker can re-enroll their own factor; review who performed it and on whose account.
+level: high
+logsource:
+  vendor: okta
+detection:
+  selection:
+    log_type|contains:
+      - mfa.factor.deactivate
+      - mfa.factor.reset
+      - authenticator.reset
+  condition: selection
+tags:
+  - attack.t1556.006
+  - attack.credential_access
+falsepositives:
+  - Help-desk assisted factor resets for a locked-out user.

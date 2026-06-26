@@ -1,0 +1,23 @@
+title: Entra ID Legacy Authentication Sign-in
+id: lo-entra-legacy-auth
+description: A sign-in used a legacy authentication protocol (IMAP/POP/SMTP/older Exchange clients) that cannot enforce MFA. Adversaries prefer legacy auth for password spraying.
+level: medium
+logsource:
+  vendor: microsoft
+  product: entra
+  service: signin
+detection:
+  selection:
+    rule_name|contains:
+      - IMAP
+      - POP
+      - SMTP
+      - Exchange ActiveSync
+      - Other clients
+      - Authenticated SMTP
+  condition: selection
+tags:
+  - attack.t1110.003
+  - attack.credential_access
+falsepositives:
+  - Legacy line-of-business mail clients pending migration.
