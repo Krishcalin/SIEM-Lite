@@ -17,6 +17,7 @@ from .models import NormalizedEvent
 from .normalize import dedup_hash
 from .parsers import PARSERS
 from .threatintel import matcher as timatcher, runtime as tiruntime
+from .triage import runtime as supruntime
 
 
 class WriteResult(NamedTuple):
@@ -61,15 +62,30 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     engine = detruntime.get_engine()           # None if detection disabled/not loaded
     ti_index = tiruntime.get_index()           # empty unless threat-intel is loaded
     ti_active = len(ti_index) > 0
+    supp_index = supruntime.get_index()        # empty unless suppressions exist
+    supp_active = len(supp_index) > 0
     track_alerts = alert_actions.active()
     total = 0
     chunk: list[NormalizedEvent] = []
     pending: list[dict] = []
     new_alerts: list[dict] = []
+    supp_hits: dict[int, int] = {}             # suppression id -> times fired
+
+    def emit(alert: dict) -> None:
+        """Queue an alert, marking it suppressed if an allowlist rule matches."""
+        if supp_active:
+            s = supp_index.match(alert)
+            if s is not None:
+                alert["status"] = "suppressed"
+                supp_hits[s.id] = supp_hits.get(s.id, 0) + 1
+        pending.append(alert)
 
     def flush() -> None:
         db.insert_events(conn, chunk, batch_id)
         new_alerts.extend(db.insert_alerts(conn, pending, return_inserted=track_alerts))
+        if supp_hits:
+            db.bump_suppressions(conn, supp_hits)
+            supp_hits.clear()
 
     for evt in events:
         total += 1
@@ -80,16 +96,17 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
             matched = engine.evaluate_event(evt)
             if matched:
                 dh = dedup_hash(evt)           # same identity used for the event row
-                pending.extend(detengine.alert_from_match(r, evt, dh, batch_id)
-                               for r in matched)
+                for r in matched:
+                    emit(detengine.alert_from_match(r, evt, dh, batch_id))
         if ti_active:
             hits = ti_index.match(evt)
             if hits:
                 dh = dh or dedup_hash(evt)
-                pending.append(timatcher.ti_alert(hits, evt, dh, batch_id))
+                emit(timatcher.ti_alert(hits, evt, dh, batch_id))
         if len(chunk) >= CHUNK:
             flush()
             chunk, pending = [], []
     if chunk or pending:
         flush()
-    return WriteResult(total, new_alerts)
+    # Suppressed alerts are stored for audit but never notified / actioned.
+    return WriteResult(total, [a for a in new_alerts if a.get("status") != "suppressed"])

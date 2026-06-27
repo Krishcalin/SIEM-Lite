@@ -132,9 +132,45 @@ CREATE TABLE IF NOT EXISTS alerts (
     status      text        NOT NULL DEFAULT 'open'   -- open | ack | closed
 );
 
+-- Triage: who owns an alert (assignment). status gains a 'suppressed' value for
+-- alerts an allowlist matched (kept for audit, hidden from the default view).
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assignee text;
+
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_dedup_idx   ON alerts (rule_id, dedup_hash);
 CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts (created_at DESC);
 CREATE INDEX IF NOT EXISTS alerts_status_idx  ON alerts (status);
+CREATE INDEX IF NOT EXISTS alerts_assignee_idx ON alerts (assignee);
+
+-- Free-form investigation notes threaded under an alert.
+CREATE TABLE IF NOT EXISTS alert_notes (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    alert_id   bigint      NOT NULL,
+    author     text,
+    note       text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS alert_notes_alert_idx ON alert_notes (alert_id);
+
+-- Suppression / allowlist rules: an alert that matches an enabled, unexpired rule
+-- is stored as status='suppressed' and not notified. Each non-null column is an
+-- AND condition; src_ip accepts an exact IP or a CIDR.
+CREATE TABLE IF NOT EXISTS suppressions (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    name       text        NOT NULL,
+    rule_id    text,
+    src_ip     text,
+    user_name  text,
+    host_name  text,
+    vendor     text,
+    reason     text,
+    enabled    boolean     NOT NULL DEFAULT true,
+    created_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    expires_at timestamptz,
+    hit_count  bigint      NOT NULL DEFAULT 0,
+    last_hit   timestamptz
+);
+CREATE INDEX IF NOT EXISTS suppressions_enabled_idx ON suppressions (enabled);
 CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (level);
 CREATE INDEX IF NOT EXISTS alerts_rule_idx    ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);

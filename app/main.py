@@ -26,6 +26,7 @@ from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .response import engine as response_engine
 from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
+from .triage import runtime as triage_runtime
 from .util import parse_ts
 
 log = logging.getLogger("logocean")
@@ -74,6 +75,7 @@ async def lifespan(app: FastAPI):
                         settings.admin_user, pw)
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
+    triage_runtime.reload_index()              # load suppression/allowlist rules
     correlator = None
     if settings.detection_enabled:
         detection_runtime.load_and_sync(BASE.parent / "rules")
@@ -381,7 +383,8 @@ def event_detail(request: Request, event_id: int):
 def _alert_filters(request: Request) -> dict:
     q = request.query_params
     return {"status": q.get("status") or None, "level": q.get("level") or None,
-            "rule_id": q.get("rule_id") or None, "q": q.get("q") or None}
+            "rule_id": q.get("rule_id") or None, "assignee": q.get("assignee") or None,
+            "q": q.get("q") or None}
 
 
 @app.get("/alerts", response_class=HTMLResponse)
@@ -409,7 +412,9 @@ def alert_detail(request: Request, alert_id: int):
         return HTMLResponse("Alert not found", status_code=404)
     event_id = db.event_id_for(a["dedup_hash"], a["event_time"])
     return templates.TemplateResponse("alert.html", _ctx(
-        request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id)))
+        request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id),
+        notes=db.alert_notes(alert_id),
+        users=db.list_users() if settings.auth_enabled else []))
 
 
 @app.post("/alert/{alert_id}/status")
@@ -418,6 +423,45 @@ def alert_set_status(request: Request, alert_id: int, status: str = Form(...),
     if status in ("open", "ack", "closed"):
         db.set_alert_status(alert_id, status)
         _audit(request, "alert.status", f"alert {alert_id} -> {status}")
+    return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+@app.post("/alert/{alert_id}/assign")
+def alert_assign(request: Request, alert_id: int, assignee: str = Form(""),
+                 _user=Depends(require_role("analyst"))):
+    db.set_alert_assignee(alert_id, assignee.strip() or None)
+    _audit(request, "alert.assign", f"alert {alert_id} -> {assignee.strip() or 'unassigned'}")
+    return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+@app.post("/alert/{alert_id}/note")
+def alert_add_note(request: Request, alert_id: int, note: str = Form(...),
+                   _user=Depends(require_role("analyst"))):
+    text = note.strip()
+    if text:
+        user = getattr(request.state, "user", None)
+        db.add_alert_note(alert_id, user["username"] if user else None, text[:4000])
+        _audit(request, "alert.note", f"alert {alert_id}")
+    return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+@app.post("/alert/{alert_id}/suppress")
+def alert_suppress(request: Request, alert_id: int, fields: list[str] = Form([]),
+                   reason: str = Form(""), _user=Depends(require_role("analyst"))):
+    """Create an allowlist rule from the chosen attributes of this alert."""
+    a = db.get_alert(alert_id)
+    if a is None:
+        return HTMLResponse("Alert not found", status_code=404)
+    crit = {f: a.get(f) for f in ("rule_id", "src_ip", "user_name", "host_name", "vendor")
+            if f in fields and a.get(f)}
+    if not crit:
+        return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+    user = getattr(request.state, "user", None)
+    name = f"from alert #{alert_id}: " + ", ".join(f"{k}={v}" for k, v in crit.items())
+    db.create_suppression(name[:200], reason=reason.strip() or None,
+                          created_by=user["username"] if user else None, **crit)
+    triage_runtime.reload_index()
+    _audit(request, "suppression.create", name[:200])
     return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
 
 
@@ -451,7 +495,7 @@ def _render_admin(request: Request, *, purged=None, new_key=None, user_error=Non
         roles=auth.ROLES, audit=db.recent_audit(50),
         ti_enabled=settings.threatintel_enabled, ti_counts=db.ioc_counts(),
         ti_indicators=db.list_iocs(25), ti_index_size=len(ti_runtime.get_index()),
-        ti_types=ti_matcher.VALID_TYPES,
+        ti_types=ti_matcher.VALID_TYPES, suppressions=db.list_suppressions(),
         purged=purged, new_key=new_key, user_error=user_error, ti_error=ti_error))
 
 
@@ -547,6 +591,50 @@ def admin_ti_delete(request: Request, indicator: str = Form(...), ioc_type: str 
     db.delete_ioc(indicator, ioc_type)
     ti_runtime.reload_index()
     _audit(request, "threatintel.delete", f"{indicator} ({ioc_type})")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Suppressions / allowlists (admin)                                          #
+# --------------------------------------------------------------------------- #
+@app.post("/admin/suppressions", response_class=HTMLResponse)
+def admin_suppression_add(request: Request, name: str = Form(...),
+                          rule_id: str = Form(""), src_ip: str = Form(""),
+                          user_name: str = Form(""), host_name: str = Form(""),
+                          vendor: str = Form(""), reason: str = Form(""),
+                          _user=Depends(require_role("admin"))):
+    crit = {"rule_id": rule_id.strip(), "src_ip": src_ip.strip(),
+            "user_name": user_name.strip(), "host_name": host_name.strip(),
+            "vendor": vendor.strip()}
+    if not any(crit.values()):
+        return _render_admin(request,
+                             ti_error="A suppression needs at least one condition "
+                                      "(rule, src ip, user, host or vendor).")
+    user = getattr(request.state, "user", None)
+    db.create_suppression(name.strip() or "unnamed", reason=reason.strip() or None,
+                          created_by=user["username"] if user else None,
+                          **{k: v or None for k, v in crit.items()})
+    triage_runtime.reload_index()
+    _audit(request, "suppression.create", name.strip())
+    return _render_admin(request)
+
+
+@app.post("/admin/suppressions/{supp_id}/toggle")
+def admin_suppression_toggle(request: Request, supp_id: int, enabled: str = Form(...),
+                             _user=Depends(require_role("admin"))):
+    on = enabled == "true"
+    db.set_suppression_enabled(supp_id, on)
+    triage_runtime.reload_index()
+    _audit(request, "suppression.toggle", f"{supp_id} -> {'enabled' if on else 'disabled'}")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/suppressions/{supp_id}/delete")
+def admin_suppression_delete(request: Request, supp_id: int,
+                             _user=Depends(require_role("admin"))):
+    db.delete_suppression(supp_id)
+    triage_runtime.reload_index()
+    _audit(request, "suppression.delete", str(supp_id))
     return RedirectResponse(url="/admin", status_code=303)
 
 

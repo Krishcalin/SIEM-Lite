@@ -23,7 +23,8 @@ Entra ID, Microsoft 365) while other tools push findings via the ingest API. Pha
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
 log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
 **Threat-intel enrichment** (`THREATINTEL_ENABLED`) matches events against IOC
-feeds and raises alerts on hits.
+feeds and raises alerts on hits. **Triage & tuning** adds alert assignment, notes,
+and suppression/allowlist rules to manage noise.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -93,6 +94,18 @@ text), and a hit becomes one `ti-ioc-match` alert (`ti_alert`) at the highest ma
 severity — flowing through the same notify/respond path. Off unless
 `THREATINTEL_ENABLED`; manual indicators are managed on the Admin page.
 
+**Triage & tuning** (`app/triage/`) covers alert workflow + noise control.
+`suppression.py` is a pure matcher: a `Suppression` is an AND of `rule_id` /
+`vendor` / `user_name` / `host_name` / `src_ip` (exact or CIDR) conditions;
+`runtime.py` holds the `SuppressionIndex` (rebuilt from the `suppressions` table).
+`pipeline.write_stream` checks each newly-built alert (detection + threat-intel)
+against the index — a match stores it as `status='suppressed'` (kept for audit,
+excluded from the default `/alerts` view and from notify/respond) and bumps the
+rule's `hit_count`. Alerts also carry an `assignee` and threaded `alert_notes`,
+edited from the alert detail page (`/alert/{id}` assign/note/suppress routes);
+suppressions are managed under Admin. Reload the index after any change via
+`triage_runtime.reload_index()`.
+
 ## Repository layout
 
 ```
@@ -122,6 +135,7 @@ app/
   response/      engine.py — agentless playbooks + audit log (background thread)
   threatintel/   matcher.py (IocIndex + classify + ti_alert) + feeds.py (parse/load) +
                  runtime.py (index singleton + feed sync + scheduler)
+  triage/        suppression.py (Suppression + SuppressionIndex) + runtime.py (index)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -135,8 +149,9 @@ app/
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
 clients/         logocean_push.py — copy-into-your-tool helper to push to the API
-schema.sql       events, ingest_batches, api_keys, alerts, detection_rules,
-                 response_actions, collectors, users, sessions, audit_log, iocs
+schema.sql       events, ingest_batches, api_keys, alerts (+assignee), alert_notes,
+                 suppressions, detection_rules, response_actions, collectors, users,
+                 sessions, audit_log, iocs
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
@@ -324,14 +339,17 @@ Unit:
 - `test_compliance.py` — technique→control mapping + the coverage report builder.
 - `test_threatintel.py` — IOC classification, feed parsing (line/CSV/JSON), the
   IocIndex matcher (exact/CIDR/embedded), and the `ti_alert` builder.
+- `test_triage.py` — suppression matching (single/AND conditions, CIDR, empty-rule
+  guard) and `SuppressionIndex` first-match.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
 - `test_integration_db.py` — schema/partition creation, GIN FTS + inet/CIDR
   search, ON CONFLICT dedup, retention purge (drops whole partitions), the
   correlation SQL, the pipeline write path raising alerts (detection +
-  threat-intel), alert insert/dedup/queries, and the IOC/rule-registry/api-key/
-  user-session/collector/batch round-trips — all against a real Postgres.
+  threat-intel) and suppressing matched ones, alert insert/dedup/queries +
+  assignment/notes, and the IOC/suppression/rule-registry/api-key/user-session/
+  collector/batch round-trips — all against a real Postgres.
 - `test_integration_api.py` — the FastAPI stack via TestClient against a real
   DB: `/health`, API-key auth (401/200), and ingest→detect end-to-end.
 

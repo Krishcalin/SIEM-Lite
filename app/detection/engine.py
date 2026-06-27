@@ -440,7 +440,7 @@ def alert_from_match(rule: Rule, evt: NormalizedEvent, dedup_hash: str,
         "vendor": evt.vendor, "src_ip": evt.src_ip, "dst_ip": evt.dst_ip,
         "user_name": evt.user_name, "host_name": evt.host_name,
         "message": str(evt.message)[:1000] if evt.message else None,
-        "dedup_hash": dedup_hash, "batch_id": batch_id,
+        "dedup_hash": dedup_hash, "batch_id": batch_id, "status": "open",
     }
 
 

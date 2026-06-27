@@ -229,10 +229,10 @@ def set_rule_enabled(rule_id: str, enabled: bool) -> None:
 
 _ALERT_INSERT = """
 INSERT INTO alerts (event_time, rule_id, rule_title, level, tactics, techniques,
-    vendor, src_ip, dst_ip, user_name, host_name, message, dedup_hash, batch_id)
+    vendor, src_ip, dst_ip, user_name, host_name, message, dedup_hash, batch_id, status)
 VALUES (%(event_time)s, %(rule_id)s, %(rule_title)s, %(level)s, %(tactics)s, %(techniques)s,
     %(vendor)s, %(src_ip)s::inet, %(dst_ip)s::inet, %(user_name)s, %(host_name)s,
-    %(message)s, %(dedup_hash)s, %(batch_id)s)
+    %(message)s, %(dedup_hash)s, %(batch_id)s, COALESCE(%(status)s, 'open'))
 ON CONFLICT (rule_id, dedup_hash) DO NOTHING
 """
 
@@ -262,10 +262,14 @@ def _alert_where(f: dict) -> tuple[str, dict]:
     clauses, p = [], {}
     if f.get("status"):
         clauses.append("status = %(status)s"); p["status"] = f["status"]
+    else:
+        clauses.append("status <> 'suppressed'")   # hide suppressed from the default view
     if f.get("level"):
         clauses.append("lower(level) = lower(%(level)s)"); p["level"] = f["level"]
     if f.get("rule_id"):
         clauses.append("rule_id = %(rule_id)s"); p["rule_id"] = f["rule_id"]
+    if f.get("assignee"):
+        clauses.append("assignee = %(assignee)s"); p["assignee"] = f["assignee"]
     if f.get("q"):
         clauses.append("(message ILIKE %(q)s OR user_name ILIKE %(q)s OR "
                        "host(src_ip) ILIKE %(q)s)"); p["q"] = f"%{f['q']}%"
@@ -275,7 +279,7 @@ def _alert_where(f: dict) -> tuple[str, dict]:
 
 _ALERT_COLS = """id, created_at, event_time, rule_id, rule_title, level, tactics,
     techniques, vendor, host(src_ip) AS src_ip, host(dst_ip) AS dst_ip,
-    user_name, host_name, message, dedup_hash, batch_id, status"""
+    user_name, host_name, message, dedup_hash, batch_id, status, assignee"""
 
 
 def recent_alerts(filters: dict, limit: int, offset: int) -> tuple[list[dict], int]:
@@ -299,6 +303,82 @@ def set_alert_status(alert_id: int, status: str) -> None:
     with pool().connection() as conn:
         conn.execute("UPDATE alerts SET status = %s WHERE id = %s", (status, alert_id))
         conn.commit()
+
+
+def set_alert_assignee(alert_id: int, assignee: Optional[str]) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE alerts SET assignee = %s WHERE id = %s",
+                     (assignee or None, alert_id))
+        conn.commit()
+
+
+def add_alert_note(alert_id: int, author: Optional[str], note: str) -> None:
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO alert_notes (alert_id, author, note) VALUES (%s, %s, %s)",
+            (alert_id, author, note))
+        conn.commit()
+
+
+def alert_notes(alert_id: int) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM alert_notes WHERE alert_id = %s ORDER BY created_at",
+            (alert_id,)).fetchall()
+
+
+# --------------------------------------------------------------------------- #
+#  Suppression / allowlist rules                                              #
+# --------------------------------------------------------------------------- #
+def create_suppression(name: str, *, rule_id=None, src_ip=None, user_name=None,
+                       host_name=None, vendor=None, reason=None,
+                       created_by=None, expires_at=None) -> int:
+    with pool().connection() as conn:
+        row = conn.execute(
+            "INSERT INTO suppressions "
+            "(name, rule_id, src_ip, user_name, host_name, vendor, reason, "
+            " created_by, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (name, rule_id or None, src_ip or None, user_name or None,
+             host_name or None, vendor or None, reason or None, created_by,
+             expires_at)).fetchone()
+        conn.commit()
+        return row["id"]
+
+
+def enabled_suppressions() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT id, name, rule_id, src_ip, user_name, host_name, vendor "
+            "FROM suppressions WHERE enabled "
+            "AND (expires_at IS NULL OR expires_at > now())").fetchall()
+
+
+def list_suppressions() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM suppressions ORDER BY created_at DESC").fetchall()
+
+
+def set_suppression_enabled(supp_id: int, enabled: bool) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE suppressions SET enabled = %s WHERE id = %s",
+                     (enabled, supp_id))
+        conn.commit()
+
+
+def delete_suppression(supp_id: int) -> None:
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM suppressions WHERE id = %s", (supp_id,))
+        conn.commit()
+
+
+def bump_suppressions(conn, counts: dict) -> None:
+    """Increment hit counters for suppressions that fired (within `conn`'s txn)."""
+    for supp_id, n in counts.items():
+        conn.execute(
+            "UPDATE suppressions SET hit_count = hit_count + %s, last_hit = now() "
+            "WHERE id = %s", (n, supp_id))
 
 
 def alert_severity_counts() -> dict:

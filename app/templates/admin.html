@@ -212,6 +212,52 @@
 </section>
 
 <section>
+  <h2>Suppressions &amp; allowlists</h2>
+  <p>Alerts matching an enabled rule are stored as <code>suppressed</code> (kept for
+     audit, hidden from the default queue, not notified). Every set condition must
+     match; <code>src ip</code> accepts an IP or CIDR. Build one fast from the
+     <b>Suppress similar</b> form on any alert.</p>
+  <form method="post" action="/admin/suppressions" class="inline-form">
+    <input type="text" name="name" placeholder="name" required>
+    <input type="text" name="rule_id" placeholder="rule id">
+    <input type="text" name="src_ip" placeholder="src ip / CIDR">
+    <input type="text" name="user_name" placeholder="user">
+    <input type="text" name="host_name" placeholder="host">
+    <input type="text" name="vendor" placeholder="vendor">
+    <input type="text" name="reason" placeholder="reason">
+    <button type="submit" class="btn">Add suppression</button>
+  </form>
+  <table>
+    <tr><th>Name</th><th>Conditions</th><th class="r">Hits</th><th>Last hit (UTC)</th>
+        <th>Status</th><th></th></tr>
+    {% for s in suppressions %}
+    <tr>
+      <td>{{ s.name }}</td>
+      <td class="muted">
+        {% if s.rule_id %}rule={{ s.rule_id }} {% endif %}
+        {% if s.src_ip %}src={{ s.src_ip }} {% endif %}
+        {% if s.user_name %}user={{ s.user_name }} {% endif %}
+        {% if s.host_name %}host={{ s.host_name }} {% endif %}
+        {% if s.vendor %}vendor={{ s.vendor }}{% endif %}
+      </td>
+      <td class="r">{{ "{:,}".format(s.hit_count or 0) }}</td>
+      <td class="nowrap">{{ s.last_hit.strftime('%Y-%m-%d %H:%M') if s.last_hit else '—' }}</td>
+      <td>{% if not s.enabled %}<span class="badge error">disabled</span>{% else %}<span class="badge done">enabled</span>{% endif %}</td>
+      <td>
+        <form method="post" action="/admin/suppressions/{{ s.id }}/toggle" style="display:inline">
+          <input type="hidden" name="enabled" value="{{ 'false' if s.enabled else 'true' }}">
+          <button type="submit" class="btn">{{ 'Disable' if s.enabled else 'Enable' }}</button>
+        </form>
+        <form method="post" action="/admin/suppressions/{{ s.id }}/delete" style="display:inline">
+          <button type="submit" class="btn">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="muted">No suppressions defined.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section>
   <h2>Recent ingests</h2>
   <table>
     <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>

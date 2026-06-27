@@ -7,13 +7,14 @@
   <input type="text" name="q" placeholder="Search message / user / src ip" value="{{ params.get('q','') }}" class="wide">
   <select name="status">
     <option value="">any status</option>
-    {% for s in ['open','ack','closed'] %}<option value="{{ s }}" {{ 'selected' if params.get('status')==s }}>{{ s }}</option>{% endfor %}
+    {% for s in ['open','ack','closed','suppressed'] %}<option value="{{ s }}" {{ 'selected' if params.get('status')==s }}>{{ s }}</option>{% endfor %}
   </select>
   <select name="level">
     <option value="">any severity</option>
     {% for l in ['critical','high','medium','low','informational'] %}<option value="{{ l }}" {{ 'selected' if params.get('level')==l }}>{{ l }}</option>{% endfor %}
   </select>
   <input type="text" name="rule_id" placeholder="rule id" value="{{ params.get('rule_id','') }}">
+  <input type="text" name="assignee" placeholder="assignee" value="{{ params.get('assignee','') }}">
   <button type="submit" class="btn primary">Filter</button>
   <a class="btn" href="/alerts">Reset</a>
 </form>
@@ -31,7 +32,7 @@
 <table class="results">
   <tr>
     <th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>MITRE</th><th>Vendor</th>
-    <th>Src</th><th>User</th><th>Host</th><th>Message</th><th>Status</th>
+    <th>Src</th><th>User</th><th>Host</th><th>Message</th><th>Assignee</th><th>Status</th>
   </tr>
   {% for r in rows %}
   <tr onclick="location.href='/alert/{{ r.id }}'">
@@ -44,10 +45,11 @@
     <td>{{ r.user_name or '' }}</td>
     <td>{{ r.host_name or '' }}</td>
     <td class="msg">{{ (r.message or '')[:100] }}</td>
+    <td class="muted">{{ r.assignee or '' }}</td>
     <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
   </tr>
   {% else %}
-  <tr><td colspan="10" class="muted">No alerts match.</td></tr>
+  <tr><td colspan="11" class="muted">No alerts match.</td></tr>
   {% endfor %}
 </table>
 

@@ -128,8 +128,17 @@ framing supports both octet-counting (RFC 6587) and newline-delimited streams.
 
 Every ingested event is evaluated against **detection rules**, and a background
 scheduler runs **correlation rules** over the event store. Matches raise **alerts**
-you can filter, drill into (down to the originating event), and triage
-(acknowledge / close) at **`/alerts`**; open-alert counts show on the dashboard.
+you can filter, drill into (down to the originating event), and triage at
+**`/alerts`**; open-alert counts show on the dashboard.
+
+**Triage & tuning.** Each alert can be **acknowledged / closed / reopened**,
+**assigned** to an analyst, and annotated with threaded **notes**. To cut noise,
+build **suppression / allowlist** rules — by rule id, source IP/CIDR, user, host
+and/or vendor (each set field is an AND condition). A matching alert is stored as
+`suppressed` (kept for audit, hidden from the default queue, and never notified or
+actioned), and the suppression's hit count is tracked. The fastest way to make one
+is the **Suppress similar** form on any alert (pre-filled from its attributes);
+manage them all under **Admin ▸ Suppressions**.
 
 Rules are YAML files in `rules/` (a Sigma-compatible subset), tagged with MITRE
 ATT&CK, and enable/disable from the Admin page (applies immediately). The engine
@@ -329,6 +338,7 @@ Log-Parser-Storage/
 │   ├── response/           # agentless response playbooks + audit log
 │   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365) + scheduler
 │   ├── threatintel/        # IOC matcher + feed loader + index runtime
+│   ├── triage/             # suppression/allowlist matcher + index runtime
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -348,7 +358,7 @@ Log-Parser-Storage/
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,...}
+                            #   threatintel,triage,...}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -377,18 +387,20 @@ modifiers + condition grammar), inline detection in the pipeline,
 correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
-matching + alerting), auth (password hashing, role ranking, the RBAC
-dependency), the audit helper, and the compliance coverage report — all without
-a database (the queue, pipeline, and worker tests mock the writers).
+matching + alerting), suppression/allowlist matching, auth (password hashing,
+role ranking, the RBAC dependency), the audit helper, and the compliance coverage
+report — all without a database (the queue, pipeline, and worker tests mock the
+writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
 search, ON CONFLICT dedup, retention purge dropping whole partitions, the
 correlation SQL, the pipeline write path raising alert rows (detection and
-threat-intel), alert insert/dedup/queries, the IOC/auth/collector/registry
-round-trips, and the HTTP stack end-to-end (TestClient → API-key auth → ingest →
-detect). CI runs the unit tier on Python 3.11–3.13 and the integration tier
-against a Postgres service container (`.github/workflows/tests.yml`).
+threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
+assignment/notes, the IOC/suppression/auth/collector/registry round-trips, and
+the HTTP stack end-to-end (TestClient → API-key auth → ingest → detect). CI runs
+the unit tier on Python 3.11–3.13 and the integration tier against a Postgres
+service container (`.github/workflows/tests.yml`).
 
 ## Data model & retention notes
 

