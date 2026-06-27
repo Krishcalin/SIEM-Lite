@@ -204,3 +204,23 @@ CREATE TABLE IF NOT EXISTS audit_log (
     ip         text
 );
 CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log (created_at DESC);
+
+-- ============================================================================
+--  Threat intelligence: indicators of compromise (IOCs).
+-- ============================================================================
+-- Indicators loaded from feeds (by `source`) or added manually. The ingest
+-- pipeline matches events against the enabled, unexpired rows; a hit raises a
+-- threat-intel alert. Re-syncing a feed replaces only that source's rows.
+CREATE TABLE IF NOT EXISTS iocs (
+    indicator   text        NOT NULL,
+    ioc_type    text        NOT NULL,          -- ip | cidr | domain | hash | url
+    source      text        NOT NULL DEFAULT 'manual',
+    severity    text        NOT NULL DEFAULT 'high',
+    description text,
+    enabled     boolean     NOT NULL DEFAULT true,
+    added_at    timestamptz NOT NULL DEFAULT now(),
+    expires_at  timestamptz,
+    PRIMARY KEY (indicator, ioc_type)
+);
+CREATE INDEX IF NOT EXISTS iocs_type_idx   ON iocs (ioc_type);
+CREATE INDEX IF NOT EXISTS iocs_source_idx ON iocs (source);

@@ -16,6 +16,7 @@ from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
 from .normalize import dedup_hash
 from .parsers import PARSERS
+from .threatintel import matcher as timatcher, runtime as tiruntime
 
 
 class WriteResult(NamedTuple):
@@ -58,6 +59,8 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     """
     fb = fallback or datetime.now(timezone.utc)
     engine = detruntime.get_engine()           # None if detection disabled/not loaded
+    ti_index = tiruntime.get_index()           # empty unless threat-intel is loaded
+    ti_active = len(ti_index) > 0
     track_alerts = alert_actions.active()
     total = 0
     chunk: list[NormalizedEvent] = []
@@ -72,12 +75,18 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         total += 1
         apply_fallback_time(evt, fb)
         chunk.append(evt)
+        dh: Optional[str] = None               # event identity, computed once if needed
         if engine is not None:
             matched = engine.evaluate_event(evt)
             if matched:
                 dh = dedup_hash(evt)           # same identity used for the event row
                 pending.extend(detengine.alert_from_match(r, evt, dh, batch_id)
                                for r in matched)
+        if ti_active:
+            hits = ti_index.match(evt)
+            if hits:
+                dh = dh or dedup_hash(evt)
+                pending.append(timatcher.ti_alert(hits, evt, dh, batch_id))
         if len(chunk) >= CHUNK:
             flush()
             chunk, pending = [], []

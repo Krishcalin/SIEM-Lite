@@ -25,6 +25,7 @@ from .detection import correlation, runtime as detection_runtime
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .response import engine as response_engine
+from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
 from .util import parse_ts
 
 log = logging.getLogger("logocean")
@@ -111,6 +112,19 @@ async def lifespan(app: FastAPI):
         else:
             log.warning("COLLECTORS_ENABLED is set but no collector credentials are configured")
 
+    ti_scheduler = None
+    if settings.threatintel_enabled:
+        feed_list = ti_feeds.split_feeds(settings.threatintel_feeds)
+        if feed_list:
+            ti_runtime.sync_feeds(feed_list, settings.threatintel_default_severity)
+            interval = settings.threatintel_refresh_minutes * 60
+            if interval > 0:
+                ti_scheduler = ti_runtime.FeedScheduler(
+                    feed_list, interval, settings.threatintel_default_severity)
+                ti_runtime.set_scheduler(ti_scheduler)
+        else:
+            ti_runtime.reload_index()   # manual indicators only (no feeds configured)
+
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
     await queue.start()
@@ -122,9 +136,14 @@ async def lifespan(app: FastAPI):
         await correlator.start()
     if collector_sched is not None:
         await collector_sched.start()
+    if ti_scheduler is not None:
+        await ti_scheduler.start()
     try:
         yield
     finally:
+        if ti_scheduler is not None:
+            await ti_scheduler.stop()
+            ti_runtime.set_scheduler(None)
         if collector_sched is not None:
             await collector_sched.stop()
             collectors.set_scheduler(None)
@@ -236,7 +255,8 @@ def health():
             "ingest_queue": q.stats.as_dict() if q else None,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
-            "collectors": len(cs.collectors) if cs else None}
+            "collectors": len(cs.collectors) if cs else None,
+            "threatintel_indicators": len(ti_runtime.get_index())}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -421,14 +441,18 @@ def compliance_view(request: Request):
 # --------------------------------------------------------------------------- #
 #  Admin / retention                                                           #
 # --------------------------------------------------------------------------- #
-def _render_admin(request: Request, *, purged=None, new_key=None, user_error=None):
+def _render_admin(request: Request, *, purged=None, new_key=None, user_error=None,
+                  ti_error=None):
     return templates.TemplateResponse("admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
         collectors=db.list_collectors(),
         users=db.list_users() if settings.auth_enabled else [],
         roles=auth.ROLES, audit=db.recent_audit(50),
-        purged=purged, new_key=new_key, user_error=user_error))
+        ti_enabled=settings.threatintel_enabled, ti_counts=db.ioc_counts(),
+        ti_indicators=db.list_iocs(25), ti_index_size=len(ti_runtime.get_index()),
+        ti_types=ti_matcher.VALID_TYPES,
+        purged=purged, new_key=new_key, user_error=user_error, ti_error=ti_error))
 
 
 @app.get("/admin", response_class=HTMLResponse)
@@ -482,6 +506,47 @@ def admin_toggle_collector(request: Request, name: str, enabled: str = Form(...)
     on = enabled == "true"
     db.set_collector_enabled(name, on)
     _audit(request, "collector.toggle", f"{name} -> {'enabled' if on else 'disabled'}")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Threat intelligence (admin)                                                #
+# --------------------------------------------------------------------------- #
+@app.post("/admin/threatintel/reload", response_class=HTMLResponse)
+def admin_ti_reload(request: Request, _user=Depends(require_role("admin"))):
+    """Re-fetch the configured feeds (or just rebuild the index) and apply it live."""
+    feed_list = ti_feeds.split_feeds(settings.threatintel_feeds)
+    if feed_list:
+        n = ti_runtime.sync_feeds(feed_list, settings.threatintel_default_severity)
+    else:
+        n = len(ti_runtime.reload_index())
+    _audit(request, "threatintel.reload", f"{len(feed_list)} feed(s), {n} indicator(s)")
+    return _render_admin(request)
+
+
+@app.post("/admin/threatintel/add", response_class=HTMLResponse)
+def admin_ti_add(request: Request, indicator: str = Form(...),
+                 severity: str = Form("high"), description: str = Form(""),
+                 _user=Depends(require_role("admin"))):
+    ioc = ti_matcher.make_ioc(indicator.strip(), source="manual",
+                              severity=severity.strip() or "high",
+                              description=description.strip())
+    if ioc is None:
+        return _render_admin(request,
+                             ti_error=f"Could not recognize {indicator!r} as an IP/CIDR/"
+                                      "domain/hash/URL.")
+    db.upsert_iocs([ioc])
+    ti_runtime.reload_index()
+    _audit(request, "threatintel.add", f"{ioc.indicator} ({ioc.ioc_type})")
+    return _render_admin(request)
+
+
+@app.post("/admin/threatintel/delete")
+def admin_ti_delete(request: Request, indicator: str = Form(...), ioc_type: str = Form(...),
+                    _user=Depends(require_role("admin"))):
+    db.delete_ioc(indicator, ioc_type)
+    ti_runtime.reload_index()
+    _audit(request, "threatintel.delete", f"{indicator} ({ioc_type})")
     return RedirectResponse(url="/admin", status_code=303)
 
 

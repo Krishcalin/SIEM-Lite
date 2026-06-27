@@ -70,6 +70,15 @@ class Settings:
     m365_enabled: bool = _bool("M365_ENABLED", False)
     m365_content_type: str = os.getenv("M365_CONTENT_TYPE", "Audit.General")
 
+    # Threat-intelligence enrichment: match ingested events against IOC feeds
+    # (IPs/CIDRs/domains/hashes/URLs) and raise an alert on a hit. THREATINTEL_FEEDS
+    # is a comma/space-separated list of local file paths or http(s) URLs; manual
+    # indicators added in the UI also apply. Off by default.
+    threatintel_enabled: bool = _bool("THREATINTEL_ENABLED", False)
+    threatintel_feeds: str = os.getenv("THREATINTEL_FEEDS", "")
+    threatintel_refresh_minutes: int = int(os.getenv("THREATINTEL_REFRESH_MINUTES", "60"))
+    threatintel_default_severity: str = os.getenv("THREATINTEL_DEFAULT_SEVERITY", "high")
+
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
     # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged

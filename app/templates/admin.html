@@ -168,6 +168,50 @@
 </section>
 
 <section>
+  <h2>Threat intelligence</h2>
+  <p>Ingested events are matched against these indicators (IPs, CIDRs, domains,
+     file hashes, URLs); a hit raises a <b>Threat Intelligence Match</b> alert.
+     Feeds load from <code>THREATINTEL_FEEDS</code> when
+     <code>THREATINTEL_ENABLED=true</code>; you can also add indicators by hand.</p>
+  {% if ti_error %}<div class="alert err">{{ ti_error }}</div>{% endif %}
+  <p>
+    <span class="badge {{ 'done' if ti_enabled else 'error' }}">{{ 'enabled' if ti_enabled else 'disabled' }}</span>
+    <b>{{ ti_index_size }}</b> indicator(s) live in the match index ·
+    {% for t in ti_types %}{{ t }}: {{ ti_counts.get(t, 0) }}{% if not loop.last %} · {% endif %}{% endfor %}
+  </p>
+  <form method="post" action="/admin/threatintel/reload" style="display:inline">
+    <button type="submit" class="btn">Reload feeds</button>
+  </form>
+  <form method="post" action="/admin/threatintel/add" class="inline-form">
+    <input type="text" name="indicator" placeholder="1.2.3.4 / evil.com / sha256 / http://…" required>
+    <select name="severity">
+      <option>high</option><option>critical</option><option>medium</option><option>low</option>
+    </select>
+    <input type="text" name="description" placeholder="note (optional)">
+    <button type="submit" class="btn">Add indicator</button>
+  </form>
+  <table>
+    <tr><th>Indicator</th><th>Type</th><th>Severity</th><th>Source</th><th>Added (UTC)</th><th></th></tr>
+    {% for i in ti_indicators %}
+    <tr>
+      <td class="msg">{{ i.indicator }}</td>
+      <td>{{ i.ioc_type }}</td>
+      <td><span class="badge {{ i.severity }}">{{ i.severity }}</span></td>
+      <td class="muted">{{ i.source if i.source == 'manual' else i.source[:48] }}</td>
+      <td class="nowrap">{{ i.added_at.strftime('%Y-%m-%d %H:%M') if i.added_at else '—' }}</td>
+      <td>
+        <form method="post" action="/admin/threatintel/delete">
+          <input type="hidden" name="indicator" value="{{ i.indicator }}">
+          <input type="hidden" name="ioc_type" value="{{ i.ioc_type }}">
+          <button type="submit" class="btn">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="6" class="muted">No indicators loaded.</td></tr>{% endfor %}
+  </table>
+</section>
+
+<section>
   <h2>Recent ingests</h2>
   <table>
     <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>

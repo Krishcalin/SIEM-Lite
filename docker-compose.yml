@@ -34,8 +34,11 @@ services:
       NOTIFY_ENABLED: "false"
       RESPONSE_ENABLED: "false"
       # Agentless collectors (off by default). Set creds + COLLECTORS_ENABLED in
-      # .env — see .env.example (OKTA_*, GITHUB_*, GITLAB_*).
+      # .env — see .env.example (OKTA_*, GITHUB_*, GITLAB_*, AWS_*, AZURE_*).
       COLLECTORS_ENABLED: "false"
+      # Threat-intel enrichment (off by default). Set THREATINTEL_FEEDS + ENABLED
+      # in .env to match ingested events against IOC feeds.
+      THREATINTEL_ENABLED: "false"
       # Built-in auth + RBAC (off by default; front with SSO/proxy otherwise).
       # Set AUTH_ENABLED + ADMIN_PASSWORD in .env to enable login.
       AUTH_ENABLED: "false"

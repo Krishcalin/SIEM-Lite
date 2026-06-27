@@ -22,6 +22,8 @@ and scheduled collectors pull vendor logs (Okta/GitHub/GitLab, AWS CloudTrail,
 Entra ID, Microsoft 365) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
 log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
+**Threat-intel enrichment** (`THREATINTEL_ENABLED`) matches events against IOC
+feeds and raises alerts on hits.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -81,6 +83,16 @@ exact form its parser expects; all signing/URL/response logic is in pure, unit-t
 functions (network isolated in `_http_get`/`_http_post`). Inbound *push* feeds (other
 tools → the ingest API) use `clients/logocean_push.py`.
 
+**Threat intelligence** (`app/threatintel/`) matches each event against IOC feeds
+inline in `pipeline.write_stream`. Feeds (local files or http(s) URLs; line/CSV/JSON,
+type inferred) are parsed by `feeds.py` and stored in the `iocs` table by source;
+`runtime.py` builds an in-memory `IocIndex` (IPs/CIDRs/domains/hashes/URLs) and a
+scheduler refreshes feeds on a timer. `matcher.py` is pure: it pulls observables from
+the event's normalized fields + `raw` (and extracts IPs/domains/URLs/hashes from free
+text), and a hit becomes one `ti-ioc-match` alert (`ti_alert`) at the highest matched
+severity — flowing through the same notify/respond path. Off unless
+`THREATINTEL_ENABLED`; manual indicators are managed on the Admin page.
+
 ## Repository layout
 
 ```
@@ -108,6 +120,8 @@ app/
   alert_actions.py  fan newly-raised alerts to notifications + response
   notify/        channels.py (webhook/email) + dispatcher.py (background thread)
   response/      engine.py — agentless playbooks + audit log (background thread)
+  threatintel/   matcher.py (IocIndex + classify + ti_alert) + feeds.py (parse/load) +
+                 runtime.py (index singleton + feed sync + scheduler)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -122,7 +136,7 @@ rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
 clients/         logocean_push.py — copy-into-your-tool helper to push to the API
 schema.sql       events, ingest_batches, api_keys, alerts, detection_rules,
-                 response_actions, collectors, users, sessions, audit_log
+                 response_actions, collectors, users, sessions, audit_log, iocs
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
@@ -308,14 +322,16 @@ Unit:
 - `test_auth.py` — password hashing/verify, role ranking, the RBAC dependency.
 - `test_audit.py` — the `_audit` helper's actor/IP resolution (DB write mocked).
 - `test_compliance.py` — technique→control mapping + the coverage report builder.
+- `test_threatintel.py` — IOC classification, feed parsing (line/CSV/JSON), the
+  IocIndex matcher (exact/CIDR/embedded), and the `ti_alert` builder.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
 - `test_integration_db.py` — schema/partition creation, GIN FTS + inet/CIDR
   search, ON CONFLICT dedup, retention purge (drops whole partitions), the
-  correlation SQL, the pipeline write path raising alerts, alert
-  insert/dedup/queries, and the rule-registry/api-key/user-session/collector/
-  batch round-trips — all against a real Postgres.
+  correlation SQL, the pipeline write path raising alerts (detection +
+  threat-intel), alert insert/dedup/queries, and the IOC/rule-registry/api-key/
+  user-session/collector/batch round-trips — all against a real Postgres.
 - `test_integration_api.py` — the FastAPI stack via TestClient against a real
   DB: `/health`, API-key auth (401/200), and ingest→detect end-to-end.
 

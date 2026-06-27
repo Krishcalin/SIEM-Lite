@@ -221,6 +221,31 @@ Two agentless ways to get logs in without manual upload:
   push("http://logocean:8000", "lo_...", findings)   # list of dicts -> generic_json
   ```
 
+## Threat-intelligence enrichment
+
+Set `THREATINTEL_ENABLED=true` to match every ingested event against **indicators of
+compromise** — IPs, CIDRs, domains, file hashes, and URLs. A hit raises a **Threat
+Intelligence Match** alert that flows through the normal alert → notify → response path
+(its severity is the highest of the matched indicators).
+
+- **Feeds** — `THREATINTEL_FEEDS` is a comma/space-separated list of local file paths or
+  `http(s)` URLs, refreshed every `THREATINTEL_REFRESH_MINUTES`. Each feed may be a plain
+  one-indicator-per-line list (`#` comments allowed), a CSV
+  (`indicator[,type[,severity[,description]]]`), or JSON (an array of strings or of
+  objects). Indicator type is inferred when not given.
+- **Manual indicators** — add or remove individual IOCs from the **Admin** page; a
+  Reload button re-fetches the feeds.
+- **Matching** — indicators are held in an in-memory index for fast per-event lookup;
+  the matcher checks the event's src/dst IPs (exact + CIDR) and pulls
+  IPs/domains/URLs/hashes out of the normalized fields *and* `raw` (and from free text
+  in `message`), so an indicator buried in a log line is still caught.
+
+```bash
+# a feed can be as simple as a blocklist file:
+echo -e "# bad infra\n203.0.113.5\nevil.example\nhttp://drop.example/x" > feeds/iocs.txt
+THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usual
+```
+
 ## How to export the logs to upload
 
 | Source | How to export | Upload as |
@@ -267,7 +292,9 @@ explicitly in the upload form.
 | `SMTP_HOST` … `SMTP_TO` | — | Email notification channel (host + from + to to activate) |
 | `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
 | `COLLECTORS_ENABLED` / `COLLECTOR_INTERVAL` | `false` / `300` | Scheduled pull collectors; poll period (s) |
-| `OKTA_*` / `GITHUB_*` / `GITLAB_*` | — | Per-collector credentials (a collector activates when set) |
+| `OKTA_*` / `GITHUB_*` / `GITLAB_*` / `AWS_*` / `AZURE_*` | — | Per-collector credentials (a collector activates when set) |
+| `THREATINTEL_ENABLED` / `THREATINTEL_FEEDS` | `false` / — | Match events against IOC feeds (paths or URLs) |
+| `THREATINTEL_REFRESH_MINUTES` / `THREATINTEL_DEFAULT_SEVERITY` | `60` / `high` | Feed refresh period; severity when a feed omits one |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
 | `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
@@ -300,7 +327,8 @@ Log-Parser-Storage/
 │   ├── alert_actions.py    # fan new alerts to notifications + response
 │   ├── notify/             # webhook + email channels, background dispatcher
 │   ├── response/           # agentless response playbooks + audit log
-│   ├── collectors/         # pull connectors (Okta/GitHub/GitLab) + scheduler
+│   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365) + scheduler
+│   ├── threatintel/        # IOC matcher + feed loader + index runtime
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -319,7 +347,8 @@ Log-Parser-Storage/
 ├── clients/                # logocean_push.py — push helper for your own tools
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
-                            #   pipeline,correlation,notify,response,collectors,auth,...}
+                            #   pipeline,correlation,notify,response,collectors,auth,
+                            #   threatintel,...}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -347,18 +376,19 @@ syslog TCP framing, the detection engine (Sigma-subset matching, all field
 modifiers + condition grammar), inline detection in the pipeline,
 correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
-Microsoft OAuth helpers), auth (password hashing, role ranking, the RBAC
+Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
+matching + alerting), auth (password hashing, role ranking, the RBAC
 dependency), the audit helper, and the compliance coverage report — all without
 a database (the queue, pipeline, and worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
 search, ON CONFLICT dedup, retention purge dropping whole partitions, the
-correlation SQL, the pipeline write path raising alert rows, alert
-insert/dedup/queries, the auth/collector/registry round-trips, and the HTTP
-stack end-to-end (TestClient → API-key auth → ingest → detect). CI runs the unit
-tier on Python 3.11–3.13 and the integration tier against a Postgres service
-container (`.github/workflows/tests.yml`).
+correlation SQL, the pipeline write path raising alert rows (detection and
+threat-intel), alert insert/dedup/queries, the IOC/auth/collector/registry
+round-trips, and the HTTP stack end-to-end (TestClient → API-key auth → ingest →
+detect). CI runs the unit tier on Python 3.11–3.13 and the integration tier
+against a Postgres service container (`.github/workflows/tests.yml`).
 
 ## Data model & retention notes
 

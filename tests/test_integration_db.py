@@ -231,6 +231,40 @@ def test_collectors_roundtrip(clean_db):
     assert len(db.list_collectors()) == 2
 
 
+def test_iocs_roundtrip_and_pipeline_alert(clean_db):
+    db = clean_db
+    from app import pipeline
+    from app.threatintel import matcher as tim
+    from app.threatintel import runtime as tirt
+
+    db.upsert_iocs([tim.make_ioc("203.0.113.5", "feedX", "critical"),
+                    tim.make_ioc("evil.test", "feedX")])
+    assert db.ioc_counts()["total"] == 2
+    assert {r["indicator"] for r in db.enabled_iocs()} == {"203.0.113.5", "evil.test"}
+
+    # re-syncing a feed replaces only that source's indicators
+    db.replace_source_iocs("feedX", [tim.make_ioc("198.51.100.9", "feedX")])
+    counts = db.ioc_counts()
+    assert counts["total"] == 1 and counts["ip"] == 1
+
+    tirt.reload_index()                       # build the in-memory index from the DB
+    try:
+        with db.pool().connection() as conn:
+            res = pipeline.write_stream(
+                conn, [_evt(vendor="fw", src_ip="198.51.100.9", message="inbound")],
+                batch_id=1)
+            conn.commit()
+    finally:
+        tirt.set_index(tim.IocIndex())        # reset the global index for other tests
+    assert res.total == 1
+    alerts, _ = db.recent_alerts({}, 50, 0)
+    ti = next(a for a in alerts if a["rule_id"] == "ti-ioc-match")
+    assert ti["level"] == "high" and "198.51.100.9" in ti["message"]
+
+    db.delete_ioc("198.51.100.9", "ip")
+    assert db.ioc_counts()["total"] == 0
+
+
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")

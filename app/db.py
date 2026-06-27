@@ -424,6 +424,77 @@ def recent_audit(limit: int = 200) -> list[dict]:
             "SELECT * FROM audit_log ORDER BY created_at DESC LIMIT %s", (limit,)).fetchall()
 
 
+# --------------------------------------------------------------------------- #
+#  Threat intelligence (IOCs)                                                  #
+# --------------------------------------------------------------------------- #
+_IOC_INSERT = """
+INSERT INTO iocs (indicator, ioc_type, source, severity, description)
+VALUES (%(indicator)s, %(ioc_type)s, %(source)s, %(severity)s, %(description)s)
+ON CONFLICT (indicator, ioc_type) DO UPDATE SET
+    source = EXCLUDED.source, severity = EXCLUDED.severity,
+    description = EXCLUDED.description, added_at = now(), enabled = true
+"""
+
+
+def _ioc_row(ioc: Any) -> dict:
+    return {"indicator": ioc.indicator, "ioc_type": ioc.ioc_type, "source": ioc.source,
+            "severity": ioc.severity, "description": ioc.description or None}
+
+
+def upsert_iocs(iocs: Iterable[Any]) -> int:
+    rows = [_ioc_row(i) for i in iocs]
+    if not rows:
+        return 0
+    with pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(_IOC_INSERT, rows)
+        conn.commit()
+    return len(rows)
+
+
+def replace_source_iocs(source: str, iocs: Iterable[Any]) -> int:
+    """Swap in a feed's indicators: drop this source's rows, insert the fresh set."""
+    rows = [_ioc_row(i) for i in iocs]
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM iocs WHERE source = %s", (source,))
+        if rows:
+            with conn.cursor() as cur:
+                cur.executemany(_IOC_INSERT, rows)
+        conn.commit()
+    return len(rows)
+
+
+def enabled_iocs() -> list[dict]:
+    """Indicators the matcher should load (enabled and not expired)."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT indicator, ioc_type, source, severity, description FROM iocs "
+            "WHERE enabled AND (expires_at IS NULL OR expires_at > now())").fetchall()
+
+
+def ioc_counts() -> dict:
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT ioc_type, count(*) AS n FROM iocs WHERE enabled GROUP BY ioc_type"
+        ).fetchall()
+    d = {r["ioc_type"]: int(r["n"]) for r in rows}
+    d["total"] = sum(d.values())
+    return d
+
+
+def list_iocs(limit: int = 100) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM iocs ORDER BY added_at DESC LIMIT %s", (limit,)).fetchall()
+
+
+def delete_ioc(indicator: str, ioc_type: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM iocs WHERE indicator = %s AND ioc_type = %s",
+                     (indicator, ioc_type))
+        conn.commit()
+
+
 def sync_collectors(names: Iterable[str]) -> None:
     """Ensure a state row exists for each available collector (preserving cursor)."""
     with pool().connection() as conn:
