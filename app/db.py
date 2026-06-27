@@ -15,6 +15,7 @@ from psycopg_pool import ConnectionPool
 from .config import settings
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
+from .severity import max_severity
 from .util import hash_api_key
 
 _pool: Optional[ConnectionPool] = None
@@ -279,7 +280,7 @@ def _alert_where(f: dict) -> tuple[str, dict]:
 
 _ALERT_COLS = """id, created_at, event_time, rule_id, rule_title, level, tactics,
     techniques, vendor, host(src_ip) AS src_ip, host(dst_ip) AS dst_ip,
-    user_name, host_name, message, dedup_hash, batch_id, status, assignee"""
+    user_name, host_name, message, dedup_hash, batch_id, status, assignee, case_id"""
 
 
 def recent_alerts(filters: dict, limit: int, offset: int) -> tuple[list[dict], int]:
@@ -379,6 +380,146 @@ def bump_suppressions(conn, counts: dict) -> None:
         conn.execute(
             "UPDATE suppressions SET hit_count = hit_count + %s, last_hit = now() "
             "WHERE id = %s", (n, supp_id))
+
+
+# --------------------------------------------------------------------------- #
+#  Cases / incidents (group related alerts)                                   #
+# --------------------------------------------------------------------------- #
+_CASE_SELECT = """SELECT c.*, COALESCE(n.n, 0) AS alert_count FROM cases c
+    LEFT JOIN (SELECT case_id, count(*) AS n FROM alerts WHERE case_id IS NOT NULL
+               GROUP BY case_id) n ON n.case_id = c.id"""
+
+
+def create_case(title: str, summary: Optional[str] = None, severity: str = "medium",
+                created_by: Optional[str] = None, assignee: Optional[str] = None) -> int:
+    with pool().connection() as conn:
+        row = conn.execute(
+            "INSERT INTO cases (title, summary, severity, created_by, assignee) "
+            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (title, summary or None, severity, created_by, assignee or None)).fetchone()
+        conn.commit()
+        return row["id"]
+
+
+def get_case(case_id: int) -> Optional[dict]:
+    with pool().connection() as conn:
+        return conn.execute(_CASE_SELECT + " WHERE c.id = %s", (case_id,)).fetchone()
+
+
+def list_cases(filters: dict, limit: int, offset: int) -> tuple[list[dict], int]:
+    clauses, p = [], {}
+    if filters.get("status"):
+        clauses.append("c.status = %(status)s"); p["status"] = filters["status"]
+    if filters.get("assignee"):
+        clauses.append("c.assignee = %(assignee)s"); p["assignee"] = filters["assignee"]
+    if filters.get("q"):
+        clauses.append("c.title ILIKE %(q)s"); p["q"] = f"%{filters['q']}%"
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    with pool().connection() as conn:
+        total = conn.execute(f"SELECT count(*) AS n FROM cases c {where}", p).fetchone()["n"]
+        p2 = dict(p, _l=limit, _o=offset)
+        rows = conn.execute(
+            _CASE_SELECT + f" {where} ORDER BY c.updated_at DESC "
+            "LIMIT %(_l)s OFFSET %(_o)s", p2).fetchall()
+    return rows, int(total)
+
+
+def update_case(case_id: int, **fields: Any) -> None:
+    sets = ["updated_at = now()"]
+    p: dict[str, Any] = {"id": case_id}
+    for k in ("title", "summary", "status", "severity", "assignee"):
+        if k in fields:
+            sets.append(f"{k} = %({k})s")
+            p[k] = fields[k] or None
+    if "status" in fields:
+        sets.append("closed_at = now()" if fields["status"] == "closed" else "closed_at = NULL")
+    with pool().connection() as conn:
+        conn.execute(f"UPDATE cases SET {', '.join(sets)} WHERE id = %(id)s", p)
+        conn.commit()
+
+
+def _escalate_case(conn, case_id: int, levels: Iterable[str]) -> None:
+    cur = conn.execute("SELECT severity FROM cases WHERE id = %s", (case_id,)).fetchone()
+    if cur is not None:
+        new = max_severity([cur["severity"], *levels], default=cur["severity"])
+        conn.execute("UPDATE cases SET severity = %s, updated_at = now() WHERE id = %s",
+                     (new, case_id))
+
+
+def add_alerts_to_case(case_id: int, alert_ids: Iterable[Any]) -> None:
+    """Attach alerts to a case and roll the case severity up to their max."""
+    ids = [int(a) for a in alert_ids]
+    if not ids:
+        return
+    with pool().connection() as conn:
+        rows = conn.execute("SELECT level FROM alerts WHERE id = ANY(%s)", (ids,)).fetchall()
+        conn.execute("UPDATE alerts SET case_id = %s WHERE id = ANY(%s)", (case_id, ids))
+        _escalate_case(conn, case_id, [r["level"] for r in rows])
+        conn.commit()
+
+
+def add_alert_to_case(alert_id: int, case_id: int) -> None:
+    add_alerts_to_case(case_id, [alert_id])
+
+
+def remove_alert_from_case(alert_id: int) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE alerts SET case_id = NULL WHERE id = %s", (alert_id,))
+        conn.commit()
+
+
+def case_alerts(case_id: int) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            f"SELECT {_ALERT_COLS} FROM alerts WHERE case_id = %s "
+            "ORDER BY event_time DESC NULLS LAST, created_at DESC", (case_id,)).fetchall()
+
+
+def related_open_alerts(case_id: int, limit: int = 50) -> list[dict]:
+    """Open, un-cased, non-suppressed alerts sharing a src_ip / user / host with
+    any alert already in the case — candidates to fold into the investigation."""
+    q = f"""
+    WITH ent AS (
+        SELECT DISTINCT host(src_ip) AS s, user_name AS u, host_name AS h
+        FROM alerts WHERE case_id = %(cid)s)
+    SELECT {_ALERT_COLS} FROM alerts a
+    WHERE a.case_id IS NULL AND a.status <> 'suppressed' AND EXISTS (
+        SELECT 1 FROM ent e WHERE
+            (a.src_ip   IS NOT NULL AND host(a.src_ip) = e.s) OR
+            (a.user_name IS NOT NULL AND a.user_name   = e.u) OR
+            (a.host_name IS NOT NULL AND a.host_name   = e.h))
+    ORDER BY a.created_at DESC LIMIT %(lim)s"""
+    with pool().connection() as conn:
+        return conn.execute(q, {"cid": case_id, "lim": limit}).fetchall()
+
+
+def add_case_note(case_id: int, author: Optional[str], note: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("INSERT INTO case_notes (case_id, author, note) VALUES (%s, %s, %s)",
+                     (case_id, author, note))
+        conn.execute("UPDATE cases SET updated_at = now() WHERE id = %s", (case_id,))
+        conn.commit()
+
+
+def case_notes(case_id: int) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM case_notes WHERE case_id = %s ORDER BY created_at",
+            (case_id,)).fetchall()
+
+
+def case_status_counts() -> dict:
+    with pool().connection() as conn:
+        rows = conn.execute("SELECT status, count(*) AS n FROM cases GROUP BY status").fetchall()
+    return {r["status"]: int(r["n"]) for r in rows}
+
+
+def open_cases(limit: int = 200) -> list[dict]:
+    """Non-closed cases, for the 'add to case' picker on an alert."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT id, title, severity, status FROM cases WHERE status <> 'closed' "
+            "ORDER BY updated_at DESC LIMIT %s", (limit,)).fetchall()
 
 
 def alert_severity_counts() -> dict:

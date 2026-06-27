@@ -303,6 +303,59 @@ def test_suppression_pipeline_assignee_and_notes(clean_db):
     assert db.list_suppressions() == []
 
 
+def test_case_grouping(clean_db):
+    db = clean_db
+    rule = next(r for r in de.load_rules(RULES_DIR) if r.id == "lo-rdp-allowed")
+
+    def mk(dh, src, level):
+        a = de.alert_from_match(
+            rule, _evt(vendor="paloalto", src_ip=src, action="allow", message="rdp"),
+            dedup_hash=dh, batch_id=1)
+        a["level"] = level
+        return a
+
+    with db.pool().connection() as conn:
+        ins = db.insert_alerts(conn, [mk("h1", "9.9.9.9", "medium"),
+                                      mk("h2", "9.9.9.9", "critical"),
+                                      mk("h3", "9.9.9.9", "low"),
+                                      mk("h4", "1.2.3.4", "high")],
+                               return_inserted=True)
+        conn.commit()
+    a1, a2, a3, a4 = [x["id"] for x in ins]
+
+    cid = db.create_case("RDP from 9.9.9.9", severity="low")
+    db.add_alert_to_case(a1, cid)
+    c = db.get_case(cid)
+    assert c["alert_count"] == 1 and c["severity"] == "medium"      # rolled low -> medium
+
+    rel_ids = {r["id"] for r in db.related_open_alerts(cid)}        # share src 9.9.9.9
+    assert {a2, a3} <= rel_ids and a4 not in rel_ids
+
+    db.add_alerts_to_case(cid, [a2, a3])
+    c = db.get_case(cid)
+    assert c["alert_count"] == 3 and c["severity"] == "critical"    # a2 escalates the case
+    assert {x["id"] for x in db.case_alerts(cid)} == {a1, a2, a3}
+    assert db.get_alert(a2)["case_id"] == cid
+    assert a2 not in {r["id"] for r in db.related_open_alerts(cid)}  # now in-case, excluded
+
+    db.remove_alert_from_case(a3)
+    assert db.get_case(cid)["alert_count"] == 2 and db.get_alert(a3)["case_id"] is None
+
+    db.add_case_note(cid, "alice", "looks like a scan")
+    assert db.case_notes(cid)[0]["author"] == "alice"
+
+    db.update_case(cid, status="closed", assignee="alice")
+    closed = db.get_case(cid)
+    assert closed["status"] == "closed" and closed["closed_at"] is not None
+    assert closed["assignee"] == "alice"
+    db.update_case(cid, status="open")
+    assert db.get_case(cid)["closed_at"] is None                    # reopening clears it
+
+    assert db.list_cases({}, 50, 0)[1] == 1
+    assert db.case_status_counts().get("open") == 1
+    assert any(x["id"] == cid for x in db.open_cases())
+
+
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")

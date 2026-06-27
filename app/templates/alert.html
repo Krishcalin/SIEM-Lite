@@ -44,6 +44,18 @@
   <button type="submit" class="btn">Assign</button>
 </form>
 
+<form method="post" action="/alert/{{ a.id }}/case" class="panel inline-form">
+  {% if case %}
+  <span>Part of case <a href="/case/{{ case.id }}">#{{ case.id }} — {{ case.title }}</a></span>
+  {% else %}
+  <select name="case_id">
+    <option value="new">+ new case from this alert</option>
+    {% for c in open_cases %}<option value="{{ c.id }}">#{{ c.id }} — {{ c.title }} ({{ c.severity }})</option>{% endfor %}
+  </select>
+  <button type="submit" class="btn">Add to case</button>
+  {% endif %}
+</form>
+
 <h3>Suppress similar alerts</h3>
 <p class="muted">Allowlist future alerts matching the attributes you select — they'll
    be stored as <code>suppressed</code> and not notified.</p>

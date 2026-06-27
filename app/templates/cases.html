@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Cases — LogOcean{% endblock %}
+{% block body %}
+<h1>Cases</h1>
+
+<form method="get" action="/cases" class="panel filters">
+  <input type="text" name="q" placeholder="Search title" value="{{ params.get('q','') }}" class="wide">
+  <select name="status">
+    <option value="">any status</option>
+    {% for s in ['open','investigating','closed'] %}<option value="{{ s }}" {{ 'selected' if params.get('status')==s }}>{{ s }}</option>{% endfor %}
+  </select>
+  <input type="text" name="assignee" placeholder="assignee" value="{{ params.get('assignee','') }}">
+  <button type="submit" class="btn primary">Filter</button>
+  <a class="btn" href="/cases">Reset</a>
+</form>
+
+<form method="post" action="/cases/new" class="panel inline-form">
+  <input type="text" name="title" placeholder="New case title" required class="wide">
+  <select name="severity">
+    <option>medium</option><option>high</option><option>critical</option><option>low</option>
+  </select>
+  <button type="submit" class="btn">Create case</button>
+</form>
+
+<div class="resultbar">
+  <span><b>{{ "{:,}".format(total) }}</b> cases</span>
+  <span class="muted">
+    {% for s in ['open','investigating','closed'] %}{% if counts.get(s) %}{{ counts.get(s) }} {{ s }} · {% endif %}{% endfor %}
+  </span>
+</div>
+
+<table class="results">
+  <tr><th>#</th><th>Title</th><th>Sev</th><th>Status</th><th class="r">Alerts</th>
+      <th>Assignee</th><th>Updated (UTC)</th></tr>
+  {% for c in rows %}
+  <tr onclick="location.href='/case/{{ c.id }}'">
+    <td>{{ c.id }}</td>
+    <td>{{ c.title }}</td>
+    <td><span class="badge {{ c.severity }}">{{ c.severity }}</span></td>
+    <td><span class="badge {{ 'closed' if c.status=='closed' else 'ack' if c.status=='investigating' else 'open' }}">{{ c.status }}</span></td>
+    <td class="r">{{ c.alert_count }}</td>
+    <td class="muted">{{ c.assignee or '' }}</td>
+    <td class="nowrap">{{ c.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+  </tr>
+  {% else %}<tr><td colspan="7" class="muted">No cases yet — create one above, or from an alert.</td></tr>{% endfor %}
+</table>
+
+{% if pages > 1 %}
+<div class="pager">
+  {% if page > 1 %}<a class="btn" href="?{{ base_qs }}&page={{ page-1 }}">‹ Prev</a>{% endif %}
+  <span>Page {{ page }} / {{ pages }}</span>
+  {% if page < pages %}<a class="btn" href="?{{ base_qs }}&page={{ page+1 }}">Next ›</a>{% endif %}
+</div>
+{% endif %}
+{% endblock %}

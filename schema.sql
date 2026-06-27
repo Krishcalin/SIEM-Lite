@@ -134,7 +134,10 @@ CREATE TABLE IF NOT EXISTS alerts (
 
 -- Triage: who owns an alert (assignment). status gains a 'suppressed' value for
 -- alerts an allowlist matched (kept for audit, hidden from the default view).
+-- case_id groups many alerts under one investigation (cases table below).
 ALTER TABLE alerts ADD COLUMN IF NOT EXISTS assignee text;
+ALTER TABLE alerts ADD COLUMN IF NOT EXISTS case_id bigint;
+CREATE INDEX IF NOT EXISTS alerts_case_idx ON alerts (case_id);
 
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_dedup_idx   ON alerts (rule_id, dedup_hash);
 CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts (created_at DESC);
@@ -171,6 +174,34 @@ CREATE TABLE IF NOT EXISTS suppressions (
     last_hit   timestamptz
 );
 CREATE INDEX IF NOT EXISTS suppressions_enabled_idx ON suppressions (enabled);
+
+-- Incidents / cases: one investigation grouping many related alerts. An alert
+-- points at its case via alerts.case_id; a case's severity rolls up to the
+-- highest of its members.
+CREATE TABLE IF NOT EXISTS cases (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    title      text        NOT NULL,
+    summary    text,
+    status     text        NOT NULL DEFAULT 'open',     -- open | investigating | closed
+    severity   text        NOT NULL DEFAULT 'medium',
+    assignee   text,
+    created_by text,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    closed_at  timestamptz
+);
+CREATE INDEX IF NOT EXISTS cases_status_idx   ON cases (status);
+CREATE INDEX IF NOT EXISTS cases_assignee_idx ON cases (assignee);
+
+-- Investigation notes threaded under a case.
+CREATE TABLE IF NOT EXISTS case_notes (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    case_id    bigint      NOT NULL,
+    author     text,
+    note       text        NOT NULL,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS case_notes_case_idx ON case_notes (case_id);
 CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (level);
 CREATE INDEX IF NOT EXISTS alerts_rule_idx    ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);

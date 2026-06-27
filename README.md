@@ -140,6 +140,13 @@ actioned), and the suppression's hit count is tracked. The fastest way to make o
 is the **Suppress similar** form on any alert (pre-filled from its attributes);
 manage them all under **Admin ▸ Suppressions**.
 
+**Cases / incidents.** Group related alerts into one investigation at **`/cases`**.
+Create a case from any alert (or add it to an open one), give it a status
+(`open` / `investigating` / `closed`), an assignee and threaded notes; its severity
+**rolls up** to the highest of its member alerts. The case page suggests **related
+alerts** — open, un-cased alerts sharing a source IP, user or host with the case —
+so a burst of activity folds into a single timeline with one click.
+
 Rules are YAML files in `rules/` (a Sigma-compatible subset), tagged with MITRE
 ATT&CK, and enable/disable from the Admin page (applies immediately). The engine
 supports the common Sigma field modifiers so many community rules load as-is:
@@ -358,7 +365,7 @@ Log-Parser-Storage/
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,triage,...}
+                            #   threatintel,triage,severity,...}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -387,17 +394,18 @@ modifiers + condition grammar), inline detection in the pipeline,
 correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
-matching + alerting), suppression/allowlist matching, auth (password hashing,
-role ranking, the RBAC dependency), the audit helper, and the compliance coverage
-report — all without a database (the queue, pipeline, and worker tests mock the
-writers).
+matching + alerting), suppression/allowlist matching, case severity roll-up, auth
+(password hashing, role ranking, the RBAC dependency), the audit helper, and the
+compliance coverage report — all without a database (the queue, pipeline, and
+worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
 search, ON CONFLICT dedup, retention purge dropping whole partitions, the
 correlation SQL, the pipeline write path raising alert rows (detection and
 threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
-assignment/notes, the IOC/suppression/auth/collector/registry round-trips, and
+assignment/notes, **case grouping** (severity roll-up, related-alert discovery,
+status transitions), the IOC/suppression/auth/collector/registry round-trips, and
 the HTTP stack end-to-end (TestClient → API-key auth → ingest → detect). CI runs
 the unit tier on Python 3.11–3.13 and the integration tier against a Postgres
 service container (`.github/workflows/tests.yml`).

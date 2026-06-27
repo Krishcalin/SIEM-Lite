@@ -414,7 +414,9 @@ def alert_detail(request: Request, alert_id: int):
     return templates.TemplateResponse("alert.html", _ctx(
         request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id),
         notes=db.alert_notes(alert_id),
-        users=db.list_users() if settings.auth_enabled else []))
+        users=db.list_users() if settings.auth_enabled else [],
+        case=db.get_case(a["case_id"]) if a.get("case_id") else None,
+        open_cases=db.open_cases()))
 
 
 @app.post("/alert/{alert_id}/status")
@@ -463,6 +465,107 @@ def alert_suppress(request: Request, alert_id: int, fields: list[str] = Form([])
     triage_runtime.reload_index()
     _audit(request, "suppression.create", name[:200])
     return RedirectResponse(url=f"/alert/{alert_id}", status_code=303)
+
+
+@app.post("/alert/{alert_id}/case")
+def alert_to_case(request: Request, alert_id: int, case_id: str = Form(...),
+                  _user=Depends(require_role("analyst"))):
+    """Attach an alert to an existing case, or seed a new case from it."""
+    a = db.get_alert(alert_id)
+    if a is None:
+        return HTMLResponse("Alert not found", status_code=404)
+    if case_id == "new":
+        user = getattr(request.state, "user", None)
+        cid = db.create_case(title=f"{a['rule_title']}"[:200], severity=a["level"],
+                             created_by=user["username"] if user else None)
+        _audit(request, "case.create", f"case {cid} from alert {alert_id}")
+    else:
+        cid = int(case_id)
+    db.add_alert_to_case(alert_id, cid)
+    _audit(request, "case.add_alert", f"alert {alert_id} -> case {cid}")
+    return RedirectResponse(url=f"/case/{cid}", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Cases / incidents                                                          #
+# --------------------------------------------------------------------------- #
+@app.get("/cases", response_class=HTMLResponse)
+def cases(request: Request):
+    q = request.query_params
+    f = {"status": q.get("status") or None, "assignee": q.get("assignee") or None,
+         "q": q.get("q") or None}
+    try:
+        page = max(int(q.get("page", "1")), 1)
+    except ValueError:
+        page = 1
+    limit = settings.page_size
+    rows, total = db.list_cases(f, limit=limit, offset=(page - 1) * limit)
+    pages = max((total + limit - 1) // limit, 1)
+    base_qs = urlencode([(k, v) for k, v in q.multi_items() if k != "page" and v])
+    return templates.TemplateResponse("cases.html", _ctx(
+        request, rows=rows, total=total, page=page, pages=pages, params=q,
+        base_qs=base_qs, counts=db.case_status_counts()))
+
+
+@app.get("/case/{case_id}", response_class=HTMLResponse)
+def case_detail(request: Request, case_id: int):
+    c = db.get_case(case_id)
+    if c is None:
+        return HTMLResponse("Case not found", status_code=404)
+    return templates.TemplateResponse("case.html", _ctx(
+        request, c=c, alerts=db.case_alerts(case_id), notes=db.case_notes(case_id),
+        related=db.related_open_alerts(case_id),
+        users=db.list_users() if settings.auth_enabled else []))
+
+
+@app.post("/cases/new", response_class=HTMLResponse)
+def case_create(request: Request, title: str = Form(...), summary: str = Form(""),
+                severity: str = Form("medium"), _user=Depends(require_role("analyst"))):
+    user = getattr(request.state, "user", None)
+    cid = db.create_case(title.strip() or "untitled", summary.strip() or None,
+                         severity=severity, created_by=user["username"] if user else None)
+    _audit(request, "case.create", f"case {cid}")
+    return RedirectResponse(url=f"/case/{cid}", status_code=303)
+
+
+@app.post("/case/{case_id}/update")
+def case_update(request: Request, case_id: int, title: str = Form(...),
+                summary: str = Form(""), status: str = Form(...),
+                severity: str = Form(...), assignee: str = Form(""),
+                _user=Depends(require_role("analyst"))):
+    st = status if status in ("open", "investigating", "closed") else "open"
+    db.update_case(case_id, title=title.strip() or "untitled", summary=summary.strip(),
+                   status=st, severity=severity, assignee=assignee.strip())
+    _audit(request, "case.update", f"case {case_id} -> {st}")
+    return RedirectResponse(url=f"/case/{case_id}", status_code=303)
+
+
+@app.post("/case/{case_id}/note")
+def case_add_note(request: Request, case_id: int, note: str = Form(...),
+                  _user=Depends(require_role("analyst"))):
+    text = note.strip()
+    if text:
+        user = getattr(request.state, "user", None)
+        db.add_case_note(case_id, user["username"] if user else None, text[:4000])
+        _audit(request, "case.note", f"case {case_id}")
+    return RedirectResponse(url=f"/case/{case_id}", status_code=303)
+
+
+@app.post("/case/{case_id}/add-alerts")
+def case_add_alerts(request: Request, case_id: int, alert_ids: list[int] = Form([]),
+                    _user=Depends(require_role("analyst"))):
+    if alert_ids:
+        db.add_alerts_to_case(case_id, alert_ids)
+        _audit(request, "case.add_alert", f"{len(alert_ids)} alert(s) -> case {case_id}")
+    return RedirectResponse(url=f"/case/{case_id}", status_code=303)
+
+
+@app.post("/case/{case_id}/remove-alert")
+def case_remove_alert(request: Request, case_id: int, alert_id: int = Form(...),
+                      _user=Depends(require_role("analyst"))):
+    db.remove_alert_from_case(alert_id)
+    _audit(request, "case.remove_alert", f"alert {alert_id} from case {case_id}")
+    return RedirectResponse(url=f"/case/{case_id}", status_code=303)
 
 
 @app.get("/responses", response_class=HTMLResponse)
