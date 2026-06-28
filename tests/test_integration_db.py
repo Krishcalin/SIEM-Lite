@@ -356,6 +356,33 @@ def test_case_grouping(clean_db):
     assert any(x["id"] == cid for x in db.open_cases())
 
 
+def test_alert_analytics_aggregations(clean_db):
+    db = clean_db
+    rule = next(r for r in de.load_rules(RULES_DIR) if r.id == "lo-rdp-allowed")
+
+    def mk(dh, src):
+        return de.alert_from_match(
+            rule, _evt(vendor="paloalto", src_ip=src, action="allow", message="rdp"),
+            dedup_hash=dh, batch_id=1)
+
+    with db.pool().connection() as conn:
+        db.insert_alerts(conn, [mk("a", "1.1.1.1"), mk("b", "1.1.1.1"), mk("c", "2.2.2.2")])
+        conn.commit()
+
+    assert db.alert_status_counts().get("open") == 3
+    assert sum(d["n"] for d in db.alerts_over_time(30)) == 3
+    tr = db.top_rules(30)
+    assert tr[0]["rule_id"] == "lo-rdp-allowed" and tr[0]["n"] == 3
+    ts = db.top_alert_sources(30)
+    assert ts[0]["src_ip"] == "1.1.1.1" and ts[0]["n"] == 2
+
+    now = datetime.now(timezone.utc)
+    _store(db, [_evt(vendor="x", src_ip="9.9.9.9", event_time=now),
+                _evt(vendor="x", src_ip="9.9.9.9", event_time=now, message="b")])
+    es = db.top_event_sources(7)
+    assert es[0]["src_ip"] == "9.9.9.9" and es[0]["n"] == 2
+
+
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")

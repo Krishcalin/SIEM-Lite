@@ -1,0 +1,30 @@
+{# Reusable, dependency-free chart primitives (server-rendered CSS bars). #}
+
+{# Horizontal top-N list. `rows` are dicts with an `n` count and a label field. #}
+{% macro hbar(rows, label_attr, empty='No data') %}
+{% set maxn = (rows | map(attribute='n') | max) if rows else 0 %}
+<div class="hbar{{ ' empty' if not rows }}">
+  {% for r in rows %}
+  <div class="row">
+    <span class="lbl" title="{{ r[label_attr] }}">{{ r[label_attr] or '—' }}</span>
+    <span class="track"><span class="fill" style="width: {{ (100 * r['n'] / maxn) if maxn else 0 }}%"></span></span>
+    <span class="n">{{ "{:,}".format(r['n']) }}</span>
+  </div>
+  {% else %}<span>{{ empty }}</span>{% endfor %}
+</div>
+{% endmacro %}
+
+{# Vertical daily time series. `rows` are dicts with `n` and a date field. #}
+{% macro timebars(rows, date_attr='day', empty='No data in this period.') %}
+{% set maxn = (rows | map(attribute='n') | max) if rows else 0 %}
+{% if rows %}
+<div class="bars">
+  {% for r in rows %}
+  <div class="bar" title="{{ r[date_attr] }} — {{ r['n'] }}">
+    <div class="fill" style="height: {{ (100 * r['n'] / maxn) if maxn else 0 }}%"></div>
+    <span class="bx">{{ r[date_attr].strftime('%m-%d') }}</span>
+  </div>
+  {% endfor %}
+</div>
+{% else %}<p class="muted">{{ empty }}</p>{% endif %}
+{% endmacro %}

@@ -12,12 +12,13 @@ from typing import Optional
 from urllib.parse import urlencode
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
+                               StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, auth, collectors, compliance, db, ingest, notify, streaming
+from . import api, auth, collectors, compliance, db, ingest, navigator, notify, streaming
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
@@ -261,10 +262,74 @@ def health():
             "threatintel_indicators": len(ti_runtime.get_index())}
 
 
+def _alert_analytics(days: int) -> dict:
+    """The alert/case metrics shared by the dashboard and the report page."""
+    techs = db.alert_technique_counts(days)
+    top_tech = sorted(techs.items(), key=lambda kv: kv[1], reverse=True)[:8]
+    return {
+        "days": days,
+        "alert_counts": db.alert_severity_counts(),
+        "status_counts": db.alert_status_counts(),
+        "alerts_daily": db.alerts_over_time(days),
+        "top_rules": db.top_rules(days),
+        "top_alert_sources": db.top_alert_sources(days),
+        "top_techniques": [{"label": t, "n": n} for t, n in top_tech],
+        "case_counts": db.case_status_counts(),
+    }
+
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
+    a = _alert_analytics(30)
     return templates.TemplateResponse("dashboard.html", _ctx(
-        request, stats=db.stats(), alert_counts=db.alert_severity_counts()))
+        request, stats=db.stats(), top_event_sources=db.top_event_sources(7), **a))
+
+
+# --------------------------------------------------------------------------- #
+#  Reports & exports                                                          #
+# --------------------------------------------------------------------------- #
+def _report_days(request: Request) -> int:
+    try:
+        return min(max(int(request.query_params.get("days", "30")), 1), 365)
+    except ValueError:
+        return 30
+
+
+@app.get("/reports", response_class=HTMLResponse)
+def reports(request: Request):
+    days = _report_days(request)
+    a = _alert_analytics(days)
+    return templates.TemplateResponse("report.html", _ctx(
+        request, stats=db.stats(), top_event_sources=db.top_event_sources(min(days, 30)),
+        generated=datetime.now(timezone.utc), **a))
+
+
+@app.get("/reports/attack-navigator.json")
+def reports_navigator(request: Request):
+    days = _report_days(request)
+    layer = navigator.build_layer(db.alert_technique_counts(days), days=days)
+    return JSONResponse(layer, headers={
+        "Content-Disposition": f"attachment; filename=logocean_attack_{days}d.json"})
+
+
+@app.get("/alerts.csv")
+def alerts_csv(request: Request):
+    f = _alert_filters(request)
+    cols = ["id", "created_at", "event_time", "level", "status", "assignee", "case_id",
+            "rule_id", "rule_title", "techniques", "vendor", "src_ip", "dst_ip",
+            "user_name", "host_name", "message"]
+
+    def gen():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+        w.writerow(cols)
+        yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+        for row in db.alerts_iter(f):
+            w.writerow([_csv_safe(row.get(c, "")) for c in cols])
+            yield buf.getvalue(); buf.seek(0); buf.truncate(0)
+
+    return StreamingResponse(gen(), media_type="text/csv", headers={
+        "Content-Disposition": "attachment; filename=logocean_alerts.csv"})
 
 
 # --------------------------------------------------------------------------- #

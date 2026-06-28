@@ -25,7 +25,8 @@ log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
 **Threat-intel enrichment** (`THREATINTEL_ENABLED`) matches events against IOC
 feeds and raises alerts on hits. **Triage & tuning** adds alert assignment, notes,
 suppression/allowlist rules, and **cases** (`/cases`) that group related alerts
-into one investigation.
+into one investigation. **Dashboards & reporting** add charts, top-N analytics, a
+print-friendly `/reports` page, and ATT&CK-Navigator / CSV exports.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -116,6 +117,16 @@ open, un-cased alerts sharing a src_ip/user/host with the case so they can be
 folded in. Notes live in `case_notes`. Create/add from an alert via
 `/alert/{id}/case`.
 
+**Dashboards & reporting.** The dashboard (`/`) and the print-friendly `/reports`
+page (selectable 7–90d period) share `main._alert_analytics(days)` — alert
+severity/status counts, an alert-volume time series (`db.alerts_over_time`), and
+top-N breakdowns (`db.top_rules` / `top_alert_sources` / `top_event_sources` +
+`alert_technique_counts`). Charts are pure server-rendered CSS bars via the
+`templates/_macros.html` `hbar` / `timebars` macros — no JS chart lib. Exports:
+`GET /reports/attack-navigator.json` (`app/navigator.py:build_layer` → an ATT&CK
+Navigator layer-4.5 doc scored by technique alert volume) and `GET /alerts.csv`
+(streamed, `_csv_safe`d, honours the `/alerts` filters via `db.alerts_iter`).
+
 ## Repository layout
 
 ```
@@ -147,6 +158,7 @@ app/
                  runtime.py (index singleton + feed sync + scheduler)
   triage/        suppression.py (Suppression + SuppressionIndex) + runtime.py (index)
   severity.py    canonical severity order + max_severity (case roll-up)
+  navigator.py   ATT&CK Navigator layer export (pure build_layer)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -353,6 +365,7 @@ Unit:
 - `test_triage.py` — suppression matching (single/AND conditions, CIDR, empty-rule
   guard) and `SuppressionIndex` first-match.
 - `test_severity.py` — severity ranking + `max_severity` (case roll-up helper).
+- `test_navigator.py` — ATT&CK Navigator layer scoring / sorting / gradient.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
@@ -361,10 +374,11 @@ Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
   correlation SQL, the pipeline write path raising alerts (detection +
   threat-intel) and suppressing matched ones, alert insert/dedup/queries +
   assignment/notes, case grouping (severity roll-up, related-alert discovery,
-  status transitions), and the IOC/suppression/rule-registry/api-key/user-session/
-  collector/batch round-trips — all against a real Postgres.
+  status transitions), the alert analytics aggregations, and the IOC/suppression/
+  rule-registry/api-key/user-session/collector/batch round-trips — all real Postgres.
 - `test_integration_api.py` — the FastAPI stack via TestClient against a real
-  DB: `/health`, API-key auth (401/200), and ingest→detect end-to-end.
+  DB: `/health`, API-key auth (401/200), ingest→detect end-to-end, and the
+  dashboard / `/reports` / Navigator-JSON / `/alerts.csv` endpoints.
 
 The unit tier is **DB-free** (the async-queue and pipeline tests mock the
 writers); `psycopg` need only be importable. The integration tier runs against a

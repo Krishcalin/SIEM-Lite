@@ -1,13 +1,14 @@
 {% extends "base.html" %}
+{% import "_macros.html" as charts %}
 {% block title %}Dashboard — LogOcean{% endblock %}
 {% block body %}
 <h1>Dashboard</h1>
 
 <div class="cards">
   <div class="card"><div class="num">{{ "{:,}".format(stats.total) }}</div><div class="lbl">events stored</div></div>
+  <div class="card"><div class="num">{{ (alert_counts.values()|sum) if alert_counts else 0 }}</div><div class="lbl">open alerts</div></div>
+  <div class="card"><div class="num">{{ case_counts.get('open', 0) + case_counts.get('investigating', 0) }}</div><div class="lbl">open cases</div></div>
   <div class="card"><div class="num">{{ stats.size }}</div><div class="lbl">on disk</div></div>
-  <div class="card"><div class="num">{{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }}</div><div class="lbl">earliest event</div></div>
-  <div class="card"><div class="num">{{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }}</div><div class="lbl">latest event</div></div>
 </div>
 
 <section>
@@ -23,6 +24,26 @@
   {% else %}<p class="muted">No open alerts. <a href="/alerts">View alert history ›</a></p>{% endif %}
 </section>
 
+<section>
+  <h2>Alert volume (last 30 days)</h2>
+  {{ charts.timebars(alerts_daily, empty='No alerts in the last 30 days.') }}
+</section>
+
+<div class="grid2">
+  <section>
+    <h2>Top firing rules (30d)</h2>
+    {{ charts.hbar(top_rules, 'rule_title', empty='No alerts yet.') }}
+    <h2>Top MITRE techniques (30d)</h2>
+    {{ charts.hbar(top_techniques, 'label', empty='No tagged alerts yet.') }}
+  </section>
+  <section>
+    <h2>Top alert source IPs (30d)</h2>
+    {{ charts.hbar(top_alert_sources, 'src_ip', empty='No alerts with a source IP.') }}
+    <h2>Top event source IPs (7d)</h2>
+    {{ charts.hbar(top_event_sources, 'src_ip', empty='No events with a source IP.') }}
+  </section>
+</div>
+
 <div class="grid2">
   <section>
     <h2>By vendor</h2>
@@ -32,7 +53,6 @@
       <tr><td>{{ r.vendor }}</td><td class="r">{{ "{:,}".format(r.n) }}</td></tr>
       {% else %}<tr><td colspan="2" class="muted">No data yet — upload some logs.</td></tr>{% endfor %}
     </table>
-
     <h2>Top log types (last 30 days)</h2>
     <table>
       <tr><th>Log type</th><th class="r">Events</th></tr>
@@ -43,17 +63,8 @@
   </section>
 
   <section>
-    <h2>Daily volume (last 30 days)</h2>
-    {% set maxn = (stats.daily | map(attribute='n') | max) if stats.daily else 0 %}
-    <div class="bars">
-      {% for r in stats.daily %}
-      <div class="bar" title="{{ r.day }} — {{ r.n }} events">
-        <div class="fill" style="height: {{ (100 * r.n / maxn) if maxn else 0 }}%"></div>
-        <span class="bx">{{ r.day.strftime('%m-%d') }}</span>
-      </div>
-      {% else %}<p class="muted">No events in the last 30 days.</p>{% endfor %}
-    </div>
-
+    <h2>Daily event volume (last 30 days)</h2>
+    {{ charts.timebars(stats.daily, empty='No events in the last 30 days.') }}
     <h2>Partitions (monthly)</h2>
     <table>
       <tr><th>Partition</th><th class="r">≈ rows</th><th class="r">Size</th></tr>

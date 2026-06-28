@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% import "_macros.html" as charts %}
+{% block title %}Report — LogOcean{% endblock %}
+{% block body %}
+<div class="noprint">
+  <form method="get" action="/reports" class="panel inline-form">
+    <label>Period (days)
+      <select name="days" onchange="this.form.submit()">
+        {% for d in [7, 14, 30, 60, 90] %}<option value="{{ d }}" {{ 'selected' if days==d }}>{{ d }}</option>{% endfor %}
+      </select>
+    </label>
+    <button type="button" class="btn" onclick="window.print()">Print / Save as PDF</button>
+    <a class="btn" href="/reports/attack-navigator.json?days={{ days }}">ATT&amp;CK Navigator layer</a>
+    <a class="btn" href="/alerts.csv">Alerts CSV</a>
+  </form>
+</div>
+
+<h1>LogOcean security report</h1>
+<p class="muted">Last {{ days }} days · generated {{ generated.strftime('%Y-%m-%d %H:%M UTC') }}
+   {% if user %}· {{ user.username }}{% endif %}</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ "{:,}".format(stats.total) }}</div><div class="lbl">events stored</div></div>
+  <div class="card"><div class="num">{{ (status_counts.values()|sum) - status_counts.get('suppressed', 0) }}</div><div class="lbl">alerts ({{ days }}d incl. closed)</div></div>
+  <div class="card"><div class="num">{{ (alert_counts.values()|sum) if alert_counts else 0 }}</div><div class="lbl">open alerts now</div></div>
+  <div class="card"><div class="num">{{ case_counts.get('open', 0) + case_counts.get('investigating', 0) }}</div><div class="lbl">open cases</div></div>
+</div>
+
+<section>
+  <h2>Alert status</h2>
+  <p>
+    {% for s in ['open','ack','closed','suppressed'] %}
+      <span class="badge {{ s }}">{{ status_counts.get(s, 0) }} {{ s }}</span>
+    {% endfor %}
+  </p>
+  <h2>Alert volume</h2>
+  {{ charts.timebars(alerts_daily, empty='No alerts in this period.') }}
+</section>
+
+<div class="grid2">
+  <section>
+    <h2>Top firing rules</h2>
+    {{ charts.hbar(top_rules, 'rule_title', empty='No alerts.') }}
+    <h2>Top MITRE ATT&CK techniques</h2>
+    {{ charts.hbar(top_techniques, 'label', empty='No tagged alerts.') }}
+  </section>
+  <section>
+    <h2>Top alert source IPs</h2>
+    {{ charts.hbar(top_alert_sources, 'src_ip', empty='No alerts with a source IP.') }}
+    <h2>Top event source IPs (≤30d)</h2>
+    {{ charts.hbar(top_event_sources, 'src_ip', empty='No events with a source IP.') }}
+  </section>
+</div>
+
+<section>
+  <h2>Events by vendor</h2>
+  <table>
+    <tr><th>Vendor</th><th class="r">Events (all time)</th></tr>
+    {% for r in stats.by_vendor %}
+    <tr><td>{{ r.vendor }}</td><td class="r">{{ "{:,}".format(r.n) }}</td></tr>
+    {% else %}<tr><td colspan="2" class="muted">No data.</td></tr>{% endfor %}
+  </table>
+  <p class="muted">Coverage span: {{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }}
+     → {{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }} · {{ stats.size }} on disk.</p>
+</section>
+{% endblock %}

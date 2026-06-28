@@ -294,6 +294,17 @@ def recent_alerts(filters: dict, limit: int, offset: int) -> tuple[list[dict], i
     return rows, int(total)
 
 
+def alerts_iter(filters: dict, cap: int = 100_000):
+    """Stream alert rows for CSV export (bounded by cap)."""
+    where, p = _alert_where(filters)
+    p["_cap"] = cap
+    with pool().connection() as conn, conn.cursor(name="alerts_export_cur") as cur:
+        cur.execute(f"SELECT {_ALERT_COLS} FROM alerts {where} "
+                    f"ORDER BY created_at DESC LIMIT %(_cap)s", p)
+        for row in cur:
+            yield row
+
+
 def get_alert(alert_id: int) -> Optional[dict]:
     with pool().connection() as conn:
         return conn.execute(
@@ -529,6 +540,48 @@ def alert_severity_counts() -> dict:
             "SELECT level, count(*) AS n FROM alerts WHERE status = 'open' "
             "GROUP BY level").fetchall()
     return {r["level"]: int(r["n"]) for r in rows}
+
+
+def alert_status_counts() -> dict:
+    """Alert counts by status (open/ack/closed/suppressed), for analytics."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT status, count(*) AS n FROM alerts GROUP BY status").fetchall()
+    return {r["status"]: int(r["n"]) for r in rows}
+
+
+def alerts_over_time(days: int = 30) -> list[dict]:
+    """Daily non-suppressed alert counts over the last `days`."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT date_trunc('day', created_at)::date AS day, count(*) AS n FROM alerts "
+            "WHERE created_at >= now() - make_interval(days => %s) AND status <> 'suppressed' "
+            "GROUP BY 1 ORDER BY 1", (days,)).fetchall()
+
+
+def top_rules(days: int = 30, limit: int = 8) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT rule_id, rule_title, count(*) AS n FROM alerts "
+            "WHERE created_at >= now() - make_interval(days => %s) AND status <> 'suppressed' "
+            "GROUP BY rule_id, rule_title ORDER BY n DESC LIMIT %s", (days, limit)).fetchall()
+
+
+def top_alert_sources(days: int = 30, limit: int = 8) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT host(src_ip) AS src_ip, count(*) AS n FROM alerts "
+            "WHERE created_at >= now() - make_interval(days => %s) "
+            "AND src_ip IS NOT NULL AND status <> 'suppressed' "
+            "GROUP BY 1 ORDER BY n DESC LIMIT %s", (days, limit)).fetchall()
+
+
+def top_event_sources(days: int = 7, limit: int = 8) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT host(src_ip) AS src_ip, count(*) AS n FROM events "
+            "WHERE event_time >= now() - make_interval(days => %s) AND src_ip IS NOT NULL "
+            "GROUP BY 1 ORDER BY n DESC LIMIT %s", (days, limit)).fetchall()
 
 
 def alert_technique_counts(days: int = 30) -> dict:

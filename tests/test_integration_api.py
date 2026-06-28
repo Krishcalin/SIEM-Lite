@@ -53,6 +53,24 @@ def test_ingest_api_auth_and_end_to_end(clean_db):
     assert any(a["rule_id"] == "lo-ingress-tool-transfer" for a in alerts)
 
 
+def test_reports_dashboard_navigator_and_csv(clean_db):
+    db = clean_db
+    rec = db.create_api_key("ci-key")
+    with _client(db) as c:
+        c.post("/api/v1/ingest?format=generic_json", content=SAMPLE,
+               headers={"X-API-Key": rec["key"]})        # fires the ingress-tool rule (T1105)
+        assert c.get("/").status_code == 200              # dashboard renders the charts
+        r = c.get("/reports?days=14")
+        assert r.status_code == 200 and "security report" in r.text.lower()
+        nav = c.get("/reports/attack-navigator.json?days=14")
+        assert nav.status_code == 200
+        layer = nav.json()
+        assert layer["domain"] == "enterprise-attack"
+        assert any(t["techniqueID"] == "T1105" for t in layer["techniques"])
+        csvr = c.get("/alerts.csv")
+        assert csvr.status_code == 200 and csvr.text.startswith("id,created_at")
+
+
 def test_ingest_api_rejects_empty_and_unknown_format(clean_db):
     db = clean_db
     rec = db.create_api_key("ci-key")

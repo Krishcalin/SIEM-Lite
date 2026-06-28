@@ -212,6 +212,26 @@ action: { type: block_ip, target: src_ip }   # POSTs {action, target, alert} to 
 revert_after: 600
 ```
 
+## Dashboards & reporting
+
+The **dashboard** (`/`) shows headline counters (events, open alerts, open cases,
+on-disk size), an **alert-volume time series**, and **top-N** breakdowns — top
+firing rules, top MITRE ATT&CK techniques, and top alert/event source IPs — plus
+the existing per-vendor / per-log-type / partition tables. All charts are
+server-rendered CSS/SVG (no JS chart library, no extra dependencies).
+
+The **`/reports`** page is a print-friendly summary over a selectable period
+(7–90 days) — headline metrics, alert status, the same time series and top-N
+charts, and the coverage span. Use **Print / Save as PDF** for a shareable PDF,
+and the toolbar buttons to export:
+
+- **ATT&CK Navigator layer** — `GET /reports/attack-navigator.json?days=N` returns a
+  Navigator (layer 4.5) JSON scoring each technique by alert volume; load it at the
+  [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to visualize
+  coverage.
+- **Alerts CSV** — `GET /alerts.csv` streams the alert list (honours the `/alerts`
+  filters), with spreadsheet-formula injection neutralized.
+
 ## Agentless collectors & feeds
 
 Two agentless ways to get logs in without manual upload:
@@ -346,6 +366,8 @@ Log-Parser-Storage/
 │   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365) + scheduler
 │   ├── threatintel/        # IOC matcher + feed loader + index runtime
 │   ├── triage/             # suppression/allowlist matcher + index runtime
+│   ├── navigator.py        # ATT&CK Navigator layer export (pure)
+│   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
 │   ├── models.py           # NormalizedEvent
@@ -365,7 +387,7 @@ Log-Parser-Storage/
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,triage,severity,...}
+                            #   threatintel,triage,severity,navigator,...}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -394,10 +416,10 @@ modifiers + condition grammar), inline detection in the pipeline,
 correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
-matching + alerting), suppression/allowlist matching, case severity roll-up, auth
-(password hashing, role ranking, the RBAC dependency), the audit helper, and the
-compliance coverage report — all without a database (the queue, pipeline, and
-worker tests mock the writers).
+matching + alerting), suppression/allowlist matching, case severity roll-up, the
+ATT&CK Navigator layer builder, auth (password hashing, role ranking, the RBAC
+dependency), the audit helper, and the compliance coverage report — all without a
+database (the queue, pipeline, and worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
@@ -405,10 +427,11 @@ search, ON CONFLICT dedup, retention purge dropping whole partitions, the
 correlation SQL, the pipeline write path raising alert rows (detection and
 threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
 assignment/notes, **case grouping** (severity roll-up, related-alert discovery,
-status transitions), the IOC/suppression/auth/collector/registry round-trips, and
-the HTTP stack end-to-end (TestClient → API-key auth → ingest → detect). CI runs
-the unit tier on Python 3.11–3.13 and the integration tier against a Postgres
-service container (`.github/workflows/tests.yml`).
+status transitions), the alert analytics aggregations, the IOC/suppression/auth/
+collector/registry round-trips, and the HTTP stack end-to-end (TestClient →
+API-key auth → ingest → detect, plus the dashboard / report / Navigator / CSV
+endpoints). CI runs the unit tier on Python 3.11–3.13 and the integration tier
+against a Postgres service container (`.github/workflows/tests.yml`).
 
 ## Data model & retention notes
 
