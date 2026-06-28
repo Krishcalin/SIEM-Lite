@@ -21,14 +21,16 @@ retains them in PostgreSQL for **≥ 3 years**.
                                                   search ◄── filters + full-text ◄──┘
 ```
 
-> Being grown toward a Wazuh-like agentless SIEM. Live ingestion, a Sigma-based
-> **detection & alerting** engine, **notifications + agentless response**, and
-> **agentless collectors** are in place: events are matched against detection +
-> correlation rules, raising alerts you triage at `/alerts`; new alerts are pushed
-> to your channels and can trigger response playbooks (audited at `/responses`);
-> collectors pull vendor logs while other tools push findings to the API; and
-> built-in auth/RBAC plus a `/compliance` coverage view (MITRE→PCI/NIST/CIS/HIPAA)
-> round it out.
+> A Wazuh-like **agentless SIEM**. Ingested events are matched against a Sigma-based
+> **detection & correlation** engine and **threat-intel** IOC feeds, raising alerts
+> you work at `/alerts`: **triage** them (assign, note, suppress noise) and group
+> related ones into **cases** (`/cases`). New alerts are pushed to your channels and
+> can trigger **agentless response** playbooks (audited at `/responses`). **Collectors**
+> pull vendor/cloud/identity logs (Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
+> Microsoft 365) while other tools push findings to the API. **Dashboards + `/reports`**
+> visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
+> audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA) round it out — all
+> tested unit + integration against real PostgreSQL in CI.
 
 ## Features
 
@@ -65,9 +67,11 @@ retains them in PostgreSQL for **≥ 3 years**.
   in a `jsonb` column so nothing is lost and any field stays searchable.
 - **PostgreSQL storage**, RANGE-**partitioned by month**, with GIN full-text, a `jsonb`
   GIN index, and btree indexes on the common fields.
-- **Web UI**: dashboard (volume, partitions, storage), drag-drop upload, search
+- **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
   (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
-  (pretty raw record), CSV export, and an admin/retention page.
+  (pretty raw record), **alerts** triage, **cases**, **reports** (print/PDF +
+  ATT&CK-Navigator / CSV export), **compliance**, and an admin page (keys, rules,
+  collectors, threat-intel feeds, suppressions, users, retention, audit log).
 - **3-year retention** as policy: monthly partitions make purge a cheap partition
   DROP. The app **never purges below `RETENTION_YEARS`**; purge is manual unless
   `AUTO_PURGE=true`.
@@ -378,8 +382,9 @@ Log-Parser-Storage/
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
-│   ├── templates/          # dashboard, upload, search, event, alerts, alert, responses,
-│   │                       #   compliance, admin, login
+│   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
+│   │                       #   case, responses, compliance, report, admin, login,
+│   │                       #   _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks

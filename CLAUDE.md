@@ -44,8 +44,10 @@ add their own batch lifecycle around it.
  POST /api/v1/ingest (key) ──┤─► detect.py ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
  syslog UDP/TCP/TLS ─► queue ┘        ─► pipeline.write_stream ─► normalize.py (dedup + FTS)
                                        ├─► db.insert_events ─► events (month-partitioned, GIN)
-                                       └─► detection engine (per event) ─► alerts ─► /alerts
+                                       └─► detection + threat-intel (per event) ─► suppression
+                                              filter ─► alerts ─► /alerts ─► triage / cases
  scheduler (every CORRELATION_INTERVAL) ─► correlation rules (SQL over events) ─► alerts
+ alerts ─► notify + response · dashboards / /reports (charts, ATT&CK-Navigator, CSV)
 ```
 
 Live sources (syslog) buffer in a bounded async queue (`streaming.py`) drained by
@@ -131,7 +133,8 @@ Navigator layer-4.5 doc scored by technique alert volume) and `GET /alerts.csv`
 
 ```
 app/
-  main.py        FastAPI routes + UI (dashboard, upload, search, event, admin) + lifespan
+  main.py        FastAPI routes + UI (dashboard, upload, search, event, alerts, cases,
+                 reports, compliance, admin) + lifespan
   api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
   config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
@@ -166,8 +169,8 @@ app/
                  windows_security, suricata_eve, cef, generic_syslog, generic_json,
                  aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
                  okta_system_log, github_audit, gitlab_audit  (23 total)
-  templates/     base, dashboard, upload, search, event, alerts, alert, responses,
-                 compliance, admin, login
+  templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
+                 responses, compliance, report, admin, login, _macros (chart partials)
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
