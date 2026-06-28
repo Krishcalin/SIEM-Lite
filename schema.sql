@@ -202,6 +202,38 @@ CREATE TABLE IF NOT EXISTS case_notes (
     created_at timestamptz NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS case_notes_case_idx ON case_notes (case_id);
+
+-- ============================================================================
+--  UEBA: entity baselines for behavioural analytics / risk scoring.
+-- ============================================================================
+-- One row per actor (user / host / ip), maintained incrementally at ingest. The
+-- first_seen baseline drives "new entity" and (via entity_links) "new
+-- association" anomalies; risk is scored from the alerts attributed to it.
+CREATE TABLE IF NOT EXISTS entities (
+    entity_type  text        NOT NULL,          -- user | host | ip
+    entity_value text        NOT NULL,
+    first_seen   timestamptz NOT NULL,
+    last_seen    timestamptz NOT NULL,
+    event_count  bigint      NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_type, entity_value)
+);
+CREATE INDEX IF NOT EXISTS entities_first_idx ON entities (first_seen DESC);
+CREATE INDEX IF NOT EXISTS entities_type_idx  ON entities (entity_type);
+
+-- Observed associations between entities (user↔ip, user↔host, host↔ip). A link
+-- first seen recently whose subject entity is older is a "new association".
+CREATE TABLE IF NOT EXISTS entity_links (
+    entity_type  text        NOT NULL,
+    entity_value text        NOT NULL,
+    peer_type    text        NOT NULL,
+    peer_value   text        NOT NULL,
+    first_seen   timestamptz NOT NULL,
+    last_seen    timestamptz NOT NULL,
+    count        bigint      NOT NULL DEFAULT 0,
+    PRIMARY KEY (entity_type, entity_value, peer_type, peer_value)
+);
+CREATE INDEX IF NOT EXISTS entity_links_first_idx   ON entity_links (first_seen DESC);
+CREATE INDEX IF NOT EXISTS entity_links_subject_idx ON entity_links (entity_type, entity_value);
 CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (level);
 CREATE INDEX IF NOT EXISTS alerts_rule_idx    ON alerts (rule_id);
 CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);

@@ -383,6 +383,47 @@ def test_alert_analytics_aggregations(clean_db):
     assert es[0]["src_ip"] == "9.9.9.9" and es[0]["n"] == 2
 
 
+def test_ueba_entity_baselines_and_risk(clean_db):
+    db = clean_db
+    from app import pipeline
+    from app.detection import runtime as rt2
+
+    rt2.set_engine(de.DetectionEngine(de.load_rules(RULES_DIR)))
+    old = datetime.now(timezone.utc) - timedelta(days=10)
+    recent = datetime.now(timezone.utc) - timedelta(minutes=5)
+    try:
+        with db.pool().connection() as conn:
+            # establishes user jdoe + association jdoe↔10.0.0.1 (10 days ago)
+            pipeline.write_stream(conn, [_evt(vendor="paloalto", user_name="jdoe",
+                src_ip="10.0.0.1", event_time=old, message="ok")], batch_id=1)
+            # now: jdoe from a NEW ip, RDP allowed -> alert + new association
+            pipeline.write_stream(conn, [_evt(vendor="paloalto", user_name="jdoe",
+                src_ip="203.0.113.9", dst_port=3389, action="allow", event_time=recent,
+                message="rdp")], batch_id=2)
+            conn.commit()
+    finally:
+        rt2.set_engine(None)
+
+    e = db.get_entity("user", "jdoe")
+    assert e and e["event_count"] == 2 and e["first_seen"].date() == old.date()
+
+    new_ent = {(r["entity_type"], r["entity_value"]) for r in db.new_entities(24)}
+    assert ("ip", "203.0.113.9") in new_ent and ("user", "jdoe") not in new_ent
+
+    assert any(a["entity_value"] == "jdoe" and a["peer_value"] == "203.0.113.9"
+               for a in db.new_associations(24))                # established user, new IP
+
+    top = db.top_risk_entities("user", 30, 7.0)
+    ju = next((r for r in top if r["value"] == "jdoe"), None)
+    assert ju and ju["alerts"] >= 1 and float(ju["score"]) > 0   # RDP alert -> risk
+
+    assert any(a["peer_value"] == "203.0.113.9"
+               for a in db.entity_associations("user", "jdoe"))
+    assert len(db.entity_alerts("user", "jdoe")) >= 1
+    assert sum(d["n"] for d in db.entity_activity("user", "jdoe", 30)) == 2
+    assert db.anomaly_counts(24)["new_entities"] >= 1
+
+
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")

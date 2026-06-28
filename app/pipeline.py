@@ -11,7 +11,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, NamedTuple, Optional
 
-from . import alert_actions, db
+from . import alert_actions, db, risk
+from .config import settings
 from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
 from .normalize import dedup_hash
@@ -36,6 +37,30 @@ def parse_events(content: str, fmt: str) -> Iterator[NormalizedEvent]:
     if fmt not in PARSERS:
         raise ValueError(f"unknown format: {fmt}")
     return PARSERS[fmt].parse(content)
+
+
+def _upsert_baselines(conn, events: list[NormalizedEvent]) -> None:
+    """Maintain the UEBA entity / association baselines from a chunk of events
+    (aggregated then upserted, within the caller's transaction)."""
+    ents: dict[tuple, list] = {}
+    lnks: dict[tuple, list] = {}
+    for evt in events:
+        t = evt.event_time
+        for key in risk.event_entities(evt):
+            e = ents.get(key)
+            if e is None:
+                ents[key] = [1, t, t]
+            else:
+                e[0] += 1; e[1] = min(e[1], t); e[2] = max(e[2], t)
+        for key in risk.event_links(evt):
+            ln = lnks.get(key)
+            if ln is None:
+                lnks[key] = [1, t, t]
+            else:
+                ln[0] += 1; ln[1] = min(ln[1], t); ln[2] = max(ln[2], t)
+    db.upsert_entities(conn, [(et, ev, fr, ls, c) for (et, ev), (c, fr, ls) in ents.items()])
+    db.upsert_entity_links(
+        conn, [(et, ev, pt, pv, fr, ls, c) for (et, ev, pt, pv), (c, fr, ls) in lnks.items()])
 
 
 def apply_fallback_time(evt: NormalizedEvent, fallback: datetime) -> NormalizedEvent:
@@ -64,6 +89,7 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     ti_active = len(ti_index) > 0
     supp_index = supruntime.get_index()        # empty unless suppressions exist
     supp_active = len(supp_index) > 0
+    ueba_active = settings.ueba_enabled        # maintain entity baselines on write
     track_alerts = alert_actions.active()
     total = 0
     chunk: list[NormalizedEvent] = []
@@ -86,6 +112,8 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         if supp_hits:
             db.bump_suppressions(conn, supp_hits)
             supp_hits.clear()
+        if ueba_active:
+            _upsert_baselines(conn, chunk)
 
     for evt in events:
         total += 1

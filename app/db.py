@@ -15,6 +15,7 @@ from psycopg_pool import ConnectionPool
 from .config import settings
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
+from .risk import ENTITY_COLUMN, weight_case_sql
 from .severity import max_severity
 from .util import hash_api_key
 
@@ -531,6 +532,134 @@ def open_cases(limit: int = 200) -> list[dict]:
         return conn.execute(
             "SELECT id, title, severity, status FROM cases WHERE status <> 'closed' "
             "ORDER BY updated_at DESC LIMIT %s", (limit,)).fetchall()
+
+
+# --------------------------------------------------------------------------- #
+#  UEBA: entity baselines, anomalies, risk scoring                            #
+# --------------------------------------------------------------------------- #
+_ENTITY_UPSERT = """
+INSERT INTO entities (entity_type, entity_value, first_seen, last_seen, event_count)
+VALUES (%s, %s, %s, %s, %s)
+ON CONFLICT (entity_type, entity_value) DO UPDATE SET
+    first_seen = LEAST(entities.first_seen, EXCLUDED.first_seen),
+    last_seen  = GREATEST(entities.last_seen, EXCLUDED.last_seen),
+    event_count = entities.event_count + EXCLUDED.event_count
+"""
+_LINK_UPSERT = """
+INSERT INTO entity_links (entity_type, entity_value, peer_type, peer_value,
+    first_seen, last_seen, count)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT (entity_type, entity_value, peer_type, peer_value) DO UPDATE SET
+    first_seen = LEAST(entity_links.first_seen, EXCLUDED.first_seen),
+    last_seen  = GREATEST(entity_links.last_seen, EXCLUDED.last_seen),
+    count = entity_links.count + EXCLUDED.count
+"""
+
+
+def upsert_entities(conn, rows: list[tuple]) -> None:
+    """rows: (entity_type, entity_value, first_seen, last_seen, count). In `conn`'s txn."""
+    if rows:
+        with conn.cursor() as cur:
+            cur.executemany(_ENTITY_UPSERT, rows)
+
+
+def upsert_entity_links(conn, rows: list[tuple]) -> None:
+    if rows:
+        with conn.cursor() as cur:
+            cur.executemany(_LINK_UPSERT, rows)
+
+
+def new_entities(hours: int = 24, limit: int = 50) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT entity_type, entity_value, first_seen, event_count FROM entities "
+            "WHERE first_seen >= now() - make_interval(hours => %s) "
+            "ORDER BY first_seen DESC LIMIT %s", (hours, limit)).fetchall()
+
+
+def new_associations(hours: int = 24, limit: int = 50) -> list[dict]:
+    """Links first seen in the window whose subject entity is older — i.e. an
+    established actor showing a new peer (a classic UEBA signal)."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT l.entity_type, l.entity_value, l.peer_type, l.peer_value, l.first_seen "
+            "FROM entity_links l JOIN entities e "
+            "  ON e.entity_type = l.entity_type AND e.entity_value = l.entity_value "
+            "WHERE l.first_seen >= now() - make_interval(hours => %s) "
+            "  AND e.first_seen < l.first_seen - interval '1 hour' "
+            "ORDER BY l.first_seen DESC LIMIT %s", (hours, limit)).fetchall()
+
+
+def anomaly_counts(hours: int = 24) -> dict:
+    return {"new_entities": len(new_entities(hours, 10_000)),
+            "new_associations": len(new_associations(hours, 10_000))}
+
+
+def top_risk_entities(entity_type: str, days: int = 30, half_life: float = 7.0,
+                      limit: int = 10) -> list[dict]:
+    """Riskiest entities of a type, scored by their attributed alerts (severity-
+    weighted, recency-decayed). Enriched with the entity's first_seen."""
+    col = ENTITY_COLUMN.get(entity_type)
+    if col is None:
+        return []
+    value_expr = f"host({col})" if col == "src_ip" else col
+    weight = weight_case_sql("level")
+    q = f"""
+    SELECT v AS value, alerts, score, first_seen,
+           (first_seen >= now() - interval '24 hours') AS is_new
+    FROM (
+        SELECT {value_expr} AS v, count(*) AS alerts,
+               round(sum({weight} * power(0.5,
+                   extract(epoch from now() - created_at) / (86400 * %(hl)s)))::numeric, 1) AS score
+        FROM alerts
+        WHERE {col} IS NOT NULL AND status <> 'suppressed'
+          AND created_at >= now() - make_interval(days => %(days)s)
+        GROUP BY 1
+    ) s
+    LEFT JOIN entities e ON e.entity_type = %(etype)s AND e.entity_value = s.v
+    ORDER BY score DESC LIMIT %(lim)s"""
+    with pool().connection() as conn:
+        return conn.execute(q, {"hl": half_life, "days": days, "etype": entity_type,
+                                "lim": limit}).fetchall()
+
+
+def get_entity(entity_type: str, value: str) -> Optional[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM entities WHERE entity_type = %s AND entity_value = %s",
+            (entity_type, value)).fetchone()
+
+
+def entity_associations(entity_type: str, value: str, limit: int = 50) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT peer_type, peer_value, first_seen, last_seen, count, "
+            "(first_seen >= now() - interval '24 hours') AS is_new "
+            "FROM entity_links WHERE entity_type = %s AND entity_value = %s "
+            "ORDER BY last_seen DESC LIMIT %s", (entity_type, value, limit)).fetchall()
+
+
+def entity_alerts(entity_type: str, value: str, limit: int = 50) -> list[dict]:
+    col = ENTITY_COLUMN.get(entity_type)
+    if col is None:
+        return []
+    match = f"host({col}) = %(v)s" if col == "src_ip" else f"{col} = %(v)s"
+    with pool().connection() as conn:
+        return conn.execute(
+            f"SELECT {_ALERT_COLS} FROM alerts WHERE {match} "
+            "ORDER BY created_at DESC LIMIT %(lim)s", {"v": value, "lim": limit}).fetchall()
+
+
+def entity_activity(entity_type: str, value: str, days: int = 14) -> list[dict]:
+    col = ENTITY_COLUMN.get(entity_type)
+    if col is None:
+        return []
+    match = f"host({col}) = %(v)s" if col == "src_ip" else f"{col} = %(v)s"
+    with pool().connection() as conn:
+        return conn.execute(
+            f"SELECT date_trunc('day', event_time)::date AS day, count(*) AS n FROM events "
+            f"WHERE {match} AND event_time >= now() - make_interval(days => %(days)s) "
+            "GROUP BY 1 ORDER BY 1", {"v": value, "days": days}).fetchall()
 
 
 def alert_severity_counts() -> dict:

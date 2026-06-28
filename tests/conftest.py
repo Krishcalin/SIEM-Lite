@@ -18,8 +18,8 @@ import pytest
 # Tables truncated between integration tests (children of `events` are dropped
 # separately so partition-creation assertions start from a clean slate).
 _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_notes",
-           "ingest_batches", "detection_rules", "api_keys", "response_actions",
-           "collectors", "sessions", "users", "audit_log", "iocs")
+           "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
+           "response_actions", "collectors", "sessions", "users", "audit_log", "iocs")
 
 
 @pytest.fixture(scope="session")

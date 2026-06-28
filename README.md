@@ -27,7 +27,9 @@ retains them in PostgreSQL for **≥ 3 years**.
 > related ones into **cases** (`/cases`). New alerts are pushed to your channels and
 > can trigger **agentless response** playbooks (audited at `/responses`). **Collectors**
 > pull vendor/cloud/identity logs (Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
-> Microsoft 365) while other tools push findings to the API. **Dashboards + `/reports`**
+> Microsoft 365) while other tools push findings to the API. **UEBA entity-risk**
+> analytics (`/risk`) baseline every user/host/IP and flag new-entity / new-association
+> anomalies beyond the rules. **Dashboards + `/reports`**
 > visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
 > audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA) round it out — all
 > tested unit + integration against real PostgreSQL in CI.
@@ -69,9 +71,10 @@ retains them in PostgreSQL for **≥ 3 years**.
   GIN index, and btree indexes on the common fields.
 - **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
   (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
-  (pretty raw record), **alerts** triage, **cases**, **reports** (print/PDF +
-  ATT&CK-Navigator / CSV export), **compliance**, and an admin page (keys, rules,
-  collectors, threat-intel feeds, suppressions, users, retention, audit log).
+  (pretty raw record), **alerts** triage, **cases**, **risk** (UEBA entity scoring),
+  **reports** (print/PDF + ATT&CK-Navigator / CSV export), **compliance**, and an
+  admin page (keys, rules, collectors, threat-intel feeds, suppressions, users,
+  retention, audit log).
 - **3-year retention** as policy: monthly partitions make purge a cheap partition
   DROP. The app **never purges below `RETENTION_YEARS`**; purge is manual unless
   `AUTO_PURGE=true`.
@@ -236,6 +239,25 @@ and the toolbar buttons to export:
 - **Alerts CSV** — `GET /alerts.csv` streams the alert list (honours the `/alerts`
   filters), with spreadsheet-formula injection neutralized.
 
+## UEBA & entity risk
+
+Beyond signature rules, LogOcean tracks **behaviour**. With `UEBA_ENABLED` (on by
+default), every ingested event updates lightweight **entity baselines** — one row
+per user / host / source IP with first-seen / last-seen, plus the associations
+between them (user↔IP, user↔host, host↔IP). The **`/risk`** page then shows:
+
+- **Riskiest entities** (users, hosts, IPs), scored from their attributed alerts —
+  severity-weighted and **recency-decayed** (`RISK_HALF_LIFE_DAYS`), so a recent
+  critical outweighs an old low. Click through to a per-entity timeline,
+  associations, and alerts (`/entity?etype=user&value=…`).
+- **Anomalies (24h)** — **new entities** (first time we've ever seen this
+  user/host/IP) and **new associations** (an *established* actor suddenly using a
+  new IP or host — a classic account-takeover / lateral-movement signal), surfaced
+  without any rule having to fire.
+
+It's pure PostgreSQL (no ML dependency); the baselines are maintained incrementally
+in the ingest path.
+
 ## Agentless collectors & feeds
 
 Two agentless ways to get logs in without manual upload:
@@ -335,6 +357,8 @@ explicitly in the upload form.
 | `OKTA_*` / `GITHUB_*` / `GITLAB_*` / `AWS_*` / `AZURE_*` | — | Per-collector credentials (a collector activates when set) |
 | `THREATINTEL_ENABLED` / `THREATINTEL_FEEDS` | `false` / — | Match events against IOC feeds (paths or URLs) |
 | `THREATINTEL_REFRESH_MINUTES` / `THREATINTEL_DEFAULT_SEVERITY` | `60` / `high` | Feed refresh period; severity when a feed omits one |
+| `UEBA_ENABLED` | `true` | Maintain entity baselines + the `/risk` page (behavioural analytics) |
+| `RISK_HALF_LIFE_DAYS` / `RISK_WINDOW_DAYS` | `7` / `30` | Risk-score decay half-life; scoring window |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
 | `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
@@ -371,6 +395,7 @@ Log-Parser-Storage/
 │   ├── threatintel/        # IOC matcher + feed loader + index runtime
 │   ├── triage/             # suppression/allowlist matcher + index runtime
 │   ├── navigator.py        # ATT&CK Navigator layer export (pure)
+│   ├── risk.py             # UEBA entity extraction + risk scoring (pure)
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
@@ -383,8 +408,8 @@ Log-Parser-Storage/
 │   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
-│   │                       #   case, responses, compliance, report, admin, login,
-│   │                       #   _macros (chart partials)
+│   │                       #   case, risk, entity, responses, compliance, report,
+│   │                       #   admin, login, _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
@@ -392,7 +417,7 @@ Log-Parser-Storage/
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,triage,severity,navigator,...}
+                            #   threatintel,triage,severity,navigator,risk,...}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -422,9 +447,10 @@ correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
 matching + alerting), suppression/allowlist matching, case severity roll-up, the
-ATT&CK Navigator layer builder, auth (password hashing, role ranking, the RBAC
-dependency), the audit helper, and the compliance coverage report — all without a
-database (the queue, pipeline, and worker tests mock the writers).
+ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring, auth
+(password hashing, role ranking, the RBAC dependency), the audit helper, and the
+compliance coverage report — all without a database (the queue, pipeline, and
+worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
@@ -432,7 +458,8 @@ search, ON CONFLICT dedup, retention purge dropping whole partitions, the
 correlation SQL, the pipeline write path raising alert rows (detection and
 threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
 assignment/notes, **case grouping** (severity roll-up, related-alert discovery,
-status transitions), the alert analytics aggregations, the IOC/suppression/auth/
+status transitions), the alert analytics aggregations, **UEBA** entity baselines /
+new-entity & new-association anomalies / risk ranking, the IOC/suppression/auth/
 collector/registry round-trips, and the HTTP stack end-to-end (TestClient →
 API-key auth → ingest → detect, plus the dashboard / report / Navigator / CSV
 endpoints). CI runs the unit tier on Python 3.11–3.13 and the integration tier

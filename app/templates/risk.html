@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Entity risk — LogOcean{% endblock %}
+{% block body %}
+<h1>Entity risk &amp; behaviour</h1>
+{% if not enabled %}
+<div class="alert err">UEBA is disabled (<code>UEBA_ENABLED=false</code>) — no entity baselines are being collected.</div>
+{% endif %}
+<p class="muted">Actors (users, hosts, source IPs) are scored from their attributed
+   alerts over the last {{ days }} days — severity-weighted and recency-decayed so
+   recent activity dominates. Anomalies flag never-before-seen entities and
+   associations (an established actor suddenly using a new IP or host).</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ new_entities|length }}</div><div class="lbl">new entities (24h)</div></div>
+  <div class="card"><div class="num">{{ new_associations|length }}</div><div class="lbl">new associations (24h)</div></div>
+</div>
+
+{% macro risk_table(rows, etype, label) %}
+<h2>Riskiest {{ label }}</h2>
+<table class="results">
+  <tr><th>Entity</th><th class="r">Risk</th><th class="r">Alerts</th><th>First seen</th></tr>
+  {% for r in rows %}
+  <tr onclick="location.href='/entity?etype={{ etype }}&amp;value={{ r.value|urlencode }}'">
+    <td>{{ r.value }} {% if r.is_new %}<span class="badge high">new</span>{% endif %}</td>
+    <td class="r">{{ r.score }}</td>
+    <td class="r">{{ r.alerts }}</td>
+    <td class="nowrap muted">{{ r.first_seen.strftime('%Y-%m-%d') if r.first_seen else '—' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="4" class="muted">No alert-bearing {{ label }} yet.</td></tr>{% endfor %}
+</table>
+{% endmacro %}
+
+<div class="grid2">
+  <section>{{ risk_table(users, 'user', 'users') }}</section>
+  <section>{{ risk_table(hosts, 'host', 'hosts') }}</section>
+</div>
+<section>{{ risk_table(ips, 'ip', 'source IPs') }}</section>
+
+<div class="grid2">
+  <section>
+    <h2>New entities (24h)</h2>
+    <table>
+      <tr><th>Type</th><th>Entity</th><th>First seen (UTC)</th></tr>
+      {% for e in new_entities %}
+      <tr><td>{{ e.entity_type }}</td>
+          <td><a href="/entity?etype={{ e.entity_type }}&amp;value={{ e.entity_value|urlencode }}">{{ e.entity_value }}</a></td>
+          <td class="nowrap">{{ e.first_seen.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+      {% else %}<tr><td colspan="3" class="muted">None in the last 24h.</td></tr>{% endfor %}
+    </table>
+  </section>
+  <section>
+    <h2>New associations (24h)</h2>
+    <table>
+      <tr><th>Entity</th><th>New peer</th><th>First seen (UTC)</th></tr>
+      {% for a in new_associations %}
+      <tr><td>{{ a.entity_type }}:{{ a.entity_value }}</td>
+          <td>{{ a.peer_type }}:{{ a.peer_value }}</td>
+          <td class="nowrap">{{ a.first_seen.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+      {% else %}<tr><td colspan="3" class="muted">None in the last 24h.</td></tr>{% endfor %}
+    </table>
+  </section>
+</div>
+{% endblock %}

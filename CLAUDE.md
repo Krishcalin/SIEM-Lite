@@ -26,7 +26,9 @@ log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
 feeds and raises alerts on hits. **Triage & tuning** adds alert assignment, notes,
 suppression/allowlist rules, and **cases** (`/cases`) that group related alerts
 into one investigation. **Dashboards & reporting** add charts, top-N analytics, a
-print-friendly `/reports` page, and ATT&CK-Navigator / CSV exports.
+print-friendly `/reports` page, and ATT&CK-Navigator / CSV exports. **UEBA**
+(`UEBA_ENABLED`, `/risk`) baselines every user/host/IP and scores entity risk +
+new-entity / new-association anomalies beyond the rules.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -44,6 +46,7 @@ add their own batch lifecycle around it.
  POST /api/v1/ingest (key) ──┤─► detect.py ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
  syslog UDP/TCP/TLS ─► queue ┘        ─► pipeline.write_stream ─► normalize.py (dedup + FTS)
                                        ├─► db.insert_events ─► events (month-partitioned, GIN)
+                                       ├─► UEBA entity baselines (entities / entity_links)
                                        └─► detection + threat-intel (per event) ─► suppression
                                               filter ─► alerts ─► /alerts ─► triage / cases
  scheduler (every CORRELATION_INTERVAL) ─► correlation rules (SQL over events) ─► alerts
@@ -129,12 +132,24 @@ top-N breakdowns (`db.top_rules` / `top_alert_sources` / `top_event_sources` +
 Navigator layer-4.5 doc scored by technique alert volume) and `GET /alerts.csv`
 (streamed, `_csv_safe`d, honours the `/alerts` filters via `db.alerts_iter`).
 
+**UEBA / entity risk** (`app/risk.py`, on by default `UEBA_ENABLED`) moves beyond
+signature rules to behaviour. `pipeline.write_stream` maintains per-event
+**baselines** incrementally — `entities` (user/host/ip first/last-seen + count) and
+`entity_links` (user↔ip, user↔host, host↔ip) upserted with `LEAST/GREATEST` in the
+write txn (`risk.event_entities`/`event_links` are pure). The `/risk` page ranks the
+**riskiest** users/hosts/IPs (`db.top_risk_entities`: attributed alerts, severity-
+weighted via `risk.weight_case_sql` and recency-decayed with `power(0.5, age/half_life)`
+— half-life mirrors `risk.decay`), and surfaces **anomalies**: `new_entities`
+(first-seen in 24h) and `new_associations` (a link whose subject entity predates it
+— an established actor with a new peer). `/entity?etype=&value=` is the per-entity
+drill-down (baseline, activity, associations, alerts).
+
 ## Repository layout
 
 ```
 app/
   main.py        FastAPI routes + UI (dashboard, upload, search, event, alerts, cases,
-                 reports, compliance, admin) + lifespan
+                 risk, reports, compliance, admin) + lifespan
   api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
   config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
@@ -162,6 +177,7 @@ app/
   triage/        suppression.py (Suppression + SuppressionIndex) + runtime.py (index)
   severity.py    canonical severity order + max_severity (case roll-up)
   navigator.py   ATT&CK Navigator layer export (pure build_layer)
+  risk.py        UEBA entity/association extraction + risk scoring (pure)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -170,14 +186,15 @@ app/
                  aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
                  okta_system_log, github_audit, gitlab_audit  (23 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
-                 responses, compliance, report, admin, login, _macros (chart partials)
+                 risk, entity, responses, compliance, report, admin, login, _macros
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
 clients/         logocean_push.py — copy-into-your-tool helper to push to the API
 schema.sql       events, ingest_batches, api_keys, alerts (+assignee +case_id),
-                 alert_notes, suppressions, cases, case_notes, detection_rules,
-                 response_actions, collectors, users, sessions, audit_log, iocs
+                 alert_notes, suppressions, cases, case_notes, entities, entity_links,
+                 detection_rules, response_actions, collectors, users, sessions,
+                 audit_log, iocs
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
@@ -369,6 +386,8 @@ Unit:
   guard) and `SuppressionIndex` first-match.
 - `test_severity.py` — severity ranking + `max_severity` (case roll-up helper).
 - `test_navigator.py` — ATT&CK Navigator layer scoring / sorting / gradient.
+- `test_risk.py` — UEBA entity/link extraction, severity weights, half-life decay,
+  decayed scoring, and the SQL weight-CASE builder.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
@@ -377,7 +396,8 @@ Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
   correlation SQL, the pipeline write path raising alerts (detection +
   threat-intel) and suppressing matched ones, alert insert/dedup/queries +
   assignment/notes, case grouping (severity roll-up, related-alert discovery,
-  status transitions), the alert analytics aggregations, and the IOC/suppression/
+  status transitions), the alert analytics aggregations, UEBA (entity baselines,
+  new-entity/new-association anomalies, risk ranking), and the IOC/suppression/
   rule-registry/api-key/user-session/collector/batch round-trips — all real Postgres.
 - `test_integration_api.py` — the FastAPI stack via TestClient against a real
   DB: `/health`, API-key auth (401/200), ingest→detect end-to-end, and the

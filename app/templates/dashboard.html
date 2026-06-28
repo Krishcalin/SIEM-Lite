@@ -29,6 +29,25 @@
   {{ charts.timebars(alerts_daily, empty='No alerts in the last 30 days.') }}
 </section>
 
+{% if ueba_enabled %}
+<section>
+  <h2>Entity risk <span class="muted">— <a href="/risk">full view ›</a></span></h2>
+  <p class="muted">
+    <a href="/risk"><span class="badge medium">{{ anomalies.get('new_entities', 0) }} new entities (24h)</span></a>
+    <a href="/risk"><span class="badge medium">{{ anomalies.get('new_associations', 0) }} new associations (24h)</span></a>
+  </p>
+  <table>
+    <tr><th>Riskiest user</th><th class="r">Risk</th><th class="r">Alerts</th></tr>
+    {% for r in risk_users %}
+    <tr onclick="location.href='/entity?etype=user&amp;value={{ r.value|urlencode }}'">
+      <td>{{ r.value }} {% if r.is_new %}<span class="badge high">new</span>{% endif %}</td>
+      <td class="r">{{ r.score }}</td><td class="r">{{ r.alerts }}</td>
+    </tr>
+    {% else %}<tr><td colspan="3" class="muted">No risky users yet.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endif %}
+
 <div class="grid2">
   <section>
     <h2>Top firing rules (30d)</h2>

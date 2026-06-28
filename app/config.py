@@ -79,6 +79,14 @@ class Settings:
     threatintel_refresh_minutes: int = int(os.getenv("THREATINTEL_REFRESH_MINUTES", "60"))
     threatintel_default_severity: str = os.getenv("THREATINTEL_DEFAULT_SEVERITY", "high")
 
+    # UEBA / entity risk: maintain per-entity (user/host/ip) baselines at ingest
+    # and score risk from attributed alerts (severity-weighted, recency-decayed).
+    # On by default (cheap upserts); the Risk page surfaces it. Tune the decay
+    # half-life and scoring window in days.
+    ueba_enabled: bool = _bool("UEBA_ENABLED", True)
+    risk_half_life_days: float = float(os.getenv("RISK_HALF_LIFE_DAYS", "7"))
+    risk_window_days: int = int(os.getenv("RISK_WINDOW_DAYS", "30"))
+
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
     # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged

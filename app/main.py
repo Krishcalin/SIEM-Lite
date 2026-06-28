@@ -281,8 +281,12 @@ def _alert_analytics(days: int) -> dict:
 @app.get("/", response_class=HTMLResponse)
 def dashboard(request: Request):
     a = _alert_analytics(30)
+    risk_users = db.top_risk_entities("user", 30, settings.risk_half_life_days, 5) \
+        if settings.ueba_enabled else []
     return templates.TemplateResponse("dashboard.html", _ctx(
-        request, stats=db.stats(), top_event_sources=db.top_event_sources(7), **a))
+        request, stats=db.stats(), top_event_sources=db.top_event_sources(7),
+        ueba_enabled=settings.ueba_enabled, risk_users=risk_users,
+        anomalies=db.anomaly_counts(24) if settings.ueba_enabled else {}, **a))
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +334,30 @@ def alerts_csv(request: Request):
 
     return StreamingResponse(gen(), media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=logocean_alerts.csv"})
+
+
+# --------------------------------------------------------------------------- #
+#  UEBA: entity risk                                                          #
+# --------------------------------------------------------------------------- #
+@app.get("/risk", response_class=HTMLResponse)
+def risk_page(request: Request):
+    days, hl = settings.risk_window_days, settings.risk_half_life_days
+    return templates.TemplateResponse("risk.html", _ctx(
+        request, enabled=settings.ueba_enabled, days=days,
+        users=db.top_risk_entities("user", days, hl),
+        hosts=db.top_risk_entities("host", days, hl),
+        ips=db.top_risk_entities("ip", days, hl),
+        new_entities=db.new_entities(24), new_associations=db.new_associations(24)))
+
+
+@app.get("/entity", response_class=HTMLResponse)
+def entity_detail(request: Request, etype: str, value: str):
+    if etype not in ("user", "host", "ip"):
+        return HTMLResponse("Unknown entity type", status_code=404)
+    return templates.TemplateResponse("entity.html", _ctx(
+        request, etype=etype, value=value, entity=db.get_entity(etype, value),
+        associations=db.entity_associations(etype, value),
+        alerts=db.entity_alerts(etype, value), activity=db.entity_activity(etype, value)))
 
 
 # --------------------------------------------------------------------------- #
