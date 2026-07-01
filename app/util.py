@@ -100,13 +100,52 @@ def clean_ip(value: Any) -> Optional[str]:
         return None
 
 
+_INT64_MIN, _INT64_MAX = -(2 ** 63), 2 ** 63 - 1
+
+
 def to_int(value: Any) -> Optional[int]:
+    """Coerce to int, or None. A value outside signed 64-bit is rejected (None):
+    untrusted log fields must never overflow the bigint/integer columns and abort
+    the whole insert batch."""
     if value is None or value == "":
         return None
     try:
-        return int(str(value).strip().strip('"'))
+        n = int(str(value).strip().strip('"'))
     except (ValueError, TypeError):
         return None
+    return n if _INT64_MIN <= n <= _INT64_MAX else None
+
+
+def to_port(value: Any) -> Optional[int]:
+    """Coerce to a valid TCP/UDP port (0-65535), else None. Ports map to a 32-bit
+    `integer` column; clamping to the real domain stops a hostile `srcport=9999999999`
+    from overflowing it and rolling back the insert chunk."""
+    n = to_int(value)
+    return n if n is not None and 0 <= n <= 65535 else None
+
+
+def json_or_none(text: str) -> Any:
+    """json.loads with the deep-nesting bomb guard applied first and RecursionError
+    treated as unparseable. Returns the decoded value, or None if empty / too deep /
+    malformed — so a hostile payload can never abort a parser via RecursionError."""
+    if not text:
+        return None
+    if _exceeds_json_depth(text, _MAX_JSON_DEPTH):
+        return None
+    try:
+        return json.loads(text)
+    except (json.JSONDecodeError, RecursionError):
+        return None
+
+
+def read_capped(fobj: Any, limit: int) -> bytes:
+    """Read at most `limit` bytes from a file-like object, raising ValueError if the
+    source is larger. Bounds memory when fetching from a remote (threat-intel feed /
+    collector) that could return an arbitrarily large — or malicious — body."""
+    data = fobj.read(limit + 1)
+    if len(data) > limit:
+        raise ValueError(f"response exceeds the {limit}-byte limit")
+    return data
 
 
 def first(*values: Any) -> Optional[Any]:

@@ -36,11 +36,15 @@ def _dq(v: str) -> str:
 
 
 def _command(kv: dict) -> Optional[str]:
-    """Reassemble an EXECVE record's a0..aN args into a command line."""
-    n = to_int(kv.get("argc"))
-    if not n:
+    """Reassemble an EXECVE record's a0..aN args into a command line. Bounded by the
+    args actually present (not the log-supplied ``argc``) so a hostile
+    ``argc=999999999`` can't spin a billion-iteration loop and wedge the worker."""
+    present = sorted((int(k[1:]) for k in kv if len(k) > 1 and k[0] == "a" and k[1:].isdigit()))
+    if not present:
         return None
-    args = [kv[f"a{i}"] for i in range(n) if f"a{i}" in kv]
+    n = to_int(kv.get("argc"))
+    limit = min(n, len(present)) if n else len(present)
+    args = [kv[f"a{i}"] for i in present[:limit]]
     return " ".join(args) if args else None
 
 

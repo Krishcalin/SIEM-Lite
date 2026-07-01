@@ -13,7 +13,9 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from ..util import parse_ts
+from ..util import parse_ts, read_capped
+
+_MAX_RESPONSE_BYTES = 64 * 1024 * 1024   # cap a collector response so a bad endpoint can't OOM us
 
 
 @dataclass
@@ -74,9 +76,9 @@ class Collector(ABC):
     def _http_get(self, url: str, headers: dict) -> str:
         req = urllib.request.Request(url, headers=headers, method="GET")
         with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — configured URL
-            return resp.read().decode("utf-8", "replace")
+            return read_capped(resp, _MAX_RESPONSE_BYTES).decode("utf-8", "replace")
 
     def _http_post(self, url: str, headers: dict, data: bytes) -> str:
         req = urllib.request.Request(url, data=data, headers=headers, method="POST")
         with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — configured URL
-            return resp.read().decode("utf-8", "replace")
+            return read_capped(resp, _MAX_RESPONSE_BYTES).decode("utf-8", "replace")

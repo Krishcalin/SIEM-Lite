@@ -277,7 +277,25 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   *before* `json.loads` — a version-stable guard against deep-nesting DoS (do **not**
   rely on the interpreter raising `RecursionError`; CPython ≥3.12 doesn't at moderate
   depths). NDJSON is unaffected (depth resets per record). Keep new JSON parsers on
-  `iter_json_records` so they inherit this.
+  `iter_json_records` so they inherit this. A parser that must decode JSON itself
+  (it also handles CSV, e.g. `windows_security`/`sysmon`, or is NDJSON-first like
+  `suricata_eve`/`crowdstrike_json`) MUST use `util.json_or_none` (depth-guarded +
+  `RecursionError`-safe) — never a bare `json.loads`, which can `RecursionError` on a
+  deep payload and abort the whole batch.
+- **Untrusted numeric fields:** coerce ports through `util.to_port` (0-65535) and all
+  other integers through `util.to_int` (rejects anything outside signed 64-bit). A raw
+  `int()` lets a hostile field (`srcport=9999999999`, a 20-digit `bytes=`) overflow the
+  typed `integer`/`bigint` column and roll back the entire 5000-row insert chunk.
+  `db._row` also clamps ports as a last line of defense for every parser.
+- **Detection is exception-isolated:** `DetectionEngine.evaluate_event` runs each rule
+  in its own try/except (one bad rule — e.g. an invalid `|re` pattern — can't sink the
+  rest) and `pipeline.write_stream` wraps per-event detection + threat-intel so a
+  failure stores the event un-alerted instead of aborting the batch. (Residual: `re`
+  has no timeout, so a catastrophic-backtracking pattern in an *operator-authored* rule
+  can still hang — validate rule regexes.)
+- **Remote reads are size-capped:** server-side fetches of a threat-intel feed
+  (`feeds.load_feed_source`) or a collector endpoint (`collectors.base._http_get/post`)
+  go through `util.read_capped`, so a malicious/compromised remote can't OOM the process.
 - **Compressed input:** both ingest front doors (web `/upload` and `POST
   /api/v1/ingest`) sniff the gzip magic bytes and transparently decompress via
   `util.gunzip_capped`, which reads only `limit + 1` decompressed bytes so a

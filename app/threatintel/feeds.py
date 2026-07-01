@@ -15,9 +15,12 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
+from ..util import read_capped
 from .matcher import Ioc, make_ioc
 
 log = logging.getLogger("logocean")
+
+_MAX_FEED_BYTES = 128 * 1024 * 1024   # cap a remote feed so a malicious server can't OOM us
 
 _IND_KEYS = ("indicator", "value", "ioc", "ip", "domain", "url", "hash")
 _TYPE_KEYS = ("type", "ioc_type", "indicator_type")
@@ -94,7 +97,7 @@ def load_feed_source(src: str) -> str:
     if src.startswith(("http://", "https://")):
         req = urllib.request.Request(src, headers={"User-Agent": "LogOcean"})
         with urllib.request.urlopen(req, timeout=30) as resp:  # nosec B310 — configured feed
-            return resp.read().decode("utf-8", "replace")
+            return read_capped(resp, _MAX_FEED_BYTES).decode("utf-8", "replace")
     return Path(src).read_text(encoding="utf-8", errors="replace")
 
 

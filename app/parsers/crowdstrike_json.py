@@ -15,7 +15,7 @@ import json
 from typing import Any, Iterator, Optional
 
 from ..models import NormalizedEvent
-from ..util import clean_ip, first, parse_ts, to_int
+from ..util import clean_ip, first, json_or_none, parse_ts, to_int
 
 
 def _iter_records(content: str) -> Iterator[dict]:
@@ -23,10 +23,7 @@ def _iter_records(content: str) -> Iterator[dict]:
     if not text:
         return
     # Try a single well-formed JSON document first.
-    try:
-        obj = json.loads(text)
-    except json.JSONDecodeError:
-        obj = None
+    obj = json_or_none(text)
     if obj is not None:
         if isinstance(obj, list):
             yield from (r for r in obj if isinstance(r, dict))
@@ -43,10 +40,7 @@ def _iter_records(content: str) -> Iterator[dict]:
         line = line.strip().rstrip(",")
         if not line:
             continue
-        try:
-            rec = json.loads(line)
-        except json.JSONDecodeError:
-            continue
+        rec = json_or_none(line)
         if isinstance(rec, dict):
             yield rec
 

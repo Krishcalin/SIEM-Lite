@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import base64
 import ipaddress
+import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -38,6 +39,8 @@ from typing import Any, Optional
 import yaml
 
 from ..models import NormalizedEvent
+
+log = logging.getLogger("logocean")
 
 # Sigma field name (lowercased) -> our normalized field, used as a lookup fallback.
 _FIELD_ALIASES = {
@@ -193,7 +196,10 @@ def _match_scalar(x: Any, expected: Any, op: Optional[str], cased: bool,
         return False
     s, e = str(x), str(expected)
     if op == "re":
-        return re.search(e, s, re_flags) is not None
+        try:
+            return re.search(e, s, re_flags) is not None
+        except re.error:                       # an invalid rule pattern never matches
+            return False
     if not cased:
         s, e = s.lower(), e.lower()
     if op == "contains":
@@ -452,4 +458,13 @@ class DetectionEngine:
 
     def evaluate_event(self, evt: NormalizedEvent) -> list[Rule]:
         flat = flatten_event(evt)
-        return [r for r in self.rules if r.enabled and match_rule(r, flat)]
+        out: list[Rule] = []
+        for r in self.rules:
+            if not r.enabled:
+                continue
+            try:
+                if match_rule(r, flat):
+                    out.append(r)
+            except Exception:  # noqa: BLE001 — one bad rule must not sink the rest
+                log.warning("detection rule %s failed to evaluate", r.id, exc_info=True)
+        return out

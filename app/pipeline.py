@@ -8,6 +8,7 @@ a stream of NormalizedEvents into stored rows.
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Iterable, Iterator, NamedTuple, Optional
 
@@ -19,6 +20,8 @@ from .normalize import dedup_hash
 from .parsers import PARSERS
 from .threatintel import matcher as timatcher, runtime as tiruntime
 from .triage import runtime as supruntime
+
+log = logging.getLogger("logocean")
 
 
 class WriteResult(NamedTuple):
@@ -120,17 +123,23 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         apply_fallback_time(evt, fb)
         chunk.append(evt)
         dh: Optional[str] = None               # event identity, computed once if needed
-        if engine is not None:
-            matched = engine.evaluate_event(evt)
-            if matched:
-                dh = dedup_hash(evt)           # same identity used for the event row
-                for r in matched:
-                    emit(detengine.alert_from_match(r, evt, dh, batch_id))
-        if ti_active:
-            hits = ti_index.match(evt)
-            if hits:
-                dh = dh or dedup_hash(evt)
-                emit(timatcher.ti_alert(hits, evt, dh, batch_id))
+        # Detection / threat-intel must never abort the batch: on any unexpected
+        # error the event is still stored (already in `chunk`), just un-alerted.
+        try:
+            if engine is not None:
+                matched = engine.evaluate_event(evt)
+                if matched:
+                    dh = dedup_hash(evt)       # same identity used for the event row
+                    for r in matched:
+                        emit(detengine.alert_from_match(r, evt, dh, batch_id))
+            if ti_active:
+                hits = ti_index.match(evt)
+                if hits:
+                    dh = dh or dedup_hash(evt)
+                    emit(timatcher.ti_alert(hits, evt, dh, batch_id))
+        except Exception:  # noqa: BLE001
+            log.warning("detection/threat-intel failed for an event; stored un-alerted",
+                        exc_info=True)
         if len(chunk) >= CHUNK:
             flush()
             chunk, pending = [], []

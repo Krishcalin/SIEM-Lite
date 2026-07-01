@@ -17,7 +17,7 @@ from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
 from .risk import ENTITY_COLUMN, weight_case_sql
 from .severity import max_severity
-from .util import hash_api_key
+from .util import hash_api_key, to_port
 
 _pool: Optional[ConnectionPool] = None
 _SCHEMA = (Path(__file__).resolve().parent.parent / "schema.sql").read_text(encoding="utf-8")
@@ -75,8 +75,11 @@ def _row(evt: NormalizedEvent, batch_id: int) -> dict[str, Any]:
     return {
         "event_time": evt.event_time, "vendor": evt.vendor, "product": evt.product,
         "log_type": evt.log_type, "severity": evt.severity, "action": evt.action,
-        "src_ip": evt.src_ip, "dst_ip": evt.dst_ip, "src_port": evt.src_port,
-        "dst_port": evt.dst_port, "protocol": evt.protocol, "app": evt.app,
+        "src_ip": evt.src_ip, "dst_ip": evt.dst_ip,
+        # clamp ports to their column domain so a hostile value can't overflow the
+        # 32-bit `integer` column and abort the whole insert chunk
+        "src_port": to_port(evt.src_port), "dst_port": to_port(evt.dst_port),
+        "protocol": evt.protocol, "app": evt.app,
         "user_name": evt.user_name, "host_name": evt.host_name, "rule_name": evt.rule_name,
         "bytes_total": evt.bytes_total, "message": evt.message,
         "raw": Jsonb(evt.raw), "tsv": tsv_text(evt), "batch_id": batch_id,

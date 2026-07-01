@@ -26,7 +26,7 @@ import re
 from typing import Any, Iterator, Optional
 
 from ..models import NormalizedEvent
-from ..util import clean_ip, first, parse_ts, to_int
+from ..util import clean_ip, first, json_or_none, parse_ts, to_int
 
 # Sysmon EventID -> event-kind label. Process kinds mirror windows_security
 # (4688 process-create / 4689 process-exit) so a rule on action matches both.
@@ -75,24 +75,21 @@ def _event_fields(rec: dict, msg: str) -> dict:
 def _iter_records(content: str) -> Iterator[dict]:
     text = content.strip()
     if text[:1] in ("{", "["):
-        try:
-            obj = json.loads(text)
+        obj = json_or_none(text)
+        if obj is not None:
             if isinstance(obj, list):
                 yield from (r for r in obj if isinstance(r, dict))
             elif isinstance(obj, dict):
                 yield obj
             return
-        except json.JSONDecodeError:
-            for line in text.splitlines():
-                line = line.strip().rstrip(",")
-                if line:
-                    try:
-                        r = json.loads(line)
-                        if isinstance(r, dict):
-                            yield r
-                    except json.JSONDecodeError:
-                        continue
-            return
+        for line in text.splitlines():          # NDJSON fallback
+            line = line.strip().rstrip(",")
+            if not line:
+                continue
+            r = json_or_none(line)
+            if isinstance(r, dict):
+                yield r
+        return
     for row in csv.DictReader(io.StringIO(content)):
         if any((v or "").strip() for v in row.values()):
             yield {k: v for k, v in row.items() if k}
