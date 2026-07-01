@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, collectors, compliance, db, ingest, killchain_runtime,
-               navigator, notify, streaming)
+               navigator, notify, streaming, workbench)
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
@@ -405,6 +405,54 @@ def killchain_create_case(request: Request, signature: str = Form(...),
            f"case {cid} from story ({story['tactic_count']} tactics, "
            f"{story['alert_count']} alerts)")
     return RedirectResponse(url=f"/case/{cid}", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Detection-engineering workbench                                            #
+# --------------------------------------------------------------------------- #
+_WORKBENCH_SAMPLE_RULE = """title: Encoded PowerShell
+id: demo-encoded-powershell
+level: high
+logsource:
+  product: windows
+detection:
+  sel:
+    message|contains:
+      - '-enc'
+      - '-EncodedCommand'
+  condition: sel
+tags:
+  - attack.execution
+  - attack.t1059.001
+"""
+_WORKBENCH_SAMPLE_EVENT = ('{\n  "vendor": "microsoft",\n'
+                           '  "host_name": "WS1",\n'
+                           '  "user_name": "alice",\n'
+                           '  "message": "powershell.exe -enc SQBFAFgA"\n}')
+
+
+@app.get("/workbench", response_class=HTMLResponse)
+def workbench_page(request: Request):
+    days = settings.workbench_window_days
+    rules = db.rule_stats(days)
+    return templates.TemplateResponse("workbench.html", _ctx(
+        request, days=days, coverage=workbench.coverage_map(rules),
+        health=workbench.rule_health(rules, settings.workbench_noisy_threshold),
+        rules=rules, result=None,
+        rule_yaml=_WORKBENCH_SAMPLE_RULE, event_json=_WORKBENCH_SAMPLE_EVENT))
+
+
+@app.post("/workbench/test", response_class=HTMLResponse)
+def workbench_test(request: Request, rule_yaml: str = Form(""),
+                   event_json: str = Form("")):
+    days = settings.workbench_window_days
+    rules = db.rule_stats(days)
+    result = workbench.test_rule(rule_yaml, event_json)
+    return templates.TemplateResponse("workbench.html", _ctx(
+        request, days=days, coverage=workbench.coverage_map(rules),
+        health=workbench.rule_health(rules, settings.workbench_noisy_threshold),
+        rules=rules, result=result,
+        rule_yaml=rule_yaml, event_json=event_json))
 
 
 # --------------------------------------------------------------------------- #

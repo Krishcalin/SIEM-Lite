@@ -229,6 +229,24 @@ def set_rule_enabled(rule_id: str, enabled: bool) -> None:
         conn.commit()
 
 
+def rule_stats(days: int = 30) -> list[dict]:
+    """Every registered rule with all-time and windowed firing counts, for the
+    detection-engineering workbench. `fired_total` / `last_fired` are all-time;
+    `fired_window` counts alerts in the last `days` days."""
+    q = """
+    SELECT r.*, COALESCE(t.n, 0) AS fired_total, t.last_fired,
+           COALESCE(w.n, 0) AS fired_window
+    FROM detection_rules r
+    LEFT JOIN (SELECT rule_id, count(*) AS n, max(created_at) AS last_fired
+               FROM alerts GROUP BY rule_id) t ON t.rule_id = r.rule_id
+    LEFT JOIN (SELECT rule_id, count(*) AS n FROM alerts
+               WHERE created_at >= now() - make_interval(days => %s)
+               GROUP BY rule_id) w ON w.rule_id = r.rule_id
+    ORDER BY fired_window DESC, r.level, r.rule_id"""
+    with pool().connection() as conn:
+        return conn.execute(q, (days,)).fetchall()
+
+
 _ALERT_INSERT = """
 INSERT INTO alerts (event_time, rule_id, rule_title, level, tactics, techniques,
     vendor, src_ip, dst_ip, user_name, host_name, message, dedup_hash, batch_id, status)

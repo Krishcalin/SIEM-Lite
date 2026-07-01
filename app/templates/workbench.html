@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Detection workbench — LogOcean{% endblock %}
+{% block body %}
+<h1>Detection-engineering workbench</h1>
+<p class="muted">Coverage, rule health, and a live rule tester over the detection pack
+   — analytics use the last {{ days }} days.</p>
+
+<!-- ── ATT&CK coverage ─────────────────────────────────────────────────── -->
+<h2>ATT&amp;CK coverage</h2>
+<div class="cards">
+  <div class="card"><div class="num">{{ coverage.coverage_pct }}%</div><div class="lbl">technique coverage</div></div>
+  <div class="card"><div class="num">{{ coverage.covered_techniques }}/{{ coverage.total_techniques }}</div><div class="lbl">techniques covered (enabled)</div></div>
+  <div class="card"><div class="num">{{ coverage.uncovered_techniques|length }}</div><div class="lbl">uncovered techniques</div></div>
+  <div class="card"><div class="num">{{ coverage.untagged_rules }}</div><div class="lbl">untagged rules</div></div>
+</div>
+
+<table class="results">
+  <tr><th>Tactic</th><th class="r">Rules (on/total)</th><th>Covered techniques</th><th>Gaps (disabled-only)</th></tr>
+  {% for t in coverage.tactics %}
+  <tr>
+    <td><strong>{{ t.title }}</strong></td>
+    <td class="r">{{ t.enabled_rules }}/{{ t.rules }}</td>
+    <td>{% for tid in t.covered %}<span class="badge open">{{ tid }}</span> {% endfor %}{% if not t.covered %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% for tid in t.uncovered %}<span class="badge high">{{ tid }}</span> {% endfor %}{% if not t.uncovered %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="4" class="muted">No rules loaded.</td></tr>{% endfor %}
+</table>
+{% if coverage.uncovered_techniques %}
+<p class="muted">Uncovered (no enabled rule): {{ coverage.uncovered_techniques|join(', ') }}</p>
+{% endif %}
+
+<!-- ── Rule health ─────────────────────────────────────────────────────── -->
+<h2>Rule health</h2>
+<div class="cards">
+  <div class="card"><div class="num">{{ health.counts.enabled }}/{{ health.counts.total }}</div><div class="lbl">rules enabled</div></div>
+  <div class="card"><div class="num">{{ health.counts.never_fired }}</div><div class="lbl">never fired</div></div>
+  <div class="card"><div class="num">{{ health.counts.noisy }}</div><div class="lbl">noisy (≥{{ health.threshold }}/{{ days }}d)</div></div>
+  <div class="card"><div class="num">{{ health.counts.stale }}</div><div class="lbl">stale (silent {{ days }}d)</div></div>
+</div>
+
+{% macro rule_rows(rows, empty) %}
+<table class="results">
+  <tr><th>Rule</th><th>Level</th><th>Source</th><th class="r">Fired ({{ days }}d)</th><th class="r">Fired (all)</th><th>Last fired (UTC)</th></tr>
+  {% for r in rows %}
+  <tr>
+    <td>{{ r.title }} <span class="muted">{{ r.rule_id }}</span></td>
+    <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
+    <td class="muted">{{ r.source }}</td>
+    <td class="r">{{ r.fired_window }}</td>
+    <td class="r">{{ r.fired_total }}</td>
+    <td class="nowrap muted">{{ r.last_fired.strftime('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
+  </tr>
+  {% else %}<tr><td colspan="6" class="muted">{{ empty }}</td></tr>{% endfor %}
+</table>
+{% endmacro %}
+
+<h3>Noisy rules</h3>
+{{ rule_rows(health.noisy, 'No rule exceeded the noise threshold.') }}
+<h3>Never-fired rules <span class="muted">— enabled but no alert on record</span></h3>
+{{ rule_rows(health.never_fired, 'Every enabled rule has fired at least once.') }}
+<h3>Stale rules <span class="muted">— fired before, silent in the window</span></h3>
+{{ rule_rows(health.stale, 'No stale rules.') }}
+
+<!-- ── Rule tester ─────────────────────────────────────────────────────── -->
+<h2>Rule tester</h2>
+<p class="muted">Evaluate a Sigma-subset rule against a sample event with the same
+   engine the pipeline uses. Event fields may be normalized names (user_name, src_ip…)
+   or raw vendor fields.</p>
+
+{% if result %}
+  {% if result.error %}
+  <div class="alert err">{{ result.error }}</div>
+  {% else %}
+  <div class="panel">
+    <p style="font-size:1.1rem">
+      Verdict:
+      {% if result.matched %}<span class="badge critical">MATCH</span>{% else %}<span class="badge open">no match</span>{% endif %}
+      <span class="muted">· logsource {{ 'ok' if result.logsource_ok else 'mismatch' }}</span>
+    </p>
+    <table class="results">
+      <tr><th>Selection</th><th>Result</th></tr>
+      {% for name, ok in result.selections.items() %}
+      <tr><td><code>{{ name }}</code></td><td>{% if ok %}<span class="badge open">true</span>{% else %}<span class="badge high">false</span>{% endif %}</td></tr>
+      {% endfor %}
+      <tr><td><code>logsource</code></td><td>{% if result.logsource_ok %}<span class="badge open">true</span>{% else %}<span class="badge high">false</span>{% endif %}</td></tr>
+    </table>
+    <p class="muted">condition: <code>{{ result.condition }}</code>
+      {% if result.techniques %}· techniques: {{ result.techniques|join(', ') }}{% endif %}</p>
+  </div>
+  {% endif %}
+{% endif %}
+
+<form method="post" action="/workbench/test">
+  <div class="grid2">
+    <div>
+      <label class="muted">Rule (YAML)</label>
+      <textarea name="rule_yaml" rows="18" class="wide" style="font-family:monospace">{{ rule_yaml }}</textarea>
+    </div>
+    <div>
+      <label class="muted">Event (JSON)</label>
+      <textarea name="event_json" rows="18" class="wide" style="font-family:monospace">{{ event_json }}</textarea>
+    </div>
+  </div>
+  <button type="submit" class="btn primary">Test rule</button>
+</form>
+{% endblock %}

@@ -99,6 +99,11 @@ class Settings:
     killchain_interval: int = int(os.getenv("KILLCHAIN_INTERVAL", "300"))       # seconds
     killchain_min_severity: str = os.getenv("KILLCHAIN_MIN_SEVERITY", "high").lower()
 
+    # Detection-engineering workbench: ATT&CK coverage map, rule-health analytics
+    # (never-fired / noisy / stale), and an in-app rule tester on /workbench.
+    workbench_window_days: int = int(os.getenv("WORKBENCH_WINDOW_DAYS", "30"))
+    workbench_noisy_threshold: int = int(os.getenv("WORKBENCH_NOISY_THRESHOLD", "50"))
+
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
     # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged

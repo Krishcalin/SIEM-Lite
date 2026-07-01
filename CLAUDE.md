@@ -30,7 +30,9 @@ print-friendly `/reports` page, and ATT&CK-Navigator / CSV exports. **UEBA**
 (`UEBA_ENABLED`, `/risk`) baselines every user/host/IP and scores entity risk +
 new-entity / new-association anomalies beyond the rules. **Kill-chain
 reconstruction** (`KILLCHAIN_ENABLED`, `/killchain`) stitches related alerts across
-ATT&CK tactics into attack stories and promotes them to cases.
+ATT&CK tactics into attack stories and promotes them to cases. A **detection-engineering
+workbench** (`/workbench`) maps ATT&CK coverage, flags noisy/never-fired rules, and tests
+Sigma rules against sample events.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -171,6 +173,17 @@ window) and promotes a story to a case via `db.create_case_from_story` (reuses
 stories at/above `KILLCHAIN_MIN_SEVERITY`, de-duped by open `kc_signature`. Reconstructing
 over *un-cased* alerts makes it naturally idempotent.
 
+**Detection-engineering workbench** (`app/workbench.py`, pure; `/workbench`) tunes the
+rule pack. `coverage_map` groups the rule registry by ATT&CK tactic (kill-chain-ordered
+via `killchain.tactic_rank`) and reports techniques covered by **enabled** rules vs gaps
+(techniques only on disabled rules), plus an overall %. `rule_health` buckets rules into
+noisy / never-fired / stale / disabled from `db.rule_stats(days)` (per-rule all-time +
+windowed alert counts via LEFT JOINs, `WORKBENCH_WINDOW_DAYS` / `WORKBENCH_NOISY_THRESHOLD`).
+`test_rule(rule_yaml, event_json)` evaluates a Sigma-subset rule against a sample event
+with the **production** engine internals (`de.rule_from_dict` + `flatten_event` +
+`_eval_selection` + `match_rule`), returning per-selection booleans, logsource match, and
+the verdict — never raising on bad input. All three are pure functions over rule dicts.
+
 ## Repository layout
 
 ```
@@ -208,6 +221,7 @@ app/
   risk.py        UEBA entity/association extraction + risk scoring (pure)
   killchain.py   kill-chain reconstruction: chain-building + story summary (pure)
   killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
+  workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -476,6 +490,10 @@ Unit:
   building (single-linkage, time-gap split, min-tactics qualification, noise
   exclusion), story summary (stage order, severity roll-up, pivot entities,
   signature stability), and reconstruction ordering.
+- `test_workbench.py` — rule tester (match / logsource-mismatch / selection-miss /
+  field-alias / bad-input), coverage map (counts, gaps, covered-wins-over-disabled,
+  kill-chain tactic order), and rule-health bucketing (noisy / never-fired / stale /
+  disabled + sorting).
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 

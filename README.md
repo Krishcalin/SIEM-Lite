@@ -79,7 +79,8 @@ retains them in PostgreSQL for **≥ 3 years**.
 - **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
   (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
   (pretty raw record), **alerts** triage, **cases**, **kill-chain** (attack-story
-  reconstruction), **risk** (UEBA entity scoring),
+  reconstruction), **risk** (UEBA entity scoring), a detection **workbench**
+  (coverage / rule-health / rule-tester),
   **reports** (print/PDF + ATT&CK-Navigator / CSV export), **compliance**, and an
   admin page (keys, rules, collectors, threat-intel feeds, suppressions, users,
   retention, audit log).
@@ -324,6 +325,26 @@ de-duplicated by the story's alert-set signature. The reconstruction runs over r
 UEBA, it's pure PostgreSQL — the reconstructor (`app/killchain.py`) is dependency-free
 and fully unit-tested.
 
+## Detection-engineering workbench
+
+The **`/workbench`** page helps you tune the detection pack itself:
+
+- **ATT&CK coverage map** — per-tactic (kill-chain-ordered) view of which techniques
+  the **enabled** rules cover, and the **gaps** (techniques only a *disabled* rule would
+  catch, or none at all), plus an overall coverage %.
+- **Rule health** — every rule with its firing counts over the last
+  `WORKBENCH_WINDOW_DAYS`, bucketed into **noisy** (≥ `WORKBENCH_NOISY_THRESHOLD`
+  alerts in the window), **never-fired** (enabled but no alert on record — untested or
+  dead), and **stale** (fired historically, silent now).
+- **Rule tester** — paste a Sigma-subset rule and a sample event and evaluate it with
+  the *same* engine the pipeline uses; the result shows the final verdict, the logsource
+  match, and **each named selection's** boolean so you can see exactly why it did or
+  didn't fire. Event fields may be normalized names (`user_name`, `src_ip`…) or raw
+  vendor fields.
+
+The analytics (`app/workbench.py`) are pure functions over the rule registry, so they're
+fully unit-tested without a database.
+
 ## Agentless collectors & feeds
 
 Two agentless ways to get logs in without manual upload:
@@ -434,6 +455,7 @@ explicitly in the upload form.
 | `KILLCHAIN_ENABLED` | `true` | Reconstruct multi-tactic attack stories on the `/killchain` page |
 | `KILLCHAIN_WINDOW_HOURS` / `KILLCHAIN_MAX_GAP_MINUTES` / `KILLCHAIN_MIN_TACTICS` | `24` / `60` / `2` | Look-back window; max gap to link alerts; min distinct tactics for a story |
 | `KILLCHAIN_AUTOCREATE` / `KILLCHAIN_INTERVAL` / `KILLCHAIN_MIN_SEVERITY` | `false` / `300` / `high` | Auto-promote high-severity stories to cases; poll period (s); severity floor |
+| `WORKBENCH_WINDOW_DAYS` / `WORKBENCH_NOISY_THRESHOLD` | `30` / `50` | Rule firing-stats window; alerts/window above which a rule is flagged noisy |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
 | `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
@@ -473,6 +495,7 @@ Log-Parser-Storage/
 │   ├── risk.py             # UEBA entity extraction + risk scoring (pure)
 │   ├── killchain.py        # kill-chain / attack-story reconstruction (pure)
 │   ├── killchain_runtime.py # DB-backed reconstruction + auto-create scheduler
+│   ├── workbench.py        # detection workbench: rule tester + coverage + health (pure)
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
@@ -487,7 +510,7 @@ Log-Parser-Storage/
 │   │                       #   okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, killchain, risk, entity, responses, compliance,
-│   │                       #   report, admin, login, _macros (chart partials)
+│   │                       #   report, workbench, admin, login, _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
