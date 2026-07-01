@@ -1,0 +1,19 @@
+title: WMI Event-Consumer Persistence (Sysmon)
+id: lo-sysmon-wmi-persistence
+description: Sysmon recorded a WMI event filter / consumer / binding (EventID 19/20/21) - the WMI event-subscription persistence technique used to run code on system triggers.
+level: medium
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  wmi:
+    log_type:
+      - wmi-filter
+      - wmi-consumer
+      - wmi-binding
+  condition: wmi
+tags:
+  - attack.t1546.003
+  - attack.persistence
+falsepositives:
+  - Management software using permanent WMI subscriptions (SCCM, monitoring agents).

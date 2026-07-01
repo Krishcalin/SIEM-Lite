@@ -1,0 +1,23 @@
+title: Inhibit System Recovery - Shadow Copy / Backup Deletion
+id: lo-inhibit-recovery-shadowcopy
+description: Deletion of Volume Shadow Copies or backups (vssadmin / wmic shadowcopy / wbadmin / bcdedit recovery disable) - a near-universal ransomware precursor.
+level: high
+detection:
+  vssadmin:
+    - CommandLine|contains|all: [vssadmin, delete, shadows]
+    - message|contains|all: [vssadmin, delete, shadows]
+  wmic_shadow:
+    - CommandLine|contains|all: [shadowcopy, delete]
+    - message|contains|all: [shadowcopy, delete]
+  wbadmin:
+    - CommandLine|contains|all: [wbadmin, delete]
+    - message|contains|all: [wbadmin, delete]
+  bcdedit:
+    - CommandLine|contains|all: [bcdedit, recoveryenabled, "no"]
+    - message|contains|all: [bcdedit, recoveryenabled, "no"]
+  condition: vssadmin or wmic_shadow or wbadmin or bcdedit
+tags:
+  - attack.t1490
+  - attack.impact
+falsepositives:
+  - Backup software rotating or pruning shadow copies - validate the context.

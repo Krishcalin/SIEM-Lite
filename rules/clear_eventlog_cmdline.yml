@@ -1,0 +1,21 @@
+title: Windows Event Log Cleared via Command Line
+id: lo-clear-eventlog-cmdline
+description: Event logs cleared through wevtutil / Clear-EventLog / Remove-EventLog - anti-forensics that complements the 1102 / 104 event-based rule (catches it in process telemetry).
+level: high
+detection:
+  wevtutil:
+    - CommandLine|contains|all: [wevtutil, cl]
+    - message|contains|all: [wevtutil, cl]
+  ps_clear:
+    - CommandLine|contains:
+        - Clear-EventLog
+        - Remove-EventLog
+    - message|contains:
+        - Clear-EventLog
+        - Remove-EventLog
+  condition: wevtutil or ps_clear
+tags:
+  - attack.t1070.001
+  - attack.defense_evasion
+falsepositives:
+  - Administrative log maintenance.

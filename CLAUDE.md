@@ -67,12 +67,18 @@ Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
 `startswith` / `endswith` / `re` (`i`/`m`/`s` flags) / `cased`, `|all`, `cidr`,
 numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
 `base64offset` / `windash` — so most community rules load unmodified (gated only
-by whether our parsers populate the referenced field). The shipped pack is 22
+by whether our parsers populate the referenced field). The shipped pack is 30
 detection + 3 correlation rules across Windows, network, AWS, Entra, Okta, M365,
-GitHub, and **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
+GitHub, **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
 disabled / object-removed per-event rules gated on `vendor|contains: tripwire` and
 matching the changed path via `message` + LEEF `attributes.resource`, plus a
-mass-change-burst correlation rule grouped by `host_name`).
+mass-change-burst correlation rule grouped by `host_name`), and a **Sysmon /
+endpoint** pack that matches the fields `sysmon.py` lifts onto `raw`
+(`Image`/`ParentImage`/`CommandLine`/`TargetObject`) plus the event-kind
+`log_type` — office-spawns-shell, LOLBin proxy exec, registry Run-key persistence,
+WMI persistence, LSASS dump, shadow-copy deletion, schtasks, command-line log
+clearing. Command-line rules match `CommandLine` OR `message` so they also fire on
+non-Sysmon sources that fill `message`.
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:

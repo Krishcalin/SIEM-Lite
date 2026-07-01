@@ -1,0 +1,15 @@
+title: Scheduled Task Created via schtasks
+id: lo-schtasks-persistence
+description: schtasks.exe used to create a scheduled task - a common persistence and execution mechanism.
+level: medium
+detection:
+  schtasks:
+    - CommandLine|contains|all: [schtasks, /create]
+    - message|contains|all: [schtasks, /create]
+  condition: schtasks
+tags:
+  - attack.t1053.005
+  - attack.persistence
+  - attack.execution
+falsepositives:
+  - Administrators / installers creating legitimate scheduled tasks.

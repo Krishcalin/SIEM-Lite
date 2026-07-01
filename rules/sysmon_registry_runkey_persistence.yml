@@ -1,0 +1,25 @@
+title: Registry Autostart / Persistence Modified (Sysmon)
+id: lo-sysmon-registry-runkey-persistence
+description: A Sysmon registry event set a value under a known autostart / persistence location - Run keys, Winlogon, Image File Execution Options, or a service ImagePath - a common way to survive reboot.
+level: medium
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  autostart:
+    TargetObject|contains:
+      - \CurrentVersion\Run
+      - \CurrentVersion\RunOnce
+      - \Winlogon\Shell
+      - \Winlogon\Userinit
+      - \Image File Execution Options\
+      - \CurrentVersion\Windows\Load
+      - \Policies\Explorer\Run
+      - \CurrentControlSet\Services\
+  condition: autostart
+tags:
+  - attack.t1547.001
+  - attack.t1546.012
+  - attack.persistence
+falsepositives:
+  - Legitimate software configuring autostart on install / update.

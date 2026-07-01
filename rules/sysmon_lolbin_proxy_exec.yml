@@ -1,0 +1,33 @@
+title: Signed Binary Proxy Execution (regsvr32 / mshta / rundll32)
+id: lo-sysmon-lolbin-proxy-exec
+description: A Microsoft-signed LOLBin (regsvr32 / mshta / rundll32) invoked with a remote URL or scriptlet - proxy execution used to run attacker code while evading application control (e.g. Squiblydoo).
+level: high
+detection:
+  tool:
+    Image|endswith:
+      - \regsvr32.exe
+      - \mshta.exe
+      - \rundll32.exe
+  remote:
+    - CommandLine|contains:
+        - http://
+        - https://
+        - scrobj.dll
+        - .sct
+        - "javascript:"
+        - "vbscript:"
+    - message|contains:
+        - http://
+        - https://
+        - scrobj.dll
+        - .sct
+        - "javascript:"
+        - "vbscript:"
+  condition: tool and remote
+tags:
+  - attack.t1218.010
+  - attack.t1218.005
+  - attack.t1218.011
+  - attack.defense_evasion
+falsepositives:
+  - Enterprise software installers that register remote scriptlets (rare).
