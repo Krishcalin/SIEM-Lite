@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Kill-chain reconstruction — LogOcean{% endblock %}
+{% block body %}
+<h1>Kill-chain reconstruction</h1>
+{% if not enabled %}
+<div class="alert err">Kill-chain reconstruction is disabled (<code>KILLCHAIN_ENABLED=false</code>).</div>
+{% endif %}
+<p class="muted">Related alerts that share an entity (user / host / IP), occur close in
+   time, and span <strong>multiple ATT&amp;CK tactics</strong> are stitched into attack
+   stories — showing an intrusion progress along the kill chain instead of as
+   isolated alerts. {% if autocreate %}High-severity stories are auto-promoted to cases.{%
+   else %}Promote a story to an investigation case with one click.{% endif %}</p>
+
+<form method="get" class="inline-form" style="margin-bottom:1rem">
+  <label>Look-back window (hours)
+    <input type="number" name="hours" value="{{ hours }}" min="1" max="720" style="width:6rem">
+  </label>
+  <button type="submit" class="btn">Reconstruct</button>
+  <span class="muted">{{ stories|length }} attack stor{{ 'y' if stories|length == 1 else 'ies' }} in the last {{ hours }}h</span>
+</form>
+
+{% for s in stories %}
+<div class="panel" style="margin-bottom:1.5rem">
+  <div class="finding-header" style="display:flex;justify-content:space-between;align-items:center;gap:1rem">
+    <h2 style="margin:0">
+      <span class="badge {{ s.severity }}">{{ s.severity }}</span>
+      {{ s.title }}
+    </h2>
+    <div class="nowrap">
+      {% if s.signature in existing_signatures %}
+        <span class="badge ack">case exists</span>
+      {% else %}
+      <form method="post" action="/killchain/create-case" style="display:inline">
+        <input type="hidden" name="signature" value="{{ s.signature }}">
+        <input type="hidden" name="hours" value="{{ hours }}">
+        <button type="submit" class="btn primary">Create case</button>
+      </form>
+      {% endif %}
+    </div>
+  </div>
+
+  <p class="muted" style="margin:.3rem 0">{{ s.narrative }}</p>
+  <p style="margin:.3rem 0">
+    {% for e in s.entities %}<span class="badge open">{{ e.type }}: {{ e.value }} ×{{ e.count }}</span> {% endfor %}
+    {% if s.techniques %}<span class="muted"> · techniques: {{ s.techniques|join(', ') }}</span>{% endif %}
+  </p>
+
+  <!-- Kill-chain stage timeline -->
+  <table class="results">
+    <tr><th>#</th><th>Tactic</th><th class="r">Alerts</th><th>Techniques</th><th>Window (UTC)</th></tr>
+    {% for st in s.stages %}
+    <tr>
+      <td class="muted">{{ loop.index }}</td>
+      <td><strong>{{ st.title }}</strong></td>
+      <td class="r">{{ st.count }}</td>
+      <td class="nowrap">{{ st.techniques|join(', ') or '—' }}</td>
+      <td class="nowrap muted">
+        {{ st.alerts[0].event_time.strftime('%m-%d %H:%M') if st.alerts[0].event_time
+           else st.alerts[0].created_at.strftime('%m-%d %H:%M') }}</td>
+    </tr>
+    {% endfor %}
+  </table>
+
+  <details style="margin-top:.5rem">
+    <summary class="muted">{{ s.alert_count }} member alert(s)</summary>
+    <table class="results">
+      <tr><th>Time (UTC)</th><th>Sev</th><th>Tactic</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th></tr>
+      {% for r in s.alerts %}
+      <tr>
+        <td class="nowrap"><a href="/alert/{{ r.id }}">{{ (r.event_time or r.created_at).strftime('%Y-%m-%d %H:%M') }}</a></td>
+        <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
+        <td class="nowrap muted">{{ r.tactics|join(', ') }}</td>
+        <td>{{ r.rule_title }}</td>
+        <td class="nowrap">{{ r.src_ip or '' }}</td>
+        <td>{{ r.user_name or '' }}</td>
+        <td>{{ r.host_name or '' }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </details>
+</div>
+{% else %}
+{% if enabled %}
+<div class="alert">No multi-tactic attack stories in the last {{ hours }}h. Stories appear
+  when un-cased alerts sharing an entity span at least {{ 2 }} ATT&amp;CK tactics within the
+  configured time gap.</div>
+{% endif %}
+{% endfor %}
+{% endblock %}

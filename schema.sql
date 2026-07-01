@@ -193,6 +193,13 @@ CREATE TABLE IF NOT EXISTS cases (
 CREATE INDEX IF NOT EXISTS cases_status_idx   ON cases (status);
 CREATE INDEX IF NOT EXISTS cases_assignee_idx ON cases (assignee);
 
+-- Provenance: 'manual' (analyst-created) or 'killchain' (reconstructed attack
+-- story). kc_signature is the stable hash of a story's alert set, used to avoid
+-- auto-creating the same story twice.
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS source       text NOT NULL DEFAULT 'manual';
+ALTER TABLE cases ADD COLUMN IF NOT EXISTS kc_signature text;
+CREATE INDEX IF NOT EXISTS cases_kc_sig_idx ON cases (kc_signature);
+
 -- Investigation notes threaded under a case.
 CREATE TABLE IF NOT EXISTS case_notes (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

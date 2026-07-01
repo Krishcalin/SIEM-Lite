@@ -28,7 +28,9 @@ suppression/allowlist rules, and **cases** (`/cases`) that group related alerts
 into one investigation. **Dashboards & reporting** add charts, top-N analytics, a
 print-friendly `/reports` page, and ATT&CK-Navigator / CSV exports. **UEBA**
 (`UEBA_ENABLED`, `/risk`) baselines every user/host/IP and scores entity risk +
-new-entity / new-association anomalies beyond the rules.
+new-entity / new-association anomalies beyond the rules. **Kill-chain
+reconstruction** (`KILLCHAIN_ENABLED`, `/killchain`) stitches related alerts across
+ATT&CK tactics into attack stories and promotes them to cases.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -153,6 +155,22 @@ weighted via `risk.weight_case_sql` and recency-decayed with `power(0.5, age/hal
 — an established actor with a new peer). `/entity?etype=&value=` is the per-entity
 drill-down (baseline, activity, associations, alerts).
 
+**Kill-chain reconstruction** (`app/killchain.py`, pure; `app/killchain_runtime.py`,
+DB-backed; on by default `KILLCHAIN_ENABLED`) stitches related alerts into **attack
+stories**. `build_chains` links alerts that share an entity (user/host/ip) and fall
+within `KILLCHAIN_MAX_GAP_MINUTES` — single-linkage along each entity's timeline via a
+union-find, so a campaign chained through intermediate alerts stays one story. A group
+qualifies only when it spans ≥ `KILLCHAIN_MIN_TACTICS` distinct ATT&CK tactics (tactic
+order in `KILL_CHAIN_TACTICS`). `summarize_chain` emits kill-chain-ordered **stages**,
+pivot **entities** (shared by ≥2 alerts), rolled-up severity (`severity.max_severity`),
+a narrative, and a stable **signature** (hash of the alert-set). The `/killchain` page
+reconstructs live from `db.recent_uncased_alerts` (open, non-suppressed, un-cased in the
+window) and promotes a story to a case via `db.create_case_from_story` (reuses
+`create_case` + `add_alerts_to_case`; `cases.source='killchain'`, `kc_signature` set).
+`KILLCHAIN_AUTOCREATE` runs `killchain_runtime.KillChainScheduler` to auto-promote
+stories at/above `KILLCHAIN_MIN_SEVERITY`, de-duped by open `kc_signature`. Reconstructing
+over *un-cased* alerts makes it naturally idempotent.
+
 ## Repository layout
 
 ```
@@ -188,6 +206,8 @@ app/
   severity.py    canonical severity order + max_severity (case roll-up)
   navigator.py   ATT&CK Navigator layer export (pure build_layer)
   risk.py        UEBA entity/association extraction + risk scoring (pure)
+  killchain.py   kill-chain reconstruction: chain-building + story summary (pure)
+  killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -452,6 +472,10 @@ Unit:
 - `test_compression.py` — gzip ingest decompression (`gunzip_capped`: round-trip /
   bomb-guard / corrupt / multi-member) and the bulk-import client's line-aligned
   size-bounded chunker.
+- `test_killchain.py` — tactic ordering/normalisation, entity extraction, chain
+  building (single-linkage, time-gap split, min-tactics qualification, noise
+  exclusion), story summary (stage order, severity roll-up, pivot entities,
+  signature stability), and reconstruction ordering.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 

@@ -87,6 +87,18 @@ class Settings:
     risk_half_life_days: float = float(os.getenv("RISK_HALF_LIFE_DAYS", "7"))
     risk_window_days: int = int(os.getenv("RISK_WINDOW_DAYS", "30"))
 
+    # Kill-chain reconstruction: stitch related alerts (shared entity + time
+    # proximity) that span multiple ATT&CK tactics into attack stories on the
+    # /killchain page. Auto-create is opt-in and only fires for stories at or
+    # above KILLCHAIN_MIN_SEVERITY.
+    killchain_enabled: bool = _bool("KILLCHAIN_ENABLED", True)
+    killchain_window_hours: int = int(os.getenv("KILLCHAIN_WINDOW_HOURS", "24"))
+    killchain_max_gap_minutes: int = int(os.getenv("KILLCHAIN_MAX_GAP_MINUTES", "60"))
+    killchain_min_tactics: int = int(os.getenv("KILLCHAIN_MIN_TACTICS", "2"))
+    killchain_autocreate: bool = _bool("KILLCHAIN_AUTOCREATE", False)
+    killchain_interval: int = int(os.getenv("KILLCHAIN_INTERVAL", "300"))       # seconds
+    killchain_min_severity: str = os.getenv("KILLCHAIN_MIN_SEVERITY", "high").lower()
+
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
     # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged

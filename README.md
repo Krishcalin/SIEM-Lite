@@ -78,7 +78,8 @@ retains them in PostgreSQL for **≥ 3 years**.
   GIN index, and btree indexes on the common fields.
 - **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
   (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
-  (pretty raw record), **alerts** triage, **cases**, **risk** (UEBA entity scoring),
+  (pretty raw record), **alerts** triage, **cases**, **kill-chain** (attack-story
+  reconstruction), **risk** (UEBA entity scoring),
   **reports** (print/PDF + ATT&CK-Navigator / CSV export), **compliance**, and an
   admin page (keys, rules, collectors, threat-intel feeds, suppressions, users,
   retention, audit log).
@@ -299,6 +300,30 @@ between them (user↔IP, user↔host, host↔IP). The **`/risk`** page then show
 It's pure PostgreSQL (no ML dependency); the baselines are maintained incrementally
 in the ingest path.
 
+## Kill-chain reconstruction
+
+A single alert is one step; an intrusion is a *sequence* of steps by the same actor
+across ATT&CK tactics over time. The **`/killchain`** page stitches related alerts
+into **attack stories**:
+
+- alerts are linked when they **share an entity** (user / host / IP) and fall within
+  `KILLCHAIN_MAX_GAP_MINUTES` of each other (single-linkage, so a long campaign chained
+  through intermediate alerts stays one story);
+- a linked group only qualifies when it spans **≥ `KILLCHAIN_MIN_TACTICS` distinct
+  ATT&CK tactics** — showing progression along the kill chain, not just a burst of one
+  behaviour;
+- each story is presented as **kill-chain-ordered stages** (Initial Access → Execution →
+  Credential Access → …), the **pivot entities** that tie it together, a rolled-up
+  severity, and a plain narrative.
+
+Promote a story to an investigation **case** with one click (severity + alert linkage
+roll up exactly like a manually built case). With `KILLCHAIN_AUTOCREATE=true`, a
+background scheduler auto-promotes stories at or above `KILLCHAIN_MIN_SEVERITY`,
+de-duplicated by the story's alert-set signature. The reconstruction runs over recent
+**un-cased** alerts, so once a story is folded into a case it won't be re-surfaced. Like
+UEBA, it's pure PostgreSQL — the reconstructor (`app/killchain.py`) is dependency-free
+and fully unit-tested.
+
 ## Agentless collectors & feeds
 
 Two agentless ways to get logs in without manual upload:
@@ -406,6 +431,9 @@ explicitly in the upload form.
 | `THREATINTEL_REFRESH_MINUTES` / `THREATINTEL_DEFAULT_SEVERITY` | `60` / `high` | Feed refresh period; severity when a feed omits one |
 | `UEBA_ENABLED` | `true` | Maintain entity baselines + the `/risk` page (behavioural analytics) |
 | `RISK_HALF_LIFE_DAYS` / `RISK_WINDOW_DAYS` | `7` / `30` | Risk-score decay half-life; scoring window |
+| `KILLCHAIN_ENABLED` | `true` | Reconstruct multi-tactic attack stories on the `/killchain` page |
+| `KILLCHAIN_WINDOW_HOURS` / `KILLCHAIN_MAX_GAP_MINUTES` / `KILLCHAIN_MIN_TACTICS` | `24` / `60` / `2` | Look-back window; max gap to link alerts; min distinct tactics for a story |
+| `KILLCHAIN_AUTOCREATE` / `KILLCHAIN_INTERVAL` / `KILLCHAIN_MIN_SEVERITY` | `false` / `300` / `high` | Auto-promote high-severity stories to cases; poll period (s); severity floor |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
 | `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
@@ -443,6 +471,8 @@ Log-Parser-Storage/
 │   ├── triage/             # suppression/allowlist matcher + index runtime
 │   ├── navigator.py        # ATT&CK Navigator layer export (pure)
 │   ├── risk.py             # UEBA entity extraction + risk scoring (pure)
+│   ├── killchain.py        # kill-chain / attack-story reconstruction (pure)
+│   ├── killchain_runtime.py # DB-backed reconstruction + auto-create scheduler
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
@@ -456,8 +486,8 @@ Log-Parser-Storage/
 │   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
 │   │                       #   okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
-│   │                       #   case, risk, entity, responses, compliance, report,
-│   │                       #   admin, login, _macros (chart partials)
+│   │                       #   case, killchain, risk, entity, responses, compliance,
+│   │                       #   report, admin, login, _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks

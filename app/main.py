@@ -18,7 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import api, auth, collectors, compliance, db, ingest, navigator, notify, streaming
+from . import (api, auth, collectors, compliance, db, ingest, killchain_runtime,
+               navigator, notify, streaming)
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
@@ -128,6 +129,11 @@ async def lifespan(app: FastAPI):
         else:
             ti_runtime.reload_index()   # manual indicators only (no feeds configured)
 
+    killchain_sched = None
+    if settings.killchain_enabled and settings.killchain_autocreate:
+        killchain_sched = killchain_runtime.KillChainScheduler(
+            settings.killchain_interval, settings.killchain_min_severity)
+
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
     await queue.start()
@@ -141,9 +147,13 @@ async def lifespan(app: FastAPI):
         await collector_sched.start()
     if ti_scheduler is not None:
         await ti_scheduler.start()
+    if killchain_sched is not None:
+        await killchain_sched.start()
     try:
         yield
     finally:
+        if killchain_sched is not None:
+            await killchain_sched.stop()
         if ti_scheduler is not None:
             await ti_scheduler.stop()
             ti_runtime.set_scheduler(None)
@@ -358,6 +368,43 @@ def entity_detail(request: Request, etype: str, value: str):
         request, etype=etype, value=value, entity=db.get_entity(etype, value),
         associations=db.entity_associations(etype, value),
         alerts=db.entity_alerts(etype, value), activity=db.entity_activity(etype, value)))
+
+
+# --------------------------------------------------------------------------- #
+#  Kill-chain reconstruction                                                  #
+# --------------------------------------------------------------------------- #
+@app.get("/killchain", response_class=HTMLResponse)
+def killchain_page(request: Request):
+    q = request.query_params
+    try:
+        hours = max(int(q.get("hours", settings.killchain_window_hours)), 1)
+    except ValueError:
+        hours = settings.killchain_window_hours
+    stories = []
+    if settings.killchain_enabled:
+        stories = killchain_runtime.reconstruct_recent(hours=hours)
+    existing = db.open_kc_signatures()
+    return templates.TemplateResponse("killchain.html", _ctx(
+        request, enabled=settings.killchain_enabled, stories=stories, hours=hours,
+        window=settings.killchain_window_hours, autocreate=settings.killchain_autocreate,
+        existing_signatures=existing))
+
+
+@app.post("/killchain/create-case")
+def killchain_create_case(request: Request, signature: str = Form(...),
+                          hours: int = Form(0), _user=Depends(require_role("analyst"))):
+    """Persist one reconstructed story (identified by its signature) as a case."""
+    win = hours or settings.killchain_window_hours
+    story = next((s for s in killchain_runtime.reconstruct_recent(hours=win)
+                  if s["signature"] == signature), None)
+    if story is None:
+        return RedirectResponse(url="/killchain", status_code=303)
+    user = getattr(request.state, "user", None)
+    cid = db.create_case_from_story(story, created_by=user["username"] if user else None)
+    _audit(request, "killchain.create_case",
+           f"case {cid} from story ({story['tactic_count']} tactics, "
+           f"{story['alert_count']} alerts)")
+    return RedirectResponse(url=f"/case/{cid}", status_code=303)
 
 
 # --------------------------------------------------------------------------- #

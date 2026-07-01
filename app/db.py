@@ -403,12 +403,14 @@ _CASE_SELECT = """SELECT c.*, COALESCE(n.n, 0) AS alert_count FROM cases c
 
 
 def create_case(title: str, summary: Optional[str] = None, severity: str = "medium",
-                created_by: Optional[str] = None, assignee: Optional[str] = None) -> int:
+                created_by: Optional[str] = None, assignee: Optional[str] = None,
+                source: str = "manual", kc_signature: Optional[str] = None) -> int:
     with pool().connection() as conn:
         row = conn.execute(
-            "INSERT INTO cases (title, summary, severity, created_by, assignee) "
-            "VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (title, summary or None, severity, created_by, assignee or None)).fetchone()
+            "INSERT INTO cases (title, summary, severity, created_by, assignee, "
+            "source, kc_signature) VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id",
+            (title, summary or None, severity, created_by, assignee or None,
+             source, kc_signature)).fetchone()
         conn.commit()
         return row["id"]
 
@@ -532,6 +534,47 @@ def open_cases(limit: int = 200) -> list[dict]:
         return conn.execute(
             "SELECT id, title, severity, status FROM cases WHERE status <> 'closed' "
             "ORDER BY updated_at DESC LIMIT %s", (limit,)).fetchall()
+
+
+# --------------------------------------------------------------------------- #
+#  Kill-chain reconstruction                                                  #
+# --------------------------------------------------------------------------- #
+def recent_uncased_alerts(hours: int = 24, cap: int = 5000) -> list[dict]:
+    """Open, non-suppressed, un-cased alerts in the last `hours` — the raw
+    material the kill-chain reconstructor stitches into attack stories.
+
+    Ordered oldest-first so callers see the chain in chronological order; capped
+    to bound reconstruction cost."""
+    q = f"""SELECT {_ALERT_COLS} FROM alerts
+            WHERE case_id IS NULL AND status NOT IN ('suppressed', 'closed')
+              AND COALESCE(event_time, created_at) >= now() - make_interval(hours => %s)
+            ORDER BY COALESCE(event_time, created_at) ASC
+            LIMIT %s"""
+    with pool().connection() as conn:
+        return conn.execute(q, (hours, cap)).fetchall()
+
+
+def open_kc_signatures() -> set[str]:
+    """Signatures of non-closed kill-chain cases, so auto-create is idempotent."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT kc_signature FROM cases "
+            "WHERE source = 'killchain' AND kc_signature IS NOT NULL "
+            "AND status <> 'closed'").fetchall()
+    return {r["kc_signature"] for r in rows}
+
+
+def create_case_from_story(story: dict, created_by: Optional[str] = None) -> int:
+    """Persist a reconstructed attack story as a case and fold its alerts in.
+
+    Reuses create_case + add_alerts_to_case so severity rollup and alert linkage
+    behave exactly like a manually built case. Returns the new case id."""
+    cid = create_case(
+        title=story["title"], summary=story.get("narrative"),
+        severity=story.get("severity", "medium"), created_by=created_by,
+        source="killchain", kc_signature=story.get("signature"))
+    add_alerts_to_case(cid, story.get("alert_ids") or [])
+    return cid
 
 
 # --------------------------------------------------------------------------- #
