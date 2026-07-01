@@ -1,0 +1,30 @@
+title: Tripwire - Integrity Monitoring Disabled or Policy Weakened
+id: lo-tripwire-monitoring-disabled
+description: A Tripwire event indicating monitoring was turned off or weakened — a rule / task / policy disabled, real-time monitoring stopped, the agent or service stopped, or a node unlinked / unmonitored. Attackers disable FIM to hide follow-on tampering.
+level: high
+detection:
+  tripwire:
+    vendor|contains: tripwire
+  disabled:
+    - message|contains:
+        - monitoring disabled
+        - real-time monitoring stopped
+        - disabled real-time
+        - rule disabled
+        - task disabled
+        - policy disabled
+        - agent stopped
+        - service stopped
+        - node unlinked
+        - unmonitored
+        - baseline cleared
+    - action|contains:
+        - disable
+        - unlink
+        - unmonitor
+  condition: tripwire and disabled
+tags:
+  - attack.t1562.001
+  - attack.defense_evasion
+falsepositives:
+  - Planned maintenance windows or intentional policy / rule changes by administrators.

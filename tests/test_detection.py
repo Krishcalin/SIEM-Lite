@@ -189,6 +189,38 @@ def test_engine_fires_modifier_rules():
         vendor="x", message="powershell.exe /enc SQBFAFgA")
 
 
+def test_engine_fires_tripwire_fim_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def tw(resource=None, message=None, action=None, vendor="tripwire"):
+        return dict(vendor=vendor, product="tripwire enterprise", log_type="fileintegrity",
+                    action=action, message=message,
+                    raw={"attributes": {"resource": resource} if resource else {}})
+
+    # each FIM rule fires on its indicator (resource carried in raw.attributes)
+    assert "lo-tripwire-critical-file-change" in hits(
+        **tw(resource="/etc/shadow", message="Monitored file changed: /etc/shadow"))
+    assert "lo-tripwire-web-shell" in hits(
+        **tw(resource="/var/www/html/cmd.php", action="added"))
+    assert "lo-tripwire-persistence-change" in hits(
+        **tw(resource="/etc/cron.d/backdoor", action="added"))
+    assert "lo-tripwire-monitoring-disabled" in hits(
+        **tw(message="Real-time monitoring stopped for node FIN-WS-014", action="disabled"))
+    assert "lo-tripwire-object-removed" in hits(
+        **tw(resource="/var/log/audit/audit.log", message="object removed", action="removed"))
+
+    # negatives: a benign monitored change fires nothing, and the vendor gate
+    # keeps a non-Tripwire event with the same path from tripping these rules.
+    assert not {i for i in hits(**tw(resource="/tmp/app.log", action="modified"))
+                if "tripwire" in i}
+    assert not {i for i in hits(vendor="cisco", message="changed /etc/shadow",
+                                raw={"attributes": {"resource": "/etc/shadow"}})
+                if "tripwire" in i}
+
+
 def test_alert_from_match_builds_row():
     rule = next(r for r in load_rules(RULES_DIR) if r.id == "lo-win-failed-logon")
     evt = NormalizedEvent(event_time=None, vendor="microsoft", log_type="security",

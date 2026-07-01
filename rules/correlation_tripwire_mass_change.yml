@@ -1,0 +1,21 @@
+title: Tripwire FIM - Mass File-Change Burst on a Host
+id: lo-corr-tripwire-mass-change
+level: high
+description: Fifty or more Tripwire file-integrity changes on a single host within ten minutes — consistent with ransomware encryption, mass tampering, or an unauthorized bulk deployment.
+correlation:
+  match:
+    vendor: tripwire
+    action:
+      - added
+      - modified
+      - removed
+      - changed
+      - deleted
+  group_by:
+    - host_name
+  window: 10m
+  threshold: 50
+tags:
+  - attack.t1486
+  - attack.t1565
+  - attack.impact

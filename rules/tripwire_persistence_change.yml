@@ -1,0 +1,42 @@
+title: Tripwire FIM - Persistence Mechanism Modified
+id: lo-tripwire-persistence-change
+description: Tripwire reported a change to a startup / scheduling persistence location — cron, systemd units, init scripts, shell profiles, or Windows Run keys / Startup / Scheduled Tasks. A common way attackers survive reboot.
+level: medium
+detection:
+  tripwire:
+    vendor|contains: tripwire
+  persistence_path:
+    - attributes.resource|contains:
+        - /etc/cron
+        - /var/spool/cron
+        - crontab
+        - /etc/init.d
+        - /etc/rc.local
+        - /etc/systemd/system
+        - /lib/systemd/system
+        - .service
+        - /etc/profile
+        - .bashrc
+        - .bash_profile
+        - \CurrentVersion\Run
+        - \Start Menu\Programs\Startup
+        - \System32\Tasks
+    - message|contains:
+        - /etc/cron
+        - /var/spool/cron
+        - crontab
+        - /etc/init.d
+        - /etc/rc.local
+        - /etc/systemd/system
+        - /lib/systemd/system
+        - \CurrentVersion\Run
+        - \Start Menu\Programs\Startup
+        - \System32\Tasks
+  condition: tripwire and persistence_path
+tags:
+  - attack.t1053
+  - attack.t1543
+  - attack.t1547
+  - attack.persistence
+falsepositives:
+  - Package installation / updates; legitimate scheduled-task, service, or cron changes.

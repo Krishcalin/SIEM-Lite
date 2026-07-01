@@ -67,9 +67,12 @@ Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
 `startswith` / `endswith` / `re` (`i`/`m`/`s` flags) / `cased`, `|all`, `cidr`,
 numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
 `base64offset` / `windash` — so most community rules load unmodified (gated only
-by whether our parsers populate the referenced field). The shipped pack is 17
-detection + 2 correlation rules across Windows, network, AWS, Entra, Okta, M365
-and GitHub.
+by whether our parsers populate the referenced field). The shipped pack is 22
+detection + 3 correlation rules across Windows, network, AWS, Entra, Okta, M365,
+GitHub, and **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
+disabled / object-removed per-event rules gated on `vendor|contains: tripwire` and
+matching the changed path via `message` + LEEF `attributes.resource`, plus a
+mass-change-burst correlation rule grouped by `host_name`).
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:

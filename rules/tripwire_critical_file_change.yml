@@ -1,0 +1,37 @@
+title: Tripwire FIM - Critical System / Credential File Changed
+id: lo-tripwire-critical-file-change
+description: Tripwire reported a change to a security-critical system or credential file (e.g. /etc/passwd, /etc/shadow, sudoers, sshd_config, authorized_keys, the Windows SAM/SYSTEM hive). Unplanned changes here indicate account manipulation, backdoored authentication, or persistence.
+level: high
+detection:
+  tripwire:
+    vendor|contains: tripwire
+  critical_path:
+    - attributes.resource|contains:
+        - /etc/passwd
+        - /etc/shadow
+        - /etc/gshadow
+        - /etc/sudoers
+        - /etc/ssh/sshd_config
+        - /etc/pam.d/
+        - authorized_keys
+        - \config\SAM
+        - \config\SYSTEM
+        - \config\SECURITY
+    - message|contains:
+        - /etc/passwd
+        - /etc/shadow
+        - /etc/gshadow
+        - /etc/sudoers
+        - /etc/ssh/sshd_config
+        - /etc/pam.d/
+        - authorized_keys
+        - \config\SAM
+        - \config\SYSTEM
+  condition: tripwire and critical_path
+tags:
+  - attack.t1098
+  - attack.t1556
+  - attack.persistence
+  - attack.credential_access
+falsepositives:
+  - Planned user / password administration, OS patching, or configuration management runs.

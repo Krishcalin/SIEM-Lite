@@ -1,0 +1,25 @@
+title: Tripwire FIM - Monitored Object Removed
+id: lo-tripwire-object-removed
+description: Tripwire reported that a monitored file or object was removed / deleted. Deleting monitored artifacts (logs, binaries, configuration) is a common anti-forensic and defense-evasion step.
+level: medium
+detection:
+  tripwire:
+    vendor|contains: tripwire
+  removed:
+    action:
+      - removed
+      - remove
+      - deleted
+      - delete
+  removed_msg:
+    message|contains:
+      - was removed
+      - object removed
+      - file deleted
+      - file removed
+  condition: tripwire and (removed or removed_msg)
+tags:
+  - attack.t1070.004
+  - attack.defense_evasion
+falsepositives:
+  - Routine cleanup, log rotation, temp-file churn, and software uninstalls.

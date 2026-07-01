@@ -1,0 +1,47 @@
+title: Tripwire FIM - Web Content / Web Shell Change
+id: lo-tripwire-web-shell
+description: Tripwire reported a change to a server-side script under a web-content directory (webroot). Attackers drop or modify .php/.jsp/.aspx files to plant web shells for persistence and remote command execution.
+level: high
+detection:
+  tripwire:
+    vendor|contains: tripwire
+  webroot:
+    - attributes.resource|contains:
+        - /var/www
+        - /usr/share/nginx
+        - /srv/www
+        - htdocs
+        - wwwroot
+        - inetpub
+    - message|contains:
+        - /var/www
+        - /usr/share/nginx
+        - /srv/www
+        - htdocs
+        - wwwroot
+        - inetpub
+  script:
+    - attributes.resource|contains:
+        - .php
+        - .jsp
+        - .jspx
+        - .asp
+        - .aspx
+        - .ashx
+        - .cfm
+        - .war
+    - message|contains:
+        - .php
+        - .jsp
+        - .jspx
+        - .asp
+        - .aspx
+        - .ashx
+        - .cfm
+        - .war
+  condition: tripwire and webroot and script
+tags:
+  - attack.t1505.003
+  - attack.persistence
+falsepositives:
+  - Application deployments / CI-CD publishing content to the web root.

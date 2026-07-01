@@ -189,14 +189,18 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with a starter rule pack (17 detection + 2 correlation rules) covering
+Ships with a starter rule pack (22 detection + 3 correlation rules) covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
 (logging disabled, root console login, world-open security groups, access-key
 creation), Entra ID (risky sign-in succeeded, legacy auth), Okta (admin grant,
-MFA deactivation), Microsoft 365 (mailbox forwarding rules), and GitHub (repo
-made public). Detection can be turned off with `DETECTION_ENABLED=false`.
+MFA deactivation), Microsoft 365 (mailbox forwarding rules), GitHub (repo
+made public), and **Tripwire file-integrity monitoring** (critical system /
+credential file change, web-shell drop, persistence-mechanism change, integrity
+monitoring disabled, monitored-object deletion, plus a mass-change-burst
+correlation for ransomware / bulk tampering). Detection can be turned off with
+`DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
 

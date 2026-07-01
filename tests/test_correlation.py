@@ -28,6 +28,16 @@ def test_load_correlation_rules():
     assert "lo-win-failed-logon" not in by_id
 
 
+def test_load_tripwire_mass_change_correlation_rule():
+    by_id = {r.id: r for r in load_correlation_rules(RULES_DIR)}
+    mc = by_id["lo-corr-tripwire-mass-change"]
+    assert mc.match["vendor"] == "tripwire"
+    assert "modified" in mc.match["action"] and "removed" in mc.match["action"]
+    assert mc.group_by == ["host_name"]
+    assert mc.window == 600 and mc.threshold == 50
+    assert "T1486" in mc.techniques and "impact" in mc.tactics
+
+
 def test_correlation_alert_dedup_is_stable_per_window_bucket():
     rule = CorrelationRule(id="lo-corr-bruteforce-logon", title="Brute Force",
                            level="high", description="", match={"action": "failed-logon"},
