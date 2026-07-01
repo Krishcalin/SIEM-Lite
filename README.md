@@ -489,8 +489,10 @@ DB_DSN=postgresql://logocean:logocean@localhost:5432/logocean \
 
 The **unit** tests cover parsers + auto-detection (over the bundled samples),
 API-key auth, the async ingest queue (grouping, worker loop, backpressure),
-syslog TCP framing, the detection engine (Sigma-subset matching, all field
-modifiers + condition grammar), inline detection in the pipeline,
+syslog TCP framing, gzip ingest decompression (bomb-guarded) + the bulk-import
+client's line-aligned chunker, the detection engine (Sigma-subset matching, all
+field modifiers + condition grammar, incl. the Tripwire-FIM and Sysmon/endpoint
+rule packs), inline detection in the pipeline,
 correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,

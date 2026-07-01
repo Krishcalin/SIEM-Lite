@@ -210,7 +210,8 @@ schema.sql       events, ingest_batches, api_keys, alerts (+assignee +case_id),
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
-                 test_collectors, test_auth, test_audit, test_compliance
+                 test_collectors, test_auth, test_audit, test_compliance, test_threatintel,
+                 test_triage, test_severity, test_navigator, test_risk, test_compression
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker
@@ -429,7 +430,9 @@ Unit:
 - `test_api_auth.py` — API-key hashing + header extraction.
 - `test_streaming.py` — ingest-queue grouping, the async worker loop, backpressure drop.
 - `test_syslog.py` — TCP framing (RFC 6587 octet-counting + newline) and format resolution.
-- `test_detection.py` — Sigma-subset matching, condition grammar, the rule library.
+- `test_detection.py` — Sigma-subset matching, all field modifiers + condition
+  grammar, and the shipped rule library — incl. the Tripwire-FIM and Sysmon/endpoint
+  packs, plus existing rules firing on Sysmon / auditd telemetry.
 - `test_pipeline.py` — inline detection in `write_stream` (DB inserts mocked).
 - `test_correlation.py` — correlation rule loading, window parsing, alert dedup.
 - `test_notify.py` — severity routing, payload builders, the dispatcher thread.
@@ -446,6 +449,9 @@ Unit:
 - `test_navigator.py` — ATT&CK Navigator layer scoring / sorting / gradient.
 - `test_risk.py` — UEBA entity/link extraction, severity weights, half-life decay,
   decayed scoring, and the SQL weight-CASE builder.
+- `test_compression.py` — gzip ingest decompression (`gunzip_capped`: round-trip /
+  bomb-guard / corrupt / multi-member) and the bulk-import client's line-aligned
+  size-bounded chunker.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
