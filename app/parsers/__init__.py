@@ -4,8 +4,9 @@ from __future__ import annotations
 from . import (aws_cloudtrail, azure_activity, cef, cisco_asa, cisco_ios,
                crowdstrike_csv, crowdstrike_json, entra_signin, fortinet_fortigate,
                gcp_audit, generic_json, generic_syslog, github_audit, gitlab_audit,
-               leef, m365_audit, meraki, okta_system_log, paloalto_csv, paloalto_syslog,
-               suricata_eve, windows_security, zeek_json, zeek_tsv)
+               leef, linux_auditd, m365_audit, meraki, okta_system_log, paloalto_csv,
+               paloalto_syslog, suricata_eve, sysmon, web_access, windows_security,
+               zeek_json, zeek_tsv)
 
 # Format key -> parser module. Keys are also the values of the UI "format" dropdown.
 PARSERS = {
@@ -15,6 +16,9 @@ PARSERS = {
     "crowdstrike_json": crowdstrike_json,
     "fortinet_fortigate": fortinet_fortigate,
     "windows_security": windows_security,
+    "sysmon": sysmon,
+    "linux_auditd": linux_auditd,
+    "web_access": web_access,
     "suricata_eve": suricata_eve,
     "cef": cef,
     "leef": leef,
@@ -42,6 +46,9 @@ FORMAT_LABELS = {
     "crowdstrike_json": "CrowdStrike Falcon — JSON",
     "fortinet_fortigate": "Fortinet FortiGate — syslog (key=value)",
     "windows_security": "Windows Security Event Log — CSV / JSON",
+    "sysmon": "Microsoft Sysmon — Operational log (JSON / CSV)",
+    "linux_auditd": "Linux auditd — audit.log",
+    "web_access": "Apache / Nginx — access log (CLF / combined)",
     "suricata_eve": "Suricata — EVE JSON",
     "cef": "CEF — Common Event Format (generic)",
     "leef": "LEEF — Log Event Extended Format (Tripwire Log Center / QRadar; generic)",

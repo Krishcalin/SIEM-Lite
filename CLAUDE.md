@@ -5,7 +5,7 @@ Guidance for Claude Code (and other agents) working in this repository.
 ## What this is
 
 **LogOcean** — a self-hosted log parser, indexer, and long-term store for
-**network, endpoint, cloud, and identity** logs from many vendors (**24 parsers**,
+**network, endpoint, cloud, and identity** logs from many vendors (**27 parsers**,
 see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
 **HTTP ingest API** (`POST /api/v1/ingest`), or the **syslog receiver**
 (UDP/TCP/TLS) — and all share one parse → normalize → store pipeline. The app
@@ -186,9 +186,10 @@ app/
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
-                 windows_security, suricata_eve, cef, leef, generic_syslog, generic_json,
-                 aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
-                 okta_system_log, github_audit, gitlab_audit  (24 total)
+                 windows_security, sysmon, linux_auditd, web_access, suricata_eve, cef,
+                 leef, generic_syslog, generic_json, aws_cloudtrail, gcp_audit,
+                 azure_activity, m365_audit, entra_signin, okta_system_log,
+                 github_audit, gitlab_audit  (27 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
                  risk, entity, responses, compliance, report, admin, login, _macros
   static/style.css
@@ -317,12 +318,38 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   (methodName / principalEmail / callerIp); Azure `operationName` + `identity.claims`
   (operationName/resultType may be `{value,localizedValue}`); GitHub `action`/`actor`/
   `actor_ip` with epoch-ms `@timestamp`; GitLab actor + action under `details`.
+- **Sysmon (`sysmon.py`)** is the key Windows **endpoint** telemetry. Same Event Log
+  export shape as `windows_security` (JSON `ConvertTo-Json` / CSV), so it's told apart
+  by the Sysmon provider name or the Sysmon-only `ProcessGuid` (routed **before**
+  windows_security in `_detect_json`; the CSV branch checks for `sysmon` in the
+  content). Named EventData (`Image`/`CommandLine`/`DestinationIp`/`TargetObject`/…)
+  lives in the rendered `Message` for the `Get-WinEvent` shape, so it's parsed from the
+  `Key: Value` lines (a named `EventData` object from Winlogbeat/NXLog is also honored).
+  EventID → kind label; **process kinds mirror windows_security** (EID 1 →
+  `process-create` like 4688, EID 5 → `process-exit`) so cross-vendor rules match both.
+  The parsed fields are **lifted onto `raw`** (so `Image`/`CommandLine`/`TargetObject`
+  are searchable + rule-matchable, and future Sigma-import maps directly) and
+  `CommandLine` flows into `message` (so existing command-line rules fire on endpoint
+  telemetry).
+- **Linux auditd (`linux_auditd.py`)** — one event per line; `type=NAME
+  msg=audit(EPOCH.mmm:seq):` header gives type + time + correlation id. A tolerant
+  key=value scanner handles quoted values; **`USER_*` records nest acct/addr/res inside
+  an inner `msg='…'` blob, which is expanded**. EXECVE `a0..aN` args are reassembled
+  into the command line (so command-line rules fire on Linux); execve syscall (59/322)
+  and EXECVE → `action=process-create`; login types → `logon`/`failed-logon`.
+- **Web access (`web_access.py`)** — Apache/Nginx CLF & combined; the client IP →
+  `src_ip`, method → `action`, the full request line → `message` (path-traversal / tool
+  signatures match), status → `rule_name` + severity (4xx warning / 5xx error), size →
+  `bytes_total`; the optional referer + user-agent (combined only) go in `raw`. The
+  Apache `[dd/Mon/yyyy:HH:MM:SS ±ZZZZ]` stamp swaps its first `:` for a space so
+  `parse_ts` reads it.
 - **Generic JSON (`generic_json`)** is the JSON catch-all and the **fallback for
   unrecognized JSON** (replacing the old CrowdStrike default). It flattens one level so
   ECS keys (`source.ip`, `event.action`) resolve and maps many candidate names; vendor
   defaults to `"json"`. Keep it last in `_detect_json`.
 - **Detection ordering (`detect.py`)** is specific-before-generic. JSON is routed by
-  record keys: `event_type`+net → Suricata; `ProviderName`+`Id` → Windows;
+  record keys: `event_type`+net → Suricata; Sysmon provider / `ProcessGuid` → Sysmon;
+  `ProviderName`+`Id` → Windows;
   `eventSource`+`eventName` → CloudTrail; `Workload`+`Operation` → M365; `eventType`+
   `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; `id.orig_h` → Zeek JSON;
   `protoPayload` → GCP; `operationName`+azure-keys → Azure; `action`+`actor` → GitHub;
@@ -330,7 +357,8 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `LEEF:n|` (Tripwire
   Log Center / QRadar), then `%ASA-…` (numeric)
   → Cisco ASA, then `%FAC-SEV-MNEMONIC` (alpha) → Cisco IOS, then Zeek `#fields`, then PAN
-  syslog, then Fortinet KV, then Meraki, then CSV headers, and finally **generic syslog**.
+  syslog, then Fortinet KV, then Meraki, then auditd (`type=… msg=audit(…):`), then
+  Apache/Nginx access (CLF/combined), then CSV headers, and finally **generic syslog**.
 
 ## Adding a new format / vendor
 

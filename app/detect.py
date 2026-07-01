@@ -47,6 +47,13 @@ _ZEEK_RE = re.compile(r"^#(?:separator|fields)\b", re.MULTILINE)
 # Fortinet key=value syslog: needs devname= plus a Forti-specific key.
 _FORTINET_RE = re.compile(r"\bdevname=", re.IGNORECASE)
 _FORTINET_MARK = re.compile(r"\b(logid|devid|vd|eventtime)=", re.IGNORECASE)
+# Linux auditd: 'type=NAME msg=audit(EPOCH.mmm:seq):' record header.
+_AUDITD_RE = re.compile(r"^(?:node=\S+\s+)?type=\S+\s+msg=audit\(\d+(?:\.\d+)?:\d+\):",
+                        re.MULTILINE)
+# Apache / Nginx access log (CLF / combined): host ident auth [date] "METHOD ..." status.
+_WEBLOG_RE = re.compile(
+    r'^\S+ \S+ \S+ \[[^\]]+\] "(?:GET|POST|PUT|DELETE|HEAD|OPTIONS|PATCH|CONNECT|TRACE)\b'
+    r'[^"]*" \d{3} ', re.MULTILINE)
 # Generic syslog (catch-all, checked LAST): a <PRI> prefix or an RFC 3164 header.
 _SYSLOG_RE = re.compile(r"^<\d{1,3}>", re.MULTILINE)
 _RFC3164_HDR = re.compile(r"^[A-Z][a-z]{2}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\S+\s", re.MULTILINE)
@@ -93,6 +100,14 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     if _MERAKI_RE.search(sample):
         return "meraki"
 
+    # Linux auditd — 'type=... msg=audit(...):' record header.
+    if _AUDITD_RE.search(sample):
+        return "linux_auditd"
+
+    # Apache / Nginx access log — CLF / combined line signature.
+    if _WEBLOG_RE.search(sample):
+        return "web_access"
+
     # CSV by header.
     try:
         header = next(csv.reader(io.StringIO(sample)))
@@ -104,7 +119,9 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     if hset & _CS_CSV_MARKERS:
         return "crowdstrike_csv"
     if hset & _WIN_CSV_MARKERS:
-        return "windows_security"
+        # Sysmon exports share the Windows Event Log CSV columns; tell them apart
+        # by the provider name appearing in the content.
+        return "sysmon" if "sysmon" in sample.lower() else "windows_security"
 
     # Generic syslog — catch-all, only after every specific signature missed.
     if _SYSLOG_RE.search(sample) or _RFC3164_HDR.search(sample):
@@ -123,6 +140,13 @@ def _detect_json(text: str) -> Optional[str]:
     # Suricata EVE — event_type plus network fields.
     if "event_type" in keys and ({"flow_id", "src_ip", "alert", "dest_ip"} & keys):
         return "suricata_eve"
+    # Microsoft Sysmon — same Event Log shape as Security, told apart by the
+    # Sysmon provider name or the Sysmon-only ProcessGuid field. Check first.
+    low = {str(k).lower(): v for k, v in rec.items()}
+    provider = str(low.get("providername") or low.get("provider_name")
+                   or low.get("provider") or low.get("source") or "")
+    if "sysmon" in provider.lower() or "processguid" in keys:
+        return "sysmon"
     # Windows Security Event Log (JSON export).
     if "providername" in keys and "id" in keys and ({"leveldisplayname", "machinename"} & keys):
         return "windows_security"

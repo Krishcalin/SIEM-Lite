@@ -1,0 +1,26 @@
+[
+  {
+    "Id": 1,
+    "ProviderName": "Microsoft-Windows-Sysmon",
+    "MachineName": "FIN-WS-014.corp.local",
+    "TimeCreated": "2026-06-24T10:00:00Z",
+    "LevelDisplayName": "Information",
+    "Message": "Process Create:\nRuleName: -\nUtcTime: 2026-06-24 10:00:00.123\nProcessGuid: {aaaa-1111}\nProcessId: 4321\nImage: C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe\nCommandLine: powershell.exe -enc SQBFAFgAKABOAGUAdwAtAE8AYgBqAGUAYwB0AA==\nCurrentDirectory: C:\\Windows\\System32\nUser: CORP\\jdoe\nIntegrityLevel: High\nHashes: SHA256=ABC123\nParentImage: C:\\Windows\\explorer.exe\nParentCommandLine: C:\\Windows\\Explorer.EXE"
+  },
+  {
+    "Id": 3,
+    "ProviderName": "Microsoft-Windows-Sysmon",
+    "MachineName": "FIN-WS-014.corp.local",
+    "TimeCreated": "2026-06-24T10:00:00Z",
+    "LevelDisplayName": "Information",
+    "Message": "Network connection detected:\nRuleName: -\nUtcTime: 2026-06-24 10:01:00.000\nProcessId: 4321\nImage: C:\\Users\\jdoe\\AppData\\Local\\Temp\\evil.exe\nUser: CORP\\jdoe\nProtocol: tcp\nSourceIp: 10.20.30.40\nSourcePort: 50515\nDestinationIp: 45.83.122.7\nDestinationPort: 4444\nDestinationHostname: -"
+  },
+  {
+    "Id": 22,
+    "ProviderName": "Microsoft-Windows-Sysmon",
+    "MachineName": "FIN-WS-014.corp.local",
+    "TimeCreated": "2026-06-24T10:00:00Z",
+    "LevelDisplayName": "Information",
+    "Message": "Dns query:\nRuleName: -\nUtcTime: 2026-06-24 10:02:00.000\nProcessId: 4321\nQueryName: malware-c2.example.net\nQueryStatus: 0\nQueryResults: 45.83.122.7;\nImage: C:\\Users\\jdoe\\AppData\\Local\\Temp\\evil.exe\nUser: CORP\\jdoe"
+  }
+]
