@@ -5,7 +5,7 @@ Guidance for Claude Code (and other agents) working in this repository.
 ## What this is
 
 **LogOcean** — a self-hosted log parser, indexer, and long-term store for
-**network, endpoint, cloud, and identity** logs from many vendors (**23 parsers**,
+**network, endpoint, cloud, and identity** logs from many vendors (**24 parsers**,
 see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
 **HTTP ingest API** (`POST /api/v1/ingest`), or the **syslog receiver**
 (UDP/TCP/TLS) — and all share one parse → normalize → store pipeline. The app
@@ -182,9 +182,9 @@ app/
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
-                 windows_security, suricata_eve, cef, generic_syslog, generic_json,
+                 windows_security, suricata_eve, cef, leef, generic_syslog, generic_json,
                  aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
-                 okta_system_log, github_audit, gitlab_audit  (23 total)
+                 okta_system_log, github_audit, gitlab_audit  (24 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
                  risk, entity, responses, compliance, report, admin, login, _macros
   static/style.css
@@ -267,6 +267,15 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   `flow.bytes_*` summed into `bytes_total`.
 - **CEF** keeps the real device vendor/product on the event; the extension parser
   slices on ` key=` boundaries (values may contain spaces) and unescapes `\| \= \\`.
+- **LEEF** (`leef.py`) is the format **Tripwire Log Center / Enterprise** forwards in
+  (also QRadar, Juniper, Check Point). Header is pipe-delimited like CEF (real device
+  vendor/product kept). Attributes are **tab**-separated in LEEF 1.0; LEEF 2.0's 6th
+  header field names the delimiter — a literal char (`^`) or hex (`x09`/`0x09` for tab,
+  `x5E` for caret) via `_resolve_delim`. `sev` is **1-10** (10 highest). When wrapped in
+  a syslog header, the host/time before `LEEF:` are used as a fallback (kept in
+  `raw.syslog_host`/`syslog_time`); if the tab separators were flattened to spaces in
+  transit, it falls back to ` key=` boundary splitting. Full attribute dict (e.g. a FIM
+  event's `resource`/`policy`) is preserved in `raw.attributes`.
 - **Cisco ASA/Firepower** keys off the `%FAC-LEVEL-ID:` token (severity = the syslog
   level, *not* the `<PRI>`); the 5-tuple/bytes/user are mined from the free-text
   message — `src`/`dst` win, else `from`/`to`, else Built `for`(foreign)/`to`(local).
@@ -304,7 +313,8 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; `id.orig_h` → Zeek JSON;
   `protoPayload` → GCP; `operationName`+azure-keys → Azure; `action`+`actor` → GitHub;
   `entity_type`+`details` → GitLab; `metadata`+`event` (both) or `aid`/`cid`/… →
-  CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `%ASA-…` (numeric)
+  CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `LEEF:n|` (Tripwire
+  Log Center / QRadar), then `%ASA-…` (numeric)
   → Cisco ASA, then `%FAC-SEV-MNEMONIC` (alpha) → Cisco IOS, then Zeek `#fields`, then PAN
   syslog, then Fortinet KV, then Meraki, then CSV headers, and finally **generic syslog**.
 

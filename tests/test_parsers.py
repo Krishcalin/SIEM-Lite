@@ -6,9 +6,9 @@ from app.parsers import (aws_cloudtrail, azure_activity, cef, cisco_asa,
                          cisco_ios, crowdstrike_csv, crowdstrike_json,
                          entra_signin, fortinet_fortigate, gcp_audit,
                          generic_json, generic_syslog, github_audit,
-                         gitlab_audit, m365_audit, meraki, okta_system_log,
-                         paloalto_csv, paloalto_syslog, suricata_eve,
-                         windows_security, zeek_json, zeek_tsv)
+                         gitlab_audit, leef, m365_audit, meraki,
+                         okta_system_log, paloalto_csv, paloalto_syslog,
+                         suricata_eve, windows_security, zeek_json, zeek_tsv)
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
@@ -103,6 +103,60 @@ def test_cef():
     assert proxy.vendor == "mcafee"      # syslog-wrapped CEF
     assert proxy.severity == "medium"    # CEF severity 6
     assert proxy.dst_ip == "185.220.101.5"
+
+
+def test_leef():
+    evs = list(leef.parse(_read("leef.log")))
+    assert len(evs) == 4
+
+    fim = evs[0]                                   # LEEF 1.0, tab-delimited (Tripwire FIM)
+    assert fim.vendor == "tripwire" and fim.product == "tripwire enterprise"
+    assert fim.log_type == "fileintegrity"
+    assert fim.severity == "high"                  # LEEF sev 7
+    assert fim.src_ip == "10.20.30.5"
+    assert fim.user_name == "corp\\jdoe"
+    assert fim.host_name == "FIN-WS-014"
+    assert fim.rule_name == "PCI File Monitoring"
+    assert fim.action == "modified"
+    assert fim.raw["attributes"]["resource"] == "/etc/passwd"   # FIM object preserved in raw
+    assert "passwd" in (fim.message or "")
+    assert fim.event_time.year == 2026 and fim.event_time.month == 6
+
+    auth = evs[1]                                  # LEEF 2.0, caret delimiter
+    assert auth.vendor == "tripwire" and auth.product == "tripwire log center"
+    assert auth.log_type == "authentication"
+    assert auth.severity == "high"                 # sev 8
+    assert auth.src_ip == "45.83.122.7" and auth.dst_ip == "10.20.30.5"
+    assert auth.dst_port == 22 and auth.protocol == "tcp"       # proto 6 -> tcp
+    assert auth.user_name == "root" and auth.host_name == "core-sw01"
+    assert auth.action == "failure"
+
+    corr = evs[2]                                  # LEEF 2.0, hex x09 (tab) delim, syslog-wrapped
+    assert corr.severity == "very-high"           # sev 9
+    assert corr.dst_port == 445 and corr.protocol == "tcp"
+    assert corr.rule_name == "Brute Force Then Lateral Movement"
+    assert corr.host_name == "tlc-collector"      # from syslog header (no identHostName)
+    assert corr.event_time.year == 2026 and corr.event_time.month == 6
+    assert corr.event_time.day == 24 and corr.event_time.hour == 10   # from syslog header
+    assert corr.raw["syslog_host"] == "tlc-collector"
+
+    fw = evs[3]                                    # non-Tripwire LEEF -> generic
+    assert fw.vendor == "juniper" and fw.product == "srx"
+    assert fw.log_type == "firewall" and fw.severity == "medium"      # sev 5
+    assert fw.src_port == 40000 and fw.dst_port == 3389
+    assert fw.protocol == "tcp" and fw.action == "deny"
+    assert fw.bytes_total == 1200 and fw.user_name == "svc-scan"
+
+
+def test_leef_delimiter_variants():
+    # LEEF 2.0 with a 0x-prefixed hex tab delimiter.
+    hex_tab = "LEEF:2.0|V|P|1|100|0x09|src=1.2.3.4\tdst=5.6.7.8\tsev=2"
+    e = next(leef.parse(hex_tab))
+    assert e.src_ip == "1.2.3.4" and e.dst_ip == "5.6.7.8" and e.severity == "low"
+    # LEEF 1.0 whose tab separators were flattened to spaces in transit -> boundary fallback.
+    mangled = "LEEF:1.0|V|P|1|100|src=1.2.3.4 dst=5.6.7.8 usrName=alice"
+    e2 = next(leef.parse(mangled))
+    assert e2.src_ip == "1.2.3.4" and e2.dst_ip == "5.6.7.8" and e2.user_name == "alice"
 
 
 def test_fortinet():
@@ -511,6 +565,7 @@ def test_detect_format():
     assert detect_format("d.csv", _read("crowdstrike_detections.csv")) == "crowdstrike_csv"
     assert detect_format("e.json", _read("crowdstrike_events.json")) == "crowdstrike_json"
     assert detect_format("c.log", _read("cef.log")) == "cef"
+    assert detect_format("t.log", _read("leef.log")) == "leef"
     assert detect_format("f.log", _read("fortinet_fortigate.log")) == "fortinet_fortigate"
     assert detect_format("s.json", _read("suricata_eve.json")) == "suricata_eve"
     assert detect_format("w.json", _read("windows_security.json")) == "windows_security"

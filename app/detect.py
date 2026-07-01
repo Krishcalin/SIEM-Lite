@@ -30,6 +30,8 @@ _PAN_SYSLOG_RE = re.compile(
     re.IGNORECASE)
 # CEF header (optionally behind a syslog header).
 _CEF_RE = re.compile(r"CEF:\s*\d+\s*\|")
+# LEEF header (optionally behind a syslog header) — Tripwire Log Center / QRadar.
+_LEEF_RE = re.compile(r"LEEF:\s*\d+(?:\.\d+)?\s*\|", re.IGNORECASE)
 # Cisco ASA / Firepower message ID: %ASA-6-302013: ...
 _CISCO_RE = re.compile(r"%(?:ASA|FTD|ASASM|FWSM|PIX)-\d-\d+", re.IGNORECASE)
 # Cisco IOS/IOS-XE/NX-OS mnemonic: %SEC-6-IPACCESSLOGP: ... (alpha mnemonic; not ASA's numeric id).
@@ -62,6 +64,10 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     # CEF — generic, but a strong, specific prefix; check before syslog/CSV.
     if _CEF_RE.search(sample):
         return "cef"
+
+    # LEEF — likewise a strong, specific prefix (Tripwire Log Center / QRadar).
+    if _LEEF_RE.search(sample):
+        return "leef"
 
     # Cisco ASA / Firepower — distinctive %ASA-L-NNNNNN message id (numeric).
     if _CISCO_RE.search(sample):

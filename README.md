@@ -36,7 +36,7 @@ retains them in PostgreSQL for **≥ 3 years**.
 
 ## Features
 
-- **Twenty-three parsers**, auto-detected on upload:
+- **Twenty-four parsers**, auto-detected on upload:
   - *Network / firewall:*
     - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
     - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
@@ -62,6 +62,8 @@ retains them in PostgreSQL for **≥ 3 years**.
     - **GitLab** audit events (`/audit_events`)
   - *Generic:*
     - **CEF** — Common Event Format (ArcSight & many firewalls / WAFs / proxies / AV)
+    - **LEEF** — Log Event Extended Format 1.0 / 2.0 (**Tripwire Log Center** &
+      Tripwire Enterprise forwarding, IBM QRadar, Juniper, Check Point …)
     - **Generic syslog** — RFC 3164 (BSD) and RFC 5424 catch-all
     - **Generic JSON / NDJSON** — flat or Elastic Common Schema (ECS) catch-all
 - **Normalization** to one common schema (time, vendor, type, src/dst IP+port, user,
@@ -332,6 +334,8 @@ THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usua
 | GitHub | Org/Enterprise ▸ audit log ▸ **Export** (JSON / NDJSON) | GitHub audit (auto) |
 | GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
 | Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
+| Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
+| Any LEEF source (QRadar, Juniper, Check Point …) | Syslog / file in Log Event Extended Format (`LEEF:1.0\|…` / `LEEF:2.0\|…`) | LEEF (auto) |
 | Any syslog source | Plain RFC 3164 / 5424 syslog not matched above | Generic syslog (auto) |
 | Any JSON source | Flat or ECS-style JSON / NDJSON not matched above | Generic JSON (auto) |
 
@@ -405,7 +409,7 @@ Log-Parser-Storage/
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, suricata_eve,
-│   │                       #   cef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
+│   │                       #   cef, leef, generic_{syslog,json}, aws_cloudtrail, gcp_audit, azure_activity,
 │   │                       #   m365_audit, entra_signin, okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, risk, entity, responses, compliance, report,

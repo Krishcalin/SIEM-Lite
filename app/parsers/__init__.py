@@ -4,7 +4,7 @@ from __future__ import annotations
 from . import (aws_cloudtrail, azure_activity, cef, cisco_asa, cisco_ios,
                crowdstrike_csv, crowdstrike_json, entra_signin, fortinet_fortigate,
                gcp_audit, generic_json, generic_syslog, github_audit, gitlab_audit,
-               m365_audit, meraki, okta_system_log, paloalto_csv, paloalto_syslog,
+               leef, m365_audit, meraki, okta_system_log, paloalto_csv, paloalto_syslog,
                suricata_eve, windows_security, zeek_json, zeek_tsv)
 
 # Format key -> parser module. Keys are also the values of the UI "format" dropdown.
@@ -17,6 +17,7 @@ PARSERS = {
     "windows_security": windows_security,
     "suricata_eve": suricata_eve,
     "cef": cef,
+    "leef": leef,
     "cisco_asa": cisco_asa,
     "zeek_tsv": zeek_tsv,
     "generic_syslog": generic_syslog,
@@ -43,6 +44,7 @@ FORMAT_LABELS = {
     "windows_security": "Windows Security Event Log — CSV / JSON",
     "suricata_eve": "Suricata — EVE JSON",
     "cef": "CEF — Common Event Format (generic)",
+    "leef": "LEEF — Log Event Extended Format (Tripwire Log Center / QRadar; generic)",
     "cisco_asa": "Cisco ASA / Firepower (FTD) — syslog",
     "zeek_tsv": "Zeek (Bro) — TSV (conn / dns / http …)",
     "generic_syslog": "Generic syslog — RFC 3164 / 5424",
