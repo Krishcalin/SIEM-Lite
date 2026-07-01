@@ -28,7 +28,7 @@ from .receivers import syslog
 from .response import engine as response_engine
 from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
 from .triage import runtime as triage_runtime
-from .util import parse_ts
+from .util import gunzip_capped, parse_ts
 
 log = logging.getLogger("logocean")
 BASE = Path(__file__).resolve().parent
@@ -371,16 +371,25 @@ def upload_form(request: Request):
 @app.post("/upload", response_class=HTMLResponse)
 async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form("auto"),
                  _user=Depends(require_role("analyst"))):
-    raw = await _read_capped(file, settings.max_upload_mb * 1024 * 1024)
+    cap = settings.max_upload_mb * 1024 * 1024
+    raw = await _read_capped(file, cap)
     if raw is None:
         return templates.TemplateResponse("upload.html", _ctx(
             request, result=None,
             error=f"File exceeds the {settings.max_upload_mb} MB limit."))
+    # Transparently gunzip a .gz upload (by magic bytes) under the same size budget.
+    raw = await run_in_threadpool(gunzip_capped, raw, cap)
+    if raw is None:
+        return templates.TemplateResponse("upload.html", _ctx(
+            request, result=None,
+            error=f"The gzip file is corrupt or expands past the {settings.max_upload_mb} MB limit."))
 
     content = raw.decode("utf-8", "replace")
+    name = file.filename or ""
+    hint = name[:-3] if name.endswith(".gz") else name
     chosen = fmt
     if fmt == "auto":
-        chosen = detect_format(file.filename, content)
+        chosen = detect_format(hint, content)
         if chosen is None:
             return templates.TemplateResponse("upload.html", _ctx(
                 request, result=None,

@@ -1,14 +1,42 @@
 """Shared parsing helpers — tolerant timestamp / IP / int coercion."""
 from __future__ import annotations
 
+import gzip
 import hashlib
+import io
 import ipaddress
 import json
 import re
+import zlib
 from datetime import datetime, timezone
 from typing import Any, Iterator, Optional
 
 from dateutil import parser as _dtparser
+
+_GZIP_MAGIC = b"\x1f\x8b"
+
+
+def looks_gzip(data: bytes) -> bool:
+    """True if `data` begins with the gzip magic bytes."""
+    return len(data) >= 2 and data[:2] == _GZIP_MAGIC
+
+
+def gunzip_capped(data: bytes, limit: int) -> Optional[bytes]:
+    """Transparently gunzip `data` (a whole gzip member/stream) if it is gzip,
+    bounding the decompressed output to `limit` bytes as a decompression-bomb guard.
+
+    Returns `data` unchanged when it is not gzip; the decompressed bytes when they
+    fit within `limit`; or None when the gzip is corrupt or expands past `limit`.
+    Only `limit + 1` decompressed bytes are ever read, so a bomb is never fully
+    expanded. Concatenated gzip members are handled by GzipFile transparently."""
+    if not looks_gzip(data):
+        return data
+    try:
+        with gzip.GzipFile(fileobj=io.BytesIO(data)) as gz:
+            out = gz.read(limit + 1)
+    except (OSError, EOFError, zlib.error):
+        return None
+    return None if len(out) > limit else out
 
 
 def hash_api_key(key: str) -> str:

@@ -159,7 +159,8 @@ app/
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   compliance.py  MITRE technique -> framework control mapping + coverage report
   util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key;
-                 iter_json_records (+ _exceeds_json_depth deep-nesting guard)
+                 iter_json_records (+ _exceeds_json_depth deep-nesting guard);
+                 gunzip_capped (bounded gzip decompression for ingest)
   detect.py      best-effort vendor+format auto-detection
   normalize.py   dedup_hash() + tsv_text()
   pipeline.py    source-agnostic core: parse_events / apply_fallback_time / write_stream
@@ -193,7 +194,8 @@ app/
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
-clients/         logocean_push.py — copy-into-your-tool helper to push to the API
+clients/         logocean_push.py — copy-into-your-tool helper to push to the API;
+                 logocean_import.py — bulk-import a large [.gz] file in size-bounded chunks
 schema.sql       events, ingest_batches, api_keys, alerts (+assignee +case_id),
                  alert_notes, suppressions, cases, case_notes, entities, entity_links,
                  detection_rules, response_actions, collectors, users, sessions,
@@ -234,6 +236,15 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   rely on the interpreter raising `RecursionError`; CPython ≥3.12 doesn't at moderate
   depths). NDJSON is unaffected (depth resets per record). Keep new JSON parsers on
   `iter_json_records` so they inherit this.
+- **Compressed input:** both ingest front doors (web `/upload` and `POST
+  /api/v1/ingest`) sniff the gzip magic bytes and transparently decompress via
+  `util.gunzip_capped`, which reads only `limit + 1` decompressed bytes so a
+  **decompression bomb** is never fully expanded — the `MAX_UPLOAD_MB` budget then
+  applies to the *decompressed* size (a corrupt/oversize gzip → 413). The web-UI /
+  API filename has its `.gz` stripped before `detect_format` so suffix hints still
+  work. Bulk historical loads (e.g. a 3-year QRadar LEEF export) use
+  `clients/logocean_import.py`, which chunks a large `[.gz]` file line-aligned under
+  the limit and POSTs each chunk (idempotent ingest makes re-runs safe).
 
 ## Storage & retention (important)
 

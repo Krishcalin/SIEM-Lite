@@ -120,7 +120,11 @@ curl -X POST "http://localhost:8000/api/v1/ingest?format=auto&filename=fw.log" \
 ```
 
 `format` may be `auto` or any format key; auth is `X-API-Key` or `Authorization:
-Bearer`. Only the sha256 of each key is stored (the plaintext is shown once).
+Bearer`. Only the sha256 of each key is stored (the plaintext is shown once). A
+**gzip** body is decompressed transparently (send `.gz` bytes directly, or
+`--data-binary @fw.log.gz`) — the `MAX_UPLOAD_MB` limit then applies to the
+decompressed size, with a decompression-bomb guard. Drag-dropping a `.gz` file
+into the web **Upload** page works the same way.
 
 **Syslog receiver.** Set `SYSLOG_ENABLED=true` to listen on UDP+TCP (default
 port 5514; TLS optional). Point a collector or device at it:
@@ -132,6 +136,29 @@ logger -n localhost -P 5514 -d "<134>1 2026-06-24T10:00:00Z fw test message"
 Messages flow through a bounded async queue with writer workers that batch-insert,
 so a burst never blocks the receiver; queue counters are on `GET /health`. TCP
 framing supports both octet-counting (RFC 6587) and newline-delimited streams.
+
+### Bulk import (large / historical backups)
+
+To load a **big multi-GB export** — e.g. a 3-year IBM QRadar **LEEF** backup — use
+[`clients/logocean_import.py`](clients/logocean_import.py). It streams the file in
+size-bounded, line-aligned chunks (so no single request exceeds `MAX_UPLOAD_MB`),
+decompresses `.gz` locally, retries transient failures, and prints progress.
+Ingest is **idempotent** (per-event dedup hash), so re-running after an
+interruption is safe.
+
+```bash
+python clients/logocean_import.py --url http://localhost:8000 --key lo_... \
+    --format leef --max-mb 400 qradar_3yr.leef.gz
+# [chunk 1] 400.0 MB -> inserted=812345 duplicates=0 (batch 5)  ...
+```
+
+Events keep their **original timestamps**, so 3 years of history lands in the
+correct monthly partitions (not the upload date). For a historical backfill,
+consider `DETECTION_ENABLED=false` and `UEBA_ENABLED=false` during the load to
+avoid a flood of stale alerts and to speed ingest. `--gzip` compresses each POST
+body (the server gunzips it) to save bandwidth; `--max-mb` must be ≤ the server's
+`MAX_UPLOAD_MB`. Note: a proprietary QRadar *system backup archive* is **not**
+readable — export the events as LEEF/CEF/syslog first.
 
 ## Detection & alerting
 
@@ -339,6 +366,7 @@ THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usua
 | GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
 | Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
 | Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
+| IBM QRadar | Routing/forwarding rule ▸ export events as **LEEF** (its native format), or CEF / syslog. *(A QRadar system-backup archive is proprietary — export events first.)* | LEEF (auto) |
 | Any LEEF source (QRadar, Juniper, Check Point …) | Syslog / file in Log Event Extended Format (`LEEF:1.0\|…` / `LEEF:2.0\|…`) | LEEF (auto) |
 | Any syslog source | Plain RFC 3164 / 5424 syslog not matched above | Generic syslog (auto) |
 | Any JSON source | Flat or ECS-style JSON / NDJSON not matched above | Generic JSON (auto) |
@@ -421,7 +449,7 @@ Log-Parser-Storage/
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
-├── clients/                # logocean_push.py — push helper for your own tools
+├── clients/                # logocean_push.py (push helper) · logocean_import.py (bulk file import)
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,

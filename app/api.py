@@ -20,7 +20,7 @@ from . import db, ingest
 from .config import settings
 from .detect import detect_format
 from .parsers import PARSERS
-from .util import extract_api_key
+from .util import extract_api_key, gunzip_capped
 
 log = logging.getLogger("logocean")
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
@@ -59,17 +59,25 @@ async def api_ingest(
     filename: Optional[str] = Query(None, description="optional name, aids auto-detect"),
     key: dict = Depends(require_api_key),
 ):
-    body = await _read_body_capped(request, settings.max_upload_mb * 1024 * 1024)
+    cap = settings.max_upload_mb * 1024 * 1024
+    body = await _read_body_capped(request, cap)
     if body is None:
         raise HTTPException(status_code=413,
                             detail=f"payload exceeds the {settings.max_upload_mb} MB limit")
+    # Transparently gunzip a gzip body (by magic bytes) under the same size budget.
+    body = await run_in_threadpool(gunzip_capped, body, cap)
+    if body is None:
+        raise HTTPException(
+            status_code=413,
+            detail=f"gzip payload is corrupt or expands past the {settings.max_upload_mb} MB limit")
     content = body.decode("utf-8", "replace")
     if not content.strip():
         raise HTTPException(status_code=400, detail="empty payload")
 
+    hint = filename[:-3] if (filename or "").endswith(".gz") else (filename or "")
     fmt = format
     if fmt == "auto":
-        fmt = detect_format(filename or "", content)
+        fmt = detect_format(hint, content)
         if fmt is None:
             raise HTTPException(status_code=422,
                                 detail="could not auto-detect format; pass ?format=<key>")
