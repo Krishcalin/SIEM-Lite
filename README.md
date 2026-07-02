@@ -21,7 +21,7 @@ retains them in PostgreSQL for **≥ 3 years**.
                                                   search ◄── filters + full-text ◄──┘
 ```
 
-> A Wazuh-like **agentless SIEM**. Ingested events are matched against a Sigma-based
+> LogOcean is an **agentless SIEM**. Ingested events are matched against a Sigma-based
 > **detection & correlation** engine and **threat-intel** IOC feeds, raising alerts
 > you work at `/alerts`: **triage** them (assign, note, suppress noise) and group
 > related ones into **cases** (`/cases`). New alerts are pushed to your channels and
