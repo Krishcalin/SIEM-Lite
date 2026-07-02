@@ -20,6 +20,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, collectors, compliance, db, ingest, killchain_runtime,
                navigator, notify, streaming, workbench)
+from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
@@ -181,6 +182,7 @@ templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.globals["format_labels"] = FORMAT_LABELS
 templates.env.globals["retention_years"] = settings.retention_years
 templates.env.globals["auth_enabled"] = settings.auth_enabled
+templates.env.globals["copilot_enabled"] = settings.copilot_enabled
 
 # Paths reachable without a session (login, static assets, health, and the
 # API which authenticates with its own keys).
@@ -269,7 +271,10 @@ def health():
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
             "collectors": len(cs.collectors) if cs else None,
-            "threatintel_indicators": len(ti_runtime.get_index())}
+            "threatintel_indicators": len(ti_runtime.get_index()),
+            "copilot": {"enabled": settings.copilot_enabled,
+                        "configured": copilot.is_configured(),
+                        "model": settings.copilot_model} if settings.copilot_enabled else None}
 
 
 def _alert_analytics(days: int) -> dict:
@@ -431,28 +436,52 @@ _WORKBENCH_SAMPLE_EVENT = ('{\n  "vendor": "microsoft",\n'
                            '  "message": "powershell.exe -enc SQBFAFgA"\n}')
 
 
-@app.get("/workbench", response_class=HTMLResponse)
-def workbench_page(request: Request):
+def _workbench_page(request: Request, *, result=None, rule_yaml=_WORKBENCH_SAMPLE_RULE,
+                    event_json=_WORKBENCH_SAMPLE_EVENT, **extra):
     days = settings.workbench_window_days
     rules = db.rule_stats(days)
     return templates.TemplateResponse("workbench.html", _ctx(
         request, days=days, coverage=workbench.coverage_map(rules),
         health=workbench.rule_health(rules, settings.workbench_noisy_threshold),
-        rules=rules, result=None,
-        rule_yaml=_WORKBENCH_SAMPLE_RULE, event_json=_WORKBENCH_SAMPLE_EVENT))
+        rules=rules, result=result, rule_yaml=rule_yaml, event_json=event_json, **extra))
+
+
+@app.get("/workbench", response_class=HTMLResponse)
+def workbench_page(request: Request):
+    return _workbench_page(request)
 
 
 @app.post("/workbench/test", response_class=HTMLResponse)
 def workbench_test(request: Request, rule_yaml: str = Form(""),
                    event_json: str = Form("")):
-    days = settings.workbench_window_days
-    rules = db.rule_stats(days)
     result = workbench.test_rule(rule_yaml, event_json)
-    return templates.TemplateResponse("workbench.html", _ctx(
-        request, days=days, coverage=workbench.coverage_map(rules),
-        health=workbench.rule_health(rules, settings.workbench_noisy_threshold),
-        rules=rules, result=result,
-        rule_yaml=rule_yaml, event_json=event_json))
+    return _workbench_page(request, result=result, rule_yaml=rule_yaml, event_json=event_json)
+
+
+@app.post("/workbench/generate", response_class=HTMLResponse)
+def workbench_generate(request: Request, description: str = Form(""),
+                       event_json: str = Form(_WORKBENCH_SAMPLE_EVENT),
+                       _user=Depends(require_role("analyst"))):
+    """AI copilot: turn a natural-language description into a Sigma rule, pre-filled
+    into the rule tester so the analyst can immediately test it (audited)."""
+    if not description.strip():
+        return _workbench_page(request, event_json=event_json,
+                               ai_error="Describe the detection you want first.")
+    if not copilot.is_configured():
+        return _workbench_page(request, event_json=event_json,
+                               ai_error="AI copilot is not configured (set COPILOT_ENABLED "
+                                        "and an API key).")
+    try:
+        gen = copilot.generate_sigma(copilot.build_client(), description, event_json or None)
+    except copilot.CopilotError as e:
+        return _workbench_page(request, event_json=event_json, ai_error=str(e))
+    _audit(request, "copilot.generate_sigma", description.strip()[:120])
+    rule_yaml = gen["yaml"] or _WORKBENCH_SAMPLE_RULE
+    note = ("Generated rule loaded below — review and test it before adding to rules/."
+            if gen["yaml"] else "")
+    err = None if gen["valid"] else (gen["error"] or "Generated rule may be invalid.")
+    return _workbench_page(request, rule_yaml=rule_yaml, event_json=event_json,
+                           ai_generated=note, ai_error=err, ai_description=description)
 
 
 # --------------------------------------------------------------------------- #
@@ -602,18 +631,43 @@ def alerts(request: Request):
         counts=db.alert_severity_counts()))
 
 
-@app.get("/alert/{alert_id}", response_class=HTMLResponse)
-def alert_detail(request: Request, alert_id: int):
+def _alert_page(request: Request, alert_id: int, **extra):
+    """Build the alert-detail template response (shared by GET and the AI action)."""
     a = db.get_alert(alert_id)
     if a is None:
-        return HTMLResponse("Alert not found", status_code=404)
+        return None
     event_id = db.event_id_for(a["dedup_hash"], a["event_time"])
     return templates.TemplateResponse("alert.html", _ctx(
         request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id),
         notes=db.alert_notes(alert_id),
         users=db.list_users() if settings.auth_enabled else [],
         case=db.get_case(a["case_id"]) if a.get("case_id") else None,
-        open_cases=db.open_cases()))
+        open_cases=db.open_cases(), **extra))
+
+
+@app.get("/alert/{alert_id}", response_class=HTMLResponse)
+def alert_detail(request: Request, alert_id: int):
+    page = _alert_page(request, alert_id)
+    return page if page is not None else HTMLResponse("Alert not found", status_code=404)
+
+
+@app.post("/alert/{alert_id}/explain", response_class=HTMLResponse)
+def alert_explain(request: Request, alert_id: int, _user=Depends(require_role("analyst"))):
+    """Ask the AI copilot to explain and triage this alert (read-only, audited)."""
+    a = db.get_alert(alert_id)
+    if a is None:
+        return HTMLResponse("Alert not found", status_code=404)
+    if not copilot.is_configured():
+        return _alert_page(request, alert_id,
+                           ai_error="AI copilot is not configured (set COPILOT_ENABLED "
+                                     "and an API key).")
+    related = [r for r in db.related_alerts_for(alert_id, limit=8) if r["id"] != alert_id]
+    try:
+        text = copilot.explain_alert(copilot.build_client(), a, related)
+        _audit(request, "copilot.explain_alert", f"alert {alert_id}")
+        return _alert_page(request, alert_id, ai_explanation=text)
+    except copilot.CopilotError as e:
+        return _alert_page(request, alert_id, ai_error=str(e))
 
 
 @app.post("/alert/{alert_id}/status")
@@ -704,15 +758,39 @@ def cases(request: Request):
         base_qs=base_qs, counts=db.case_status_counts()))
 
 
-@app.get("/case/{case_id}", response_class=HTMLResponse)
-def case_detail(request: Request, case_id: int):
+def _case_page(request: Request, case_id: int, **extra):
     c = db.get_case(case_id)
     if c is None:
-        return HTMLResponse("Case not found", status_code=404)
+        return None
     return templates.TemplateResponse("case.html", _ctx(
         request, c=c, alerts=db.case_alerts(case_id), notes=db.case_notes(case_id),
         related=db.related_open_alerts(case_id),
-        users=db.list_users() if settings.auth_enabled else []))
+        users=db.list_users() if settings.auth_enabled else [], **extra))
+
+
+@app.get("/case/{case_id}", response_class=HTMLResponse)
+def case_detail(request: Request, case_id: int):
+    page = _case_page(request, case_id)
+    return page if page is not None else HTMLResponse("Case not found", status_code=404)
+
+
+@app.post("/case/{case_id}/summarize", response_class=HTMLResponse)
+def case_summarize(request: Request, case_id: int, _user=Depends(require_role("analyst"))):
+    """Ask the AI copilot to summarize the case for a handoff / report (audited)."""
+    c = db.get_case(case_id)
+    if c is None:
+        return HTMLResponse("Case not found", status_code=404)
+    if not copilot.is_configured():
+        return _case_page(request, case_id,
+                          ai_error="AI copilot is not configured (set COPILOT_ENABLED "
+                                    "and an API key).")
+    try:
+        text = copilot.summarize_case(
+            copilot.build_client(), c, db.case_alerts(case_id), db.case_notes(case_id))
+        _audit(request, "copilot.summarize_case", f"case {case_id}")
+        return _case_page(request, case_id, ai_summary=text)
+    except copilot.CopilotError as e:
+        return _case_page(request, case_id, ai_error=str(e))
 
 
 @app.post("/cases/new", response_class=HTMLResponse)

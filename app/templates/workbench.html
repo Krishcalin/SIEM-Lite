@@ -61,6 +61,21 @@
 <h3>Stale rules <span class="muted">— fired before, silent in the window</span></h3>
 {{ rule_rows(health.stale, 'No stale rules.') }}
 
+<!-- ── AI rule generator ───────────────────────────────────────────────── -->
+{% if copilot_enabled %}
+<h2>Generate a rule with AI</h2>
+<p class="muted">Describe a detection in plain English; Claude drafts a Sigma-subset rule
+   and loads it into the tester below so you can validate it before adding to <code>rules/</code>.</p>
+{% if ai_error %}<div class="alert err">{{ ai_error }}</div>{% endif %}
+{% if ai_generated %}<div class="alert">{{ ai_generated }}</div>{% endif %}
+<form method="post" action="/workbench/generate">
+  <textarea name="description" rows="3" class="wide"
+    placeholder="e.g. Detect AWS CloudTrail events where a root account made a console login">{{ ai_description or '' }}</textarea>
+  <input type="hidden" name="event_json" value="{{ event_json }}">
+  <button type="submit" class="btn primary">Generate rule</button>
+</form>
+{% endif %}
+
 <!-- ── Rule tester ─────────────────────────────────────────────────────── -->
 <h2>Rule tester</h2>
 <p class="muted">Evaluate a Sigma-subset rule against a sample event with the same

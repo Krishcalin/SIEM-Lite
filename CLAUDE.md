@@ -32,7 +32,8 @@ new-entity / new-association anomalies beyond the rules. **Kill-chain
 reconstruction** (`KILLCHAIN_ENABLED`, `/killchain`) stitches related alerts across
 ATT&CK tactics into attack stories and promotes them to cases. A **detection-engineering
 workbench** (`/workbench`) maps ATT&CK coverage, flags noisy/never-fired rules, and tests
-Sigma rules against sample events.
+Sigma rules against sample events. An optional **AI SOC copilot** (`COPILOT_ENABLED`,
+Claude) explains alerts, summarizes cases, and drafts Sigma rules from natural language.
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -184,6 +185,18 @@ with the **production** engine internals (`de.rule_from_dict` + `flatten_event` 
 `_eval_selection` + `match_rule`), returning per-selection booleans, logsource match, and
 the verdict — never raising on bad input. All three are pure functions over rule dicts.
 
+**AI SOC copilot** (`app/copilot/`, `COPILOT_ENABLED`, off by default) adds Claude-powered
+help at three points. `prompts.py` is **pure** (prompt builders for alert-explain /
+case-summary / Sigma-from-NL + `extract_yaml` / `valid_sigma` for parsing the reply);
+`client.py` wraps the `anthropic` SDK (imported **lazily** so the app runs without the
+dep), resolves the key from `COPILOT_API_KEY` or `ANTHROPIC_API_KEY`, and exposes
+`explain_alert` / `summarize_case` / `generate_sigma` that take an injected client (→
+unit-testable with a fake, no network). Model is `COPILOT_MODEL` (default
+`claude-opus-4-8`). Routes `/alert/{id}/explain`, `/case/{id}/summarize`, and
+`/workbench/generate` (the last loads the generated rule into the workbench tester) are
+analyst-gated + audited, degrade gracefully when unconfigured (`is_configured()`), and
+never leak a raw traceback (`CopilotError`). `/health` reports copilot status.
+
 ## Repository layout
 
 ```
@@ -222,6 +235,7 @@ app/
   killchain.py   kill-chain reconstruction: chain-building + story summary (pure)
   killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
+  copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
@@ -513,6 +527,9 @@ Unit:
   field-alias / bad-input), coverage map (counts, gaps, covered-wins-over-disabled,
   kill-chain tactic order), and rule-health bucketing (noisy / never-fired / stale /
   disabled + sorting).
+- `test_copilot.py` — copilot prompt builders (alert/case/Sigma), Sigma extraction
+  (fenced / bare / prose→None) + validation, and the explain/summarize/generate
+  operations against a fake client (no SDK/key/network); config-gating checks.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 

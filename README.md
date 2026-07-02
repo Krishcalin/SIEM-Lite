@@ -32,7 +32,8 @@ retains them in PostgreSQL for **≥ 3 years**.
 > anomalies beyond the rules; **kill-chain reconstruction** (`/killchain`) stitches
 > related alerts across ATT&CK tactics into attack stories, and a **detection
 > workbench** (`/workbench`) maps coverage, flags noisy/dead rules, and tests Sigma
-> rules live. **Dashboards + `/reports`**
+> rules live. An optional **AI SOC copilot** (Claude) explains alerts, summarizes cases,
+> and drafts Sigma rules from plain English. **Dashboards + `/reports`**
 > visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
 > audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA) round it out — all
 > tested unit + integration against real PostgreSQL in CI.
@@ -348,6 +349,27 @@ The **`/workbench`** page helps you tune the detection pack itself:
 The analytics (`app/workbench.py`) are pure functions over the rule registry, so they're
 fully unit-tested without a database.
 
+## AI SOC copilot (Claude)
+
+With `COPILOT_ENABLED=true` and an API key, LogOcean adds Claude-powered assistance at
+three points (off by default; the app runs fine without the `anthropic` package):
+
+- **Alert explainer** — on any alert, *Explain this alert* sends the alert plus related
+  activity (same entity) to Claude and returns a plain-language "what happened / why it
+  fired / severity & likelihood / triage steps" briefing.
+- **Case summarizer** — on a case, *Summarize this case* drafts an incident summary
+  (attack narrative in ATT&CK order, impacted entities, recommended actions) from the
+  member alerts and notes; one click saves it as a case note.
+- **Sigma-from-natural-language** — on the workbench, describe a detection in English and
+  Claude drafts a Sigma-subset rule, loaded straight into the **rule tester** so you can
+  validate it before adding it to `rules/`.
+
+The model is configurable (`COPILOT_MODEL`, default `claude-opus-4-8`) so operators can
+trade cost for capability (e.g. `claude-sonnet-4-6`). Prompt construction and the
+Sigma-extraction logic (`app/copilot/prompts.py`) are pure and fully unit-tested; the SDK
+call is a thin wrapper that degrades gracefully when unconfigured. Every AI action is
+RBAC-gated (analyst) and written to the audit log.
+
 ## Agentless collectors & feeds
 
 Two agentless ways to get logs in without manual upload:
@@ -459,6 +481,8 @@ explicitly in the upload form.
 | `KILLCHAIN_WINDOW_HOURS` / `KILLCHAIN_MAX_GAP_MINUTES` / `KILLCHAIN_MIN_TACTICS` | `24` / `60` / `2` | Look-back window; max gap to link alerts; min distinct tactics for a story |
 | `KILLCHAIN_AUTOCREATE` / `KILLCHAIN_INTERVAL` / `KILLCHAIN_MIN_SEVERITY` | `false` / `300` / `high` | Auto-promote high-severity stories to cases; poll period (s); severity floor |
 | `WORKBENCH_WINDOW_DAYS` / `WORKBENCH_NOISY_THRESHOLD` | `30` / `50` | Rule firing-stats window; alerts/window above which a rule is flagged noisy |
+| `COPILOT_ENABLED` | `false` | Enable the Claude-powered alert/case explainers + Sigma-from-NL (needs `anthropic` + a key) |
+| `COPILOT_API_KEY` / `COPILOT_MODEL` / `COPILOT_MAX_TOKENS` | — / `claude-opus-4-8` / `1024` | API key (else `ANTHROPIC_API_KEY`); Claude model; max response tokens |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | `admin` / — | Bootstrap admin on first run (random password logged if blank) |
 | `SESSION_TTL_HOURS` / `SESSION_COOKIE_SECURE` | `12` / `false` | Session lifetime; set secure cookie over HTTPS |
@@ -499,6 +523,7 @@ Log-Parser-Storage/
 │   ├── killchain.py        # kill-chain / attack-story reconstruction (pure)
 │   ├── killchain_runtime.py # DB-backed reconstruction + auto-create scheduler
 │   ├── workbench.py        # detection workbench: rule tester + coverage + health (pure)
+│   ├── copilot/            # AI SOC copilot — prompts.py (pure) + client.py (Claude SDK wrapper)
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob
@@ -522,7 +547,7 @@ Log-Parser-Storage/
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
                             #   threatintel,triage,severity,navigator,risk,killchain,
-                            #   workbench,compression,audit,compliance}
+                            #   workbench,copilot,compression,audit,compliance}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -557,9 +582,11 @@ matching + alerting), suppression/allowlist matching, case severity roll-up, the
 ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring,
 **kill-chain reconstruction** (chain-building, tactic ordering, story summary),
 the **detection workbench** (rule tester, ATT&CK coverage map, rule-health
-bucketing), auth (password hashing, role ranking, the RBAC dependency), the audit
-helper, and the compliance coverage report — all without a database (the queue,
-pipeline, and worker tests mock the writers).
+bucketing), the **AI copilot** (prompt construction, Sigma extraction/validation,
+and the explain/summarize/generate operations against a fake client), auth
+(password hashing, role ranking, the RBAC dependency), the audit helper, and the
+compliance coverage report — all without a database (the queue, pipeline, and
+worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR

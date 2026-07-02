@@ -528,6 +528,22 @@ def related_open_alerts(case_id: int, limit: int = 50) -> list[dict]:
         return conn.execute(q, {"cid": case_id, "lim": limit}).fetchall()
 
 
+def related_alerts_for(alert_id: int, limit: int = 8) -> list[dict]:
+    """Recent non-suppressed alerts sharing a src_ip / user / host with this alert —
+    context for the AI copilot's explanation."""
+    q = f"""
+    WITH me AS (SELECT host(src_ip) AS s, user_name AS u, host_name AS h
+                FROM alerts WHERE id = %(id)s)
+    SELECT {_ALERT_COLS} FROM alerts a, me
+    WHERE a.id <> %(id)s AND a.status <> 'suppressed' AND (
+        (a.src_ip   IS NOT NULL AND host(a.src_ip) = me.s) OR
+        (a.user_name IS NOT NULL AND a.user_name   = me.u) OR
+        (a.host_name IS NOT NULL AND a.host_name   = me.h))
+    ORDER BY a.created_at DESC LIMIT %(lim)s"""
+    with pool().connection() as conn:
+        return conn.execute(q, {"id": alert_id, "lim": limit}).fetchall()
+
+
 def add_case_note(case_id: int, author: Optional[str], note: str) -> None:
     with pool().connection() as conn:
         conn.execute("INSERT INTO case_notes (case_id, author, note) VALUES (%s, %s, %s)",

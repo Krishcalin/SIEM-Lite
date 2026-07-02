@@ -29,6 +29,23 @@
   </div>
 </form>
 
+{% if copilot_enabled %}
+<h2>AI copilot</h2>
+{% if ai_error %}<div class="alert err">{{ ai_error }}</div>{% endif %}
+{% if ai_summary %}
+<div class="panel" style="white-space:pre-wrap">{{ ai_summary }}</div>
+<form method="post" action="/case/{{ c.id }}/note" class="panel inline-form">
+  <input type="hidden" name="note" value="{{ ai_summary }}">
+  <button type="submit" class="btn">Save as case note</button>
+  <span class="muted">Store this AI summary in the case timeline.</span>
+</form>
+{% endif %}
+<form method="post" action="/case/{{ c.id }}/summarize" class="panel inline-form">
+  <button type="submit" class="btn primary">{{ 'Re-summarize' if ai_summary else 'Summarize this case' }}</button>
+  <span class="muted">Claude drafts an incident summary from the member alerts and notes.</span>
+</form>
+{% endif %}
+
 <h2>Alerts in this case ({{ alerts|length }})</h2>
 <table class="results">
   <tr><th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th><th>Status</th><th></th></tr>

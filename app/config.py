@@ -104,6 +104,15 @@ class Settings:
     workbench_window_days: int = int(os.getenv("WORKBENCH_WINDOW_DAYS", "30"))
     workbench_noisy_threshold: int = int(os.getenv("WORKBENCH_NOISY_THRESHOLD", "50"))
 
+    # AI SOC copilot (Claude): alert/case explainers + Sigma-rule-from-NL. Off by
+    # default; needs the `anthropic` package and an API key (COPILOT_API_KEY, or
+    # ANTHROPIC_API_KEY in the environment). Model is configurable so operators can
+    # trade cost for capability (e.g. claude-sonnet-4-6 / claude-haiku-4-5).
+    copilot_enabled: bool = _bool("COPILOT_ENABLED", False)
+    copilot_api_key: str = os.getenv("COPILOT_API_KEY", "")
+    copilot_model: str = os.getenv("COPILOT_MODEL", "claude-opus-4-8")
+    copilot_max_tokens: int = int(os.getenv("COPILOT_MAX_TOKENS", "1024"))
+
     # Authentication (Phase 5). Off by default (front with SSO/proxy); set
     # AUTH_ENABLED=true for built-in login + RBAC. On first run an admin is
     # bootstrapped from ADMIN_USER/ADMIN_PASSWORD (a random password is logged

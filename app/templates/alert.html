@@ -25,6 +25,18 @@
           {% else %}<span class="muted">not found (purged or out of range)</span>{% endif %}</td></tr>
 </table>
 
+{% if copilot_enabled %}
+<h2>AI copilot</h2>
+{% if ai_error %}<div class="alert err">{{ ai_error }}</div>{% endif %}
+{% if ai_explanation %}
+<div class="panel" style="white-space:pre-wrap">{{ ai_explanation }}</div>
+{% endif %}
+<form method="post" action="/alert/{{ a.id }}/explain" class="panel inline-form">
+  <button type="submit" class="btn primary">{{ 'Re-explain' if ai_explanation else 'Explain this alert' }}</button>
+  <span class="muted">Claude analyzes this alert + related activity and suggests triage steps.</span>
+</form>
+{% endif %}
+
 <h2>Triage</h2>
 <form method="post" action="/alert/{{ a.id }}/status" class="panel inline-form">
   {% if a.status != 'ack' %}<button name="status" value="ack" class="btn">Acknowledge</button>{% endif %}

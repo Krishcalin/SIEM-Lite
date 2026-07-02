@@ -5,3 +5,7 @@ python-multipart>=0.0.9
 psycopg[binary,pool]>=3.1
 python-dateutil>=2.9
 pyyaml>=6.0
+
+# Optional — only needed when the AI SOC copilot is enabled (COPILOT_ENABLED=true).
+# The app imports it lazily and runs fine without it; uncomment to install:
+# anthropic>=0.40
