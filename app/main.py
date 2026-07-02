@@ -19,7 +19,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, collectors, compliance, db, ingest, killchain_runtime,
-               navigator, notify, streaming, workbench)
+               navigator, notify, ot, streaming, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -366,6 +366,20 @@ def risk_page(request: Request):
         hosts=db.top_risk_entities("host", days, hl),
         ips=db.top_risk_entities("ip", days, hl),
         new_entities=db.new_entities(24), new_associations=db.new_associations(24)))
+
+
+# --------------------------------------------------------------------------- #
+#  OT / ICS analytics                                                         #
+# --------------------------------------------------------------------------- #
+@app.get("/ot", response_class=HTMLResponse)
+def ot_view(request: Request):
+    days = _report_days(request)
+    activity = db.ot_activity_summary(days)
+    return templates.TemplateResponse("ot.html", _ctx(
+        request, days=days, protocols=ot.OT_PROTOCOLS,
+        assets=db.ot_assets(days),
+        conversations=ot.annotate_conversations(db.ot_conversations(days)),
+        activity=activity, summary=ot.summarize_activity(activity)))
 
 
 @app.get("/entity", response_class=HTMLResponse)

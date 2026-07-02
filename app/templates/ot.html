@@ -1,0 +1,85 @@
+{% extends "base.html" %}
+{% block title %}OT / ICS — LogOcean{% endblock %}
+{% block body %}
+<h1>OT / ICS monitoring</h1>
+<p class="muted">Passive analysis of industrial-control telemetry (Zeek + ICSNPP):
+   Modbus / DNP3 / S7comm / CIP / EtherNet-IP … over the last {{ days }} days.
+   LogOcean never talks to a device — it reads copies of the traffic. Controllers
+   are the server side of each conversation (PLCs / RTUs / IEDs); a <span
+   class="badge high">new-writer</span> is a source first seen in the last 24h that
+   is already issuing <b>write / control</b> commands — the signal to investigate first.</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ assets|length }}</div><div class="lbl">controllers</div></div>
+  <div class="card"><div class="num">{{ summary.events }}</div><div class="lbl">OT events</div></div>
+  <div class="card"><div class="num">{{ summary.writes }}</div><div class="lbl">writes</div></div>
+  <div class="card"><div class="num">{{ summary.controls }}</div><div class="lbl">control ops</div></div>
+  <div class="card"><div class="num">{{ summary.protocols }}</div><div class="lbl">protocols</div></div>
+</div>
+
+{% if not assets %}
+<div class="alert">No OT/ICS events yet. Point a Zeek sensor running the
+  <a href="https://github.com/cisagov/icsnpp">ICSNPP</a> analyzers at LogOcean, or
+  upload a <code>modbus.log</code> / <code>dnp3.log</code> / <code>s7comm.log</code>
+  (see <code>samples/zeek_modbus.log</code>).</div>
+{% endif %}
+
+<div class="grid2">
+  <section>
+    <h2>Asset inventory — controllers</h2>
+    <table class="results">
+      <tr><th>Controller</th><th>Protocols</th><th class="r">Masters</th>
+          <th class="r">Events</th><th class="r">Control ops</th><th>First seen</th></tr>
+      {% for a in assets %}
+      <tr>
+        <td class="nowrap"><b>{{ a.controller }}</b></td>
+        <td>{% for p in a.protocols %}<span class="badge">{{ p }}</span> {% endfor %}</td>
+        <td class="r">{{ a.masters }}</td>
+        <td class="r">{{ a.events }}</td>
+        <td class="r">{% if a.control_ops %}<span class="badge high">{{ a.control_ops }}</span>{% else %}0{% endif %}</td>
+        <td class="nowrap muted">{{ a.first_seen.strftime('%Y-%m-%d') if a.first_seen else '—' }}</td>
+      </tr>
+      {% else %}<tr><td colspan="6" class="muted">No controllers observed.</td></tr>{% endfor %}
+    </table>
+  </section>
+
+  <section>
+    <h2>Activity by protocol</h2>
+    <table class="results">
+      <tr><th>Protocol</th><th class="r">Events</th><th class="r">Reads</th>
+          <th class="r">Writes</th><th class="r">Control</th></tr>
+      {% for r in activity %}
+      <tr>
+        <td><span class="badge">{{ r.protocol }}</span></td>
+        <td class="r">{{ r.events }}</td>
+        <td class="r muted">{{ r.reads }}</td>
+        <td class="r">{% if r.writes %}<b>{{ r.writes }}</b>{% else %}0{% endif %}</td>
+        <td class="r">{% if r.controls %}<b>{{ r.controls }}</b>{% else %}0{% endif %}</td>
+      </tr>
+      {% else %}<tr><td colspan="5" class="muted">No OT activity.</td></tr>{% endfor %}
+    </table>
+  </section>
+</div>
+
+<section>
+  <h2>Master → controller conversations</h2>
+  <table class="results">
+    <tr><th></th><th>Master (client)</th><th>Controller</th><th>Protocols</th>
+        <th class="r">Events</th><th class="r">Writes</th><th class="r">Control</th>
+        <th>First seen (UTC)</th></tr>
+    {% for c in conversations %}
+    <tr>
+      <td>{% if c.class == 'new-writer' %}<span class="badge high">new-writer</span>
+          {% elif c.class == 'new' %}<span class="badge">new</span>{% endif %}</td>
+      <td class="nowrap">{{ c.master }}</td>
+      <td class="nowrap"><b>{{ c.controller }}</b></td>
+      <td>{% for p in c.protocols %}<span class="badge">{{ p }}</span> {% endfor %}</td>
+      <td class="r">{{ c.events }}</td>
+      <td class="r">{% if c.writes %}<b>{{ c.writes }}</b>{% else %}0{% endif %}</td>
+      <td class="r">{% if c.controls %}<b>{{ c.controls }}</b>{% else %}0{% endif %}</td>
+      <td class="nowrap muted">{{ c.first_seen.strftime('%Y-%m-%d %H:%M') if c.first_seen else '—' }}</td>
+    </tr>
+    {% else %}<tr><td colspan="8" class="muted">No conversations observed.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

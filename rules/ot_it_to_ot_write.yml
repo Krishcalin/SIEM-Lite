@@ -1,0 +1,46 @@
+title: OT Write / Control Command From Outside the OT Zone (Purdue Violation)
+id: lo-ot-it-to-ot-write
+description: >-
+  A write or control command was sent to an OT controller by a source that is NOT
+  in the OT / control-network zone — i.e. it crossed the IT→OT boundary (a Purdue
+  model / IEC 62443 zone-conduit violation). Engineering writes should originate only
+  from the engineering / SCADA zone. TUNE THE CIDRs: set `ot_zone` to your control
+  network(s); this ships with the sample lab range 10.60.0.0/16 as a placeholder.
+level: high
+detection:
+  ot_write:
+    log_type:
+      - modbus
+      - dnp3
+      - s7comm
+      - cip
+      - enip
+  is_write_or_control:
+    - action:
+        - write-coils
+        - write-registers
+        - write-attribute
+        - write-var
+        - program-download
+        - plc-stop
+        - plc-control
+        - cold-restart
+        - warm-restart
+    - ot.operation:
+        - write
+        - control
+  ot_zone:
+    dst_ip|cidr:
+      - 10.60.0.0/16          # <-- your OT / control network(s)
+  from_ot_zone:
+    src_ip|cidr:
+      - 10.60.0.0/16          # <-- same OT zone(s) as ot_zone
+      - 10.50.0.0/16          # <-- engineering / SCADA zone(s) permitted to write
+  condition: ot_write and is_write_or_control and ot_zone and not from_ot_zone
+tags:
+  - attack.t0855
+  - attack.t0886
+  - attack.lateral_movement
+falsepositives:
+  - A jump host / historian in a DMZ that legitimately writes — add it to `from_ot_zone`.
+  - Until the CIDRs are tuned to your network this rule will not match real traffic.

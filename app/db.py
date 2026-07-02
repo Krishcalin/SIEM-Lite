@@ -15,6 +15,7 @@ from psycopg_pool import ConnectionPool
 from .config import settings
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
+from .ot import OT_PROTOCOLS
 from .risk import ENTITY_COLUMN, weight_case_sql
 from .severity import max_severity
 from .util import hash_api_key, to_port
@@ -808,6 +809,72 @@ def alert_technique_counts(days: int = 30) -> dict:
             "WHERE created_at >= now() - make_interval(days => %s) GROUP BY t",
             (days,)).fetchall()
     return {r["technique"]: int(r["n"]) for r in rows}
+
+
+# --------------------------------------------------------------------------- #
+#  OT / ICS analytics (read-only aggregation over `events`)                    #
+# --------------------------------------------------------------------------- #
+def ot_assets(days: int = 30, limit: int = 100) -> list[dict]:
+    """OT controllers (PLCs / RTUs) seen on the wire: the protocols they speak, how
+    many distinct masters talk to each, control-op volume, and first/last seen. The
+    controller is the server side of an OT conversation (`dst_ip`)."""
+    with pool().connection() as conn:
+        return conn.execute(
+            """
+            SELECT host(dst_ip) AS controller,
+                   array_agg(DISTINCT log_type ORDER BY log_type) AS protocols,
+                   count(*) AS events,
+                   count(DISTINCT src_ip) AS masters,
+                   count(*) FILTER (
+                       WHERE raw->'ot'->>'operation' IN ('write', 'control')) AS control_ops,
+                   min(event_time) AS first_seen, max(event_time) AS last_seen
+            FROM events
+            WHERE log_type = ANY(%(p)s) AND dst_ip IS NOT NULL
+              AND event_time >= now() - make_interval(days => %(d)s)
+            GROUP BY host(dst_ip)
+            ORDER BY events DESC LIMIT %(l)s
+            """,
+            {"p": list(OT_PROTOCOLS), "d": days, "l": limit}).fetchall()
+
+
+def ot_conversations(days: int = 30, limit: int = 200) -> list[dict]:
+    """Master→controller conversations: per (src_ip, dst_ip) the protocols, event
+    count, write/control counts, first/last seen, and whether the pair is new in the
+    last 24h — the basis for flagging an unexpected client commanding a controller."""
+    with pool().connection() as conn:
+        return conn.execute(
+            """
+            SELECT host(src_ip) AS master, host(dst_ip) AS controller,
+                   array_agg(DISTINCT log_type ORDER BY log_type) AS protocols,
+                   count(*) AS events,
+                   count(*) FILTER (WHERE raw->'ot'->>'is_write' = 'true') AS writes,
+                   count(*) FILTER (WHERE raw->'ot'->>'operation' = 'control') AS controls,
+                   min(event_time) AS first_seen, max(event_time) AS last_seen,
+                   (min(event_time) >= now() - interval '24 hours') AS is_new
+            FROM events
+            WHERE log_type = ANY(%(p)s) AND src_ip IS NOT NULL AND dst_ip IS NOT NULL
+              AND event_time >= now() - make_interval(days => %(d)s)
+            GROUP BY host(src_ip), host(dst_ip)
+            ORDER BY is_new DESC, writes DESC, events DESC LIMIT %(l)s
+            """,
+            {"p": list(OT_PROTOCOLS), "d": days, "l": limit}).fetchall()
+
+
+def ot_activity_summary(days: int = 30) -> list[dict]:
+    """Per-protocol OT activity: total events split into read / write / control."""
+    with pool().connection() as conn:
+        return conn.execute(
+            """
+            SELECT log_type AS protocol, count(*) AS events,
+                   count(*) FILTER (WHERE raw->'ot'->>'operation' = 'read') AS reads,
+                   count(*) FILTER (WHERE raw->'ot'->>'operation' = 'write') AS writes,
+                   count(*) FILTER (WHERE raw->'ot'->>'operation' = 'control') AS controls
+            FROM events
+            WHERE log_type = ANY(%(p)s)
+              AND event_time >= now() - make_interval(days => %(d)s)
+            GROUP BY log_type ORDER BY events DESC
+            """,
+            {"p": list(OT_PROTOCOLS), "d": days}).fetchall()
 
 
 # Columns a correlation rule may filter / group on (whitelist: never f-string

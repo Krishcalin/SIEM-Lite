@@ -1,6 +1,7 @@
-"""OT/ICS tests: Zeek ICSNPP enrichment + the OT detection-rule pack (no DB)."""
+"""OT/ICS tests: Zeek ICSNPP enrichment, the OT rule pack, and OT analytics (no DB)."""
 from pathlib import Path
 
+from app import ot
 from app.detect import detect_format
 from app.detection.correlation import load_correlation_rules
 from app.detection.engine import DetectionEngine, load_rules
@@ -130,3 +131,48 @@ def test_ot_scan_correlation_rule_loads():
     assert scan.group_by == ["src_ip"] and scan.threshold == 100
     assert scan.match["log_type"] == ["modbus", "dnp3", "s7comm", "cip", "enip"]
     assert "T0846" in scan.techniques
+
+
+# --------------------------------------------------------------------------- #
+#  Phase D — OT analytics (pure; DB-free)                                      #
+# --------------------------------------------------------------------------- #
+def test_is_ot_protocol():
+    assert ot.is_ot_protocol("modbus") and ot.is_ot_protocol("S7comm")
+    assert not ot.is_ot_protocol("conn") and not ot.is_ot_protocol(None)
+
+
+def test_classify_conversation():
+    new_writer = {"is_new": True, "writes": 2, "controls": 0}
+    new_ctrl = {"is_new": True, "writes": 0, "controls": 1}
+    new_read = {"is_new": True, "writes": 0, "controls": 0}
+    known = {"is_new": False, "writes": 9, "controls": 0}
+    assert ot.classify_conversation(new_writer) == "new-writer"
+    assert ot.classify_conversation(new_ctrl) == "new-writer"     # control also counts
+    assert ot.classify_conversation(new_read) == "new"
+    assert ot.classify_conversation(known) == "known"
+
+
+def test_annotate_conversations_orders_new_writers_first():
+    rows = [
+        {"master": "10.50.0.20", "events": 40, "writes": 5, "controls": 0, "is_new": False},
+        {"master": "10.99.0.5", "events": 9, "writes": 3, "controls": 0, "is_new": True},
+        {"master": "10.99.0.7", "events": 2, "writes": 0, "controls": 0, "is_new": True},
+    ]
+    out = ot.annotate_conversations(rows)
+    assert [r["class"] for r in out] == ["new-writer", "new", "known"]
+    assert out[0]["master"] == "10.99.0.5"       # new writer floated to the top
+
+
+def test_summarize_activity_rolls_up_totals():
+    rows = [{"protocol": "modbus", "events": 10, "reads": 6, "writes": 3, "controls": 1},
+            {"protocol": "dnp3", "events": 3, "reads": 1, "writes": 0, "controls": 2},
+            {"protocol": "cip", "events": 0, "reads": 0, "writes": 0, "controls": 0}]
+    s = ot.summarize_activity(rows)
+    assert s == {"events": 13, "reads": 7, "writes": 3, "controls": 3, "protocols": 2}
+
+
+def test_ot_protocols_is_single_source_for_db_filter():
+    # db.ot_* filters events.log_type on exactly this list
+    from app import db
+    assert db.OT_PROTOCOLS is ot.OT_PROTOCOLS
+    assert "modbus" in ot.OT_PROTOCOLS and "s7comm" in ot.OT_PROTOCOLS
