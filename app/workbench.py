@@ -14,7 +14,7 @@ The coverage/health functions take the plain rule dicts returned by
 """
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 import yaml
 

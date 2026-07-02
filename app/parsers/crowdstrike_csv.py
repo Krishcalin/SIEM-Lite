@@ -11,7 +11,7 @@ import io
 from typing import Iterator, Optional
 
 from ..models import NormalizedEvent
-from ..util import clean_ip, first, parse_ts, to_int
+from ..util import clean_ip, first, parse_ts
 
 
 def _g(row: dict, *names: str) -> Optional[str]:

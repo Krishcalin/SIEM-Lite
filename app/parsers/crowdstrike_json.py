@@ -11,7 +11,6 @@ Detection-stream and FDR records nest the useful fields under "event" and
 """
 from __future__ import annotations
 
-import json
 from typing import Any, Iterator, Optional
 
 from ..models import NormalizedEvent

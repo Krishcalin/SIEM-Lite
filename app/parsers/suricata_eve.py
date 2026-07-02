@@ -7,11 +7,10 @@ useful per-type detail into the message, keeping the whole record in ``raw``.
 """
 from __future__ import annotations
 
-import json
-from typing import Any, Iterator, Optional
+from typing import Iterator, Optional
 
 from ..models import NormalizedEvent
-from ..util import clean_ip, first, json_or_none, parse_ts, to_int
+from ..util import clean_ip, json_or_none, parse_ts, to_int
 
 # Suricata alert severity: 1 = high, 2 = medium, 3 = low.
 _SEV = {1: "high", 2: "medium", 3: "low"}

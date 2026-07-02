@@ -14,7 +14,7 @@ The full pair set is kept in ``raw``.
 from __future__ import annotations
 
 import re
-from typing import Iterator, Optional
+from typing import Iterator
 
 from ..models import NormalizedEvent
 from ..util import clean_ip, first, parse_ts, split_ip_port, to_int

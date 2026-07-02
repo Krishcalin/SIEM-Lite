@@ -144,7 +144,6 @@ def build_chains(
     for a in items:
         ds.add(a["id"])
 
-    by_id = {a["id"]: a for a in items}
     ts = {a["id"]: (alert_time(a) or 0.0) for a in items}
 
     # For each entity, walk its alerts in time order and union neighbours that

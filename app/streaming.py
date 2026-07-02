@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from starlette.concurrency import run_in_threadpool

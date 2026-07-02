@@ -15,7 +15,7 @@ import re
 from typing import Iterator, Optional
 
 from ..models import NormalizedEvent
-from ..util import clean_ip, first, parse_ts, to_int
+from ..util import clean_ip, parse_ts, to_int
 
 _SEVERITY = {0: "emergency", 1: "alert", 2: "critical", 3: "error",
              4: "warning", 5: "notice", 6: "informational", 7: "debug"}
