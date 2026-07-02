@@ -1,0 +1,23 @@
+title: CIP Set-Attribute (Write) to Device
+id: lo-ot-cip-write
+description: >-
+  An EtherNet/IP CIP Set-Attribute (write) service was sent to a device (e.g. a
+  Rockwell / Allen-Bradley controller). Writing attributes changes device
+  configuration or tag values on the controller.
+level: medium
+detection:
+  proto:
+    log_type:
+      - cip
+      - enip
+  write:
+    action: write-attribute
+  write_flag:
+    ot.is_write: "true"
+  condition: proto and (write or write_flag)
+tags:
+  - attack.t0855
+  - attack.t0836
+  - attack.impair_process_control
+falsepositives:
+  - Legitimate writes from the engineering workstation / SCADA.

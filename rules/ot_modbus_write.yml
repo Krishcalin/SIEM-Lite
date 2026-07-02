@@ -1,0 +1,23 @@
+title: Modbus Write Command to Controller
+id: lo-ot-modbus-write
+description: >-
+  A Modbus write function (write coil/register, mask-write, read/write-multiple)
+  was sent to a controller. Writes change process setpoints and outputs; from an
+  unexpected source this is an unauthorized command message / parameter modification.
+level: medium
+logsource:
+  service: modbus
+detection:
+  write_action:
+    action:
+      - write-coils
+      - write-registers
+  write_flag:
+    ot.is_write: "true"
+  condition: write_action or write_flag
+tags:
+  - attack.t0855
+  - attack.t0836
+  - attack.impair_process_control
+falsepositives:
+  - Writes from the authorized engineering workstation / SCADA master are routine — pair with a source allowlist.

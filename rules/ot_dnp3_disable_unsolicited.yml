@@ -1,0 +1,18 @@
+title: DNP3 Disable Unsolicited Reporting
+id: lo-ot-dnp3-disable-unsolicited
+description: >-
+  A DNP3 disable-unsolicited-responses command was issued to an outstation.
+  Suppressing unsolicited reports blinds the master to events at the field device
+  — alarm suppression / evasion that can mask a concurrent attack.
+level: medium
+logsource:
+  service: dnp3
+detection:
+  disable:
+    action: disable-unsolicited
+  condition: disable
+tags:
+  - attack.t0878
+  - attack.evasion
+falsepositives:
+  - A master intentionally switching an outstation to polled mode.

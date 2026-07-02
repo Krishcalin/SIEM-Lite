@@ -1,0 +1,22 @@
+title: OT Protocol Enumeration from Single Source
+id: lo-corr-ot-scan
+level: medium
+description: >-
+  One source generated a high volume of ICS-protocol requests
+  (Modbus / DNP3 / S7comm / CIP / EtherNet-IP) in a short window — consistent with
+  point/register enumeration or asset discovery against controllers.
+correlation:
+  match:
+    log_type:
+      - modbus
+      - dnp3
+      - s7comm
+      - cip
+      - enip
+  group_by:
+    - src_ip
+  window: 5m
+  threshold: 100
+tags:
+  - attack.t0846
+  - attack.discovery

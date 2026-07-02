@@ -1,0 +1,20 @@
+title: S7comm PLC Stop / Operating-Mode Change
+id: lo-ot-s7-plc-stop
+description: >-
+  An S7comm PLC-control command stopped the CPU or changed its operating mode.
+  Halting or mode-switching a controller denies control of the physical process.
+level: high
+logsource:
+  service: s7comm
+detection:
+  stop:
+    action:
+      - plc-stop
+      - plc-control
+  condition: stop
+tags:
+  - attack.t0858
+  - attack.t0813
+  - attack.inhibit_response_function
+falsepositives:
+  - Authorized maintenance stop/start from the engineering station.

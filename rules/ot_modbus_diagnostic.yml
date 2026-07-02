@@ -1,0 +1,18 @@
+title: Modbus Diagnostic / Restart Function
+id: lo-ot-modbus-diagnostic
+description: >-
+  A Modbus diagnostics function (code 8) was observed. Its sub-functions can force
+  a device into listen-only mode, clear counters, or restart communications — a
+  denial-of-control / denial-of-service primitive against a controller.
+level: medium
+logsource:
+  service: modbus
+detection:
+  diag:
+    action: diagnostic
+  condition: diag
+tags:
+  - attack.t0814
+  - attack.impair_process_control
+falsepositives:
+  - Vendor diagnostic tooling during a maintenance window.

@@ -1,0 +1,19 @@
+title: S7comm Program / Block Download to PLC
+id: lo-ot-s7-program-download
+description: >-
+  An S7comm block/program download was sent to a Siemens PLC. Downloading logic
+  reprograms the controller (Program Download / Modify Program) — a hallmark of
+  PLC compromise (Stuxnet-class) and a strong persistence + impact signal.
+level: high
+logsource:
+  service: s7comm
+detection:
+  download:
+    action: program-download
+  condition: download
+tags:
+  - attack.t0843
+  - attack.t0889
+  - attack.persistence
+falsepositives:
+  - Planned commissioning / logic updates from the engineering station during a change window.

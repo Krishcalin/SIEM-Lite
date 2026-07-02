@@ -1,0 +1,19 @@
+title: DNP3 Device Restart (Cold / Warm)
+id: lo-ot-dnp3-restart
+description: >-
+  A DNP3 cold- or warm-restart function was issued to an outstation (RTU / IED).
+  Restarting a field device interrupts monitoring and control of the process.
+level: high
+logsource:
+  service: dnp3
+detection:
+  restart:
+    action:
+      - cold-restart
+      - warm-restart
+  condition: restart
+tags:
+  - attack.t0816
+  - attack.inhibit_response_function
+falsepositives:
+  - Maintenance-initiated restarts.
