@@ -18,6 +18,7 @@ from typing import Iterator, Optional
 
 from ..models import NormalizedEvent
 from ..util import clean_ip, first, parse_ts, to_int
+from . import zeek_ics
 
 _NUM = re.compile(r"^\d+(?:\.\d+)?$")
 
@@ -95,11 +96,23 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
         else:
             action = g("conn_state")
 
+        # ICS/OT protocol log (ICSNPP: modbus / dnp3 / s7comm / cip …): lift the
+        # control-plane operation onto `action` + `raw["ot"]` and tag log_type
+        # with the canonical protocol so OT rules can target it.
+        log_type = p
+        message = _message(p, g)
+        ot = zeek_ics.enrich(p, row)
+        if ot is not None:
+            action, ot_fields = ot
+            row["ot"] = ot_fields
+            log_type = ot_fields["protocol"]
+            message = f"{ot_fields['protocol']} {action}"
+
         yield NormalizedEvent(
             event_time=_ts(g("ts")),
             vendor="zeek",
             product=p,
-            log_type=p,
+            log_type=log_type,
             action=action,
             src_ip=clean_ip(g("id.orig_h")),
             dst_ip=clean_ip(g("id.resp_h")),
@@ -111,6 +124,6 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             host_name=first(g("server_name")),
             rule_name=g("uid"),
             bytes_total=sum(sizes) if sizes else None,
-            message=_message(p, g),
+            message=message,
             raw=row,
         )

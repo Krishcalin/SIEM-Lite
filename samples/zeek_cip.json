@@ -1,0 +1,2 @@
+{"_path":"cip","ts":1782000300.0,"uid":"Ck001","id.orig_h":"10.50.0.50","id.orig_p":50000,"id.resp_h":"10.60.0.13","id.resp_p":44818,"cip_service":"Set Attribute Single"}
+{"_path":"cip","ts":1782000301.0,"uid":"Ck002","id.orig_h":"10.50.0.50","id.orig_p":50000,"id.resp_h":"10.60.0.13","id.resp_p":44818,"cip_service":"Get Attribute Single"}

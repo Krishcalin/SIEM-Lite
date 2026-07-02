@@ -1,0 +1,11 @@
+#separator 	
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	modbus_detailed
+#open	2026-06-18-10-00-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	func	request_response	unit_id	address	quantity	values
+1782000000.100	CmA001	10.50.0.20	51500	10.60.0.10	502	READ_HOLDING_REGISTERS	REQUEST	1	100	10	-
+1782000001.200	CmB002	10.50.0.20	51500	10.60.0.10	502	WRITE_MULTIPLE_REGISTERS	REQUEST	1	40001	4	1,2,3,4
+1782000002.300	CmC003	10.99.0.5	40000	10.60.0.10	502	DIAGNOSTICS	REQUEST	1	-	-	-
+#close	2026-06-18-11-00-00

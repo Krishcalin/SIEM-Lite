@@ -1,0 +1,11 @@
+#separator 	
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	dnp3
+#open	2026-06-18-10-00-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	fc_request	fc_reply	iin
+1782000100.100	Cd001	10.50.0.30	52000	10.60.0.11	20000	READ	RESPONSE	-
+1782000101.200	Cd002	10.99.0.5	41000	10.60.0.11	20000	COLD_RESTART	RESPONSE	-
+1782000102.300	Cd003	10.99.0.5	41000	10.60.0.11	20000	DISABLE_UNSOLICITED	RESPONSE	-
+#close	2026-06-18-11-00-00

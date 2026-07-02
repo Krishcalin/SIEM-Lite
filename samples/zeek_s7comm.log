@@ -1,0 +1,11 @@
+#separator 	
+#set_separator	,
+#empty_field	(empty)
+#unset_field	-
+#path	s7comm
+#open	2026-06-18-10-00-00
+#fields	ts	uid	id.orig_h	id.orig_p	id.resp_h	id.resp_p	rosctr	function_name
+1782000200.100	Cs001	10.50.0.40	53000	10.60.0.12	102	Job	Read Variable
+1782000201.200	Cs002	10.99.0.7	42000	10.60.0.12	102	Job	Request Download
+1782000202.300	Cs003	10.99.0.7	42000	10.60.0.12	102	Job	PLC Stop
+#close	2026-06-18-11-00-00

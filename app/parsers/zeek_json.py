@@ -12,6 +12,7 @@ from typing import Iterator, Optional
 
 from ..models import NormalizedEvent
 from ..util import clean_ip, first, iter_json_records, parse_ts, to_int
+from . import zeek_ics
 
 
 def _path(rec: dict) -> str:
@@ -47,13 +48,25 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             action = rec.get("status_code")
         else:
             action = rec.get("conn_state")
+        action = str(action) if action not in (None, "") else None
+
+        # ICS/OT protocol log (ICSNPP): lift the control-plane operation onto
+        # `action` + `raw["ot"]` and tag log_type with the canonical protocol.
+        log_type = path
+        message = _message(path, rec)
+        ot = zeek_ics.enrich(path, rec)
+        if ot is not None:
+            action, ot_fields = ot
+            rec["ot"] = ot_fields
+            log_type = ot_fields["protocol"]
+            message = f"{ot_fields['protocol']} {action}"
 
         yield NormalizedEvent(
             event_time=parse_ts(rec.get("ts")),
             vendor="zeek",
             product=path,
-            log_type=path,
-            action=str(action) if action not in (None, "") else None,
+            log_type=log_type,
+            action=action,
             src_ip=clean_ip(rec.get("id.orig_h")),
             dst_ip=clean_ip(rec.get("id.resp_h")),
             src_port=to_int(rec.get("id.orig_p")),
@@ -64,6 +77,6 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             host_name=first(rec.get("server_name")),
             rule_name=first(rec.get("uid")),
             bytes_total=sum(sizes) if sizes else None,
-            message=_message(path, rec),
+            message=message,
             raw=rec,
         )
