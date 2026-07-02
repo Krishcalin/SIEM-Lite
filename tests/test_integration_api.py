@@ -29,6 +29,14 @@ def test_health_ok(clean_db):
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
+def test_security_headers_present(clean_db):
+    with _client(clean_db) as c:
+        r = c.get("/health")
+    assert r.headers.get("x-frame-options") == "DENY"
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert "frame-ancestors 'none'" in r.headers.get("content-security-policy", "")
+
+
 def test_ingest_api_auth_and_end_to_end(clean_db):
     db = clean_db
     rec = db.create_api_key("ci-key")

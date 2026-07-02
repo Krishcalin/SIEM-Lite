@@ -102,11 +102,50 @@ def test_purge_drops_old_partitions(clean_db):
     _store(db, [_evt(event_time=datetime(2020, 1, 10, tzinfo=timezone.utc), vendor="old"),
                 _evt(vendor="recent")])
     assert "events_202001" in _partitions(db)
-    dropped = db.purge_older_than(1)                            # cutoff ≈ 1 year ago
+    dropped = db.purge_older_than(1)          # arg clamps up to the 3yr floor; 2020 is far older
     assert "events_202001" in dropped
     assert "events_202001" not in _partitions(db)
     assert db.search({"vendor": "old"}, 50, 0)[1] == 0
     assert db.search({"vendor": "recent"}, 50, 0)[1] == 1      # current month untouched
+
+
+def test_purge_respects_retention_floor(clean_db):
+    """purge_older_than never drops below RETENTION_YEARS, even if asked to."""
+    db = clean_db
+    two_years_ago = (datetime.now(timezone.utc).replace(day=15) - timedelta(days=730))
+    _store(db, [_evt(event_time=two_years_ago, vendor="within-floor")])
+    part = f"events_{two_years_ago.year:04d}{two_years_ago.month:02d}"
+    assert part in _partitions(db)
+    dropped = db.purge_older_than(1)          # asks 1yr, but the 3yr floor protects it
+    assert part not in dropped and part in _partitions(db)
+    assert db.search({"vendor": "within-floor"}, 50, 0)[1] == 1
+
+
+def test_is_last_admin_guard(clean_db):
+    from app import auth
+    db = clean_db
+    a1 = db.create_user("admin1", auth.hash_password("x"), "admin")
+    assert db.is_last_admin(a1) is True
+    a2 = db.create_user("admin2", auth.hash_password("y"), "admin")
+    assert db.is_last_admin(a1) is False          # another enabled admin exists
+    db.set_user_enabled(a2, False)
+    assert db.is_last_admin(a1) is True           # a2 disabled -> a1 is the last again
+    viewer = db.create_user("viewer1", auth.hash_password("z"), "viewer")
+    assert db.is_last_admin(viewer) is False      # not an admin
+
+
+def test_reupload_of_timestampless_file_dedups(clean_db):
+    """A file whose events have no parseable timestamp still dedups on re-upload
+    (the fallback time is reused from the first batch)."""
+    from app import ingest as ingest_mod
+    _db = clean_db
+    payload = ('{"source":{"ip":"10.0.0.1"},"event":{"action":"login"},'
+               '"message":"record with no timestamp field"}')
+    r1 = ingest_mod.ingest(payload, "generic_json", filename="notime.json")
+    r2 = ingest_mod.ingest(payload, "generic_json", filename="notime.json")
+    assert r1["inserted"] == 1
+    assert r2["inserted"] == 0 and r2["duplicates"] == 1
+    assert r2["already_ingested"] is True
 
 
 # --------------------------------------------------------------------------- #

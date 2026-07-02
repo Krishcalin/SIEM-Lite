@@ -9,6 +9,7 @@ and the HTTP ingest API (`source_type="api"`).
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timezone
 from typing import Optional
 
 from . import alert_actions, db, pipeline
@@ -25,13 +26,19 @@ def ingest(content: str, fmt: str, *, filename: Optional[str] = None,
     events = pipeline.parse_events(content, fmt)  # validates fmt before any DB work
 
     sha = hashlib.sha256(content.encode("utf-8", "replace")).hexdigest()
-    prior = db.find_batch_by_sha(sha)  # informational: same bytes seen before
+    prior = db.find_batch_by_sha(sha)  # same bytes seen before?
+    now = datetime.now(timezone.utc)
     batch_id = db.create_batch(filename, sha, _VENDOR_OF.get(fmt), fmt,
-                               source_type=source_type, source_addr=source_addr)
+                               source_type=source_type, source_addr=source_addr,
+                               uploaded_at=now)
+    # Timestamp-less events are stamped with a fallback time; reusing the FIRST
+    # batch's upload time for re-ingests of identical bytes keeps that fallback
+    # stable, so re-uploading a file whose events lack timestamps still dedups.
+    fallback = prior["uploaded_at"] if prior else now
 
     with db.pool().connection() as conn:
         try:
-            result = pipeline.write_stream(conn, events, batch_id)
+            result = pipeline.write_stream(conn, events, batch_id, fallback=fallback)
             conn.commit()
         except Exception as exc:  # noqa: BLE001 — record failure on the batch, then re-raise
             conn.rollback()

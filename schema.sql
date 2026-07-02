@@ -63,6 +63,10 @@ CREATE INDEX IF NOT EXISTS events_dst_idx      ON events (dst_ip);
 CREATE INDEX IF NOT EXISTS events_user_idx     ON events (user_name);
 CREATE INDEX IF NOT EXISTS events_host_idx     ON events (host_name);
 CREATE INDEX IF NOT EXISTS events_batch_idx    ON events (batch_id);
+-- search() filters severity/action case-insensitively; expression indexes make the
+-- lower(col) predicates index-usable instead of scanning every partition.
+CREATE INDEX IF NOT EXISTS events_severity_idx ON events (lower(severity));
+CREATE INDEX IF NOT EXISTS events_action_idx   ON events (lower(action));
 
 -- Dedup within partitions (must include the partition key on a partitioned table).
 CREATE UNIQUE INDEX IF NOT EXISTS events_dedup_idx ON events (dedup_hash, event_time);
@@ -142,6 +146,7 @@ CREATE INDEX IF NOT EXISTS alerts_case_idx ON alerts (case_id);
 CREATE UNIQUE INDEX IF NOT EXISTS alerts_dedup_idx   ON alerts (rule_id, dedup_hash);
 CREATE INDEX IF NOT EXISTS alerts_created_idx ON alerts (created_at DESC);
 CREATE INDEX IF NOT EXISTS alerts_status_idx  ON alerts (status);
+CREATE INDEX IF NOT EXISTS alerts_level_idx   ON alerts (lower(level));
 CREATE INDEX IF NOT EXISTS alerts_assignee_idx ON alerts (assignee);
 
 -- Free-form investigation notes threaded under an alert.

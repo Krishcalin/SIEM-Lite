@@ -103,13 +103,21 @@ def insert_events(conn, events: list[NormalizedEvent], batch_id: int) -> None:
 # --------------------------------------------------------------------------- #
 def create_batch(filename: Optional[str], sha: Optional[str], vendor: Optional[str],
                  fmt: str, source_type: str = "upload",
-                 source_addr: Optional[str] = None) -> int:
+                 source_addr: Optional[str] = None,
+                 uploaded_at: Optional[Any] = None) -> int:
     with pool().connection() as conn:
-        row = conn.execute(
-            "INSERT INTO ingest_batches "
-            "(filename, file_sha256, vendor, fmt, status, source_type, source_addr) "
-            "VALUES (%s, %s, %s, %s, 'pending', %s, %s) RETURNING id",
-            (filename, sha, vendor, fmt, source_type, source_addr)).fetchone()
+        if uploaded_at is not None:
+            row = conn.execute(
+                "INSERT INTO ingest_batches "
+                "(filename, file_sha256, vendor, fmt, status, source_type, source_addr, uploaded_at) "
+                "VALUES (%s, %s, %s, %s, 'pending', %s, %s, %s) RETURNING id",
+                (filename, sha, vendor, fmt, source_type, source_addr, uploaded_at)).fetchone()
+        else:
+            row = conn.execute(
+                "INSERT INTO ingest_batches "
+                "(filename, file_sha256, vendor, fmt, status, source_type, source_addr) "
+                "VALUES (%s, %s, %s, %s, 'pending', %s, %s) RETURNING id",
+                (filename, sha, vendor, fmt, source_type, source_addr)).fetchone()
         conn.commit()
         return row["id"]
 
@@ -926,6 +934,19 @@ def set_user_role(user_id: int, role: str) -> None:
         conn.commit()
 
 
+def is_last_admin(user_id: int) -> bool:
+    """True if `user_id` is an enabled admin and no OTHER enabled admin exists —
+    so demoting / disabling them would lock everyone out of admin."""
+    with pool().connection() as conn:
+        me = conn.execute("SELECT role, enabled FROM users WHERE id = %s",
+                          (user_id,)).fetchone()
+        others = conn.execute(
+            "SELECT count(*) AS n FROM users "
+            "WHERE role = 'admin' AND enabled = true AND id <> %s", (user_id,)).fetchone()
+    is_admin_now = bool(me) and me["role"] == "admin" and me["enabled"]
+    return is_admin_now and int(others["n"]) == 0
+
+
 def set_user_password(user_id: int, password_hash: str) -> None:
     with pool().connection() as conn:
         conn.execute("UPDATE users SET password_hash = %s WHERE id = %s",
@@ -1279,11 +1300,20 @@ def stats() -> dict:
 # --------------------------------------------------------------------------- #
 #  Retention                                                                   #
 # --------------------------------------------------------------------------- #
+def retention_cutoff_key(today: dt.date, years: int, floor_years: int) -> int:
+    """The YYYYMM below which partitions may be purged: the first month `years`
+    (clamped up to `floor_years`) *calendar* years ago. Pure + testable; uses
+    calendar arithmetic (not day deltas) so it never drifts off a month boundary."""
+    years = max(int(years), int(floor_years))
+    cutoff = today.replace(day=1, year=today.year - years)
+    return cutoff.year * 100 + cutoff.month
+
+
 def purge_older_than(years: int) -> list[str]:
-    """Drop monthly partitions whose month is entirely older than `years`.
-    Returns the names of dropped partitions. events_default is never dropped."""
-    cutoff = (dt.date.today().replace(day=1) - dt.timedelta(days=int(years * 365.25)))
-    cutoff_key = cutoff.year * 100 + cutoff.month
+    """Drop monthly partitions whose month is entirely older than `years` calendar
+    years. The RETENTION_YEARS floor is enforced *here* (not just by callers), so
+    this can never purge below policy. events_default is never dropped."""
+    cutoff_key = retention_cutoff_key(dt.date.today(), years, settings.retention_years)
     dropped: list[str] = []
     with pool().connection() as conn:
         parts = conn.execute(

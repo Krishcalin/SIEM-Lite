@@ -9,11 +9,11 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import (HTMLResponse, JSONResponse, RedirectResponse,
-                               StreamingResponse)
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               RedirectResponse, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -187,23 +187,57 @@ templates.env.globals["copilot_enabled"] = settings.copilot_enabled
 # Paths reachable without a session (login, static assets, health, and the
 # API which authenticates with its own keys).
 _AUTH_EXEMPT = ("/login", "/logout", "/health")
+_UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+# Applied to every response (defence-in-depth; the UI is server-rendered so a
+# strict-ish CSP with inline style/script is safe and doesn't break it).
+_SECURITY_HEADERS = {
+    "X-Frame-Options": "DENY",
+    "X-Content-Type-Options": "nosniff",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+        "frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    ),
+}
+
+
+def _csrf_same_origin(host: str, origin: Optional[str], referer: Optional[str]) -> bool:
+    """CSRF check for cookie-authed, state-changing requests: the Origin (or, if
+    absent, Referer) host must match ours. If neither header is present (rare for a
+    browser form POST) we allow it — the SameSite=Lax session cookie still applies."""
+    for val in (origin, referer):
+        if val:
+            return urlparse(val).netloc == host
+    return True
 
 
 @app.middleware("http")
 async def auth_guard(request: Request, call_next):
-    """Populate request.state.user from the session cookie; redirect unauthenticated
-    UI requests to /login. A no-op when AUTH_ENABLED is false."""
+    """Always attaches security headers. When AUTH_ENABLED: resolves the session
+    user, redirects unauthenticated UI requests to /login, and rejects cross-origin
+    state-changing requests (CSRF). A near-no-op when AUTH_ENABLED is false."""
     request.state.user = None
-    if not settings.auth_enabled:
-        return await call_next(request)
-    path = request.url.path
-    exempt = path in _AUTH_EXEMPT or path.startswith(("/static", "/api/"))
-    token = request.cookies.get("session")
-    if token:
-        request.state.user = await run_in_threadpool(db.get_session_user, token)
-    if not exempt and request.state.user is None:
-        return RedirectResponse(url="/login", status_code=303)
-    return await call_next(request)
+    blocked = None
+    if settings.auth_enabled:
+        path = request.url.path
+        exempt = path in _AUTH_EXEMPT or path.startswith(("/static", "/api/"))
+        token = request.cookies.get("session")
+        if token:
+            request.state.user = await run_in_threadpool(db.get_session_user, token)
+        if not exempt and request.state.user is None:
+            blocked = RedirectResponse(url="/login", status_code=303)
+        elif request.method in _UNSAFE_METHODS and not path.startswith("/api/") and \
+                not _csrf_same_origin(request.headers.get("host", ""),
+                                      request.headers.get("origin"),
+                                      request.headers.get("referer")):
+            blocked = PlainTextResponse("CSRF validation failed (cross-origin request).",
+                                        status_code=403)
+    response = blocked or await call_next(request)
+    for key, val in _SECURITY_HEADERS.items():
+        response.headers.setdefault(key, val)
+    return response
 
 
 def _ctx(request: Request, **kw):
@@ -1055,8 +1089,12 @@ def admin_create_user(request: Request, username: str = Form(...), password: str
 def admin_set_user_role(request: Request, user_id: int, role: str = Form(...),
                         _user=Depends(require_role("admin"))):
     if role in auth.ROLES:
-        db.set_user_role(user_id, role)
-        _audit(request, "user.role", f"user {user_id} -> {role}")
+        if role != "admin" and db.is_last_admin(user_id):
+            _audit(request, "user.role.denied",
+                   f"blocked demoting the last enabled admin (user {user_id})")
+        else:
+            db.set_user_role(user_id, role)
+            _audit(request, "user.role", f"user {user_id} -> {role}")
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -1064,6 +1102,10 @@ def admin_set_user_role(request: Request, user_id: int, role: str = Form(...),
 def admin_toggle_user(request: Request, user_id: int, enabled: str = Form(...),
                       _user=Depends(require_role("admin"))):
     on = enabled == "true"
-    db.set_user_enabled(user_id, on)
-    _audit(request, "user.toggle", f"user {user_id} -> {'enabled' if on else 'disabled'}")
+    if not on and db.is_last_admin(user_id):
+        _audit(request, "user.toggle.denied",
+               f"blocked disabling the last enabled admin (user {user_id})")
+    else:
+        db.set_user_enabled(user_id, on)
+        _audit(request, "user.toggle", f"user {user_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)

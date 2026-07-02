@@ -630,6 +630,15 @@ parser/detector/pipeline/rule/`db.py` change.
   `auth_guard` middleware protects the UI, `require_role(...)` gates mutating
   routes, `/api/*` keeps its API-key auth). Off by default — then run behind SSO /
   a reverse proxy or on a trusted host.
+- **Response hardening (always on):** `auth_guard` attaches security headers to
+  every response — `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: no-referrer`, and a CSP with `frame-ancestors 'none'`
+  (server-rendered UI, so `'unsafe-inline'` style/script is fine). When
+  `AUTH_ENABLED`, state-changing UI requests (POST/PUT/PATCH/DELETE, excluding
+  `/api/*`) also get a **CSRF** same-origin check (`_csrf_same_origin`: Origin/Referer
+  host must match; absent → allowed since the session cookie is SameSite=Lax).
+- **Last-admin guard:** `db.is_last_admin` prevents demoting/disabling the final
+  enabled admin (self-lockout) on the `/admin/users/*` routes.
 - Security-relevant actions (login/logout, purge, key/rule/collector/user changes,
   alert triage, upload) are recorded in `audit_log` via `main._audit(...)` and
   shown on the Admin page.

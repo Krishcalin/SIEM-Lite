@@ -725,10 +725,14 @@ Set `AUTH_ENABLED=true` for **built-in login + RBAC** (roles: `admin` / `analyst
 `viewer`). An admin is bootstrapped on first run from `ADMIN_USER`/`ADMIN_PASSWORD`
 (a random password is logged if blank); manage users from the Admin page. Passwords
 are pbkdf2-hashed and sessions are server-side (revocable). Use `SESSION_COOKIE_SECURE=true`
-behind HTTPS. Security-relevant actions (login/logout, purge, key/rule/collector/user
-changes, alert triage, upload) are recorded in an **audit log** on the Admin page.
-With auth off, run behind your SSO/reverse proxy or on a trusted network. Either way,
-keep the Postgres volume backed up (it is your 3-year archive).
+behind HTTPS. Every response carries **security headers** (`X-Frame-Options: DENY`,
+`X-Content-Type-Options: nosniff`, `Referrer-Policy`, and a CSP with
+`frame-ancestors 'none'`); with auth on, state-changing UI requests also get a
+**CSRF** same-origin (Origin/Referer) check, and the last enabled admin can't be
+demoted or disabled (no self-lockout). Security-relevant actions (login/logout, purge,
+key/rule/collector/user changes, alert triage, upload) are recorded in an **audit log**
+on the Admin page. With auth off, run behind your SSO/reverse proxy or on a trusted
+network. Either way, keep the Postgres volume backed up (it is your 3-year archive).
 
 **Input hardening.** Ingest treats all log content as untrusted: uploads and the API
 body are size-capped (`MAX_UPLOAD_MB`) and streamed so a huge payload can't exhaust
