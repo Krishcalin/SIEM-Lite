@@ -30,3 +30,25 @@ def test_build_report_coverage_and_alert_counts():
     gap = next(c for c in report["NIST 800-53"]["controls"] if not c["covered"])
     assert gap["alerts"] == 0
     assert report["NIST 800-53"]["covered"] >= 1
+
+
+def test_ics_frameworks_present_and_populated():
+    assert "IEC 62443-3-3" in FRAMEWORKS and "NERC CIP" in FRAMEWORKS
+    report = build_report(set(), {})
+    assert report["IEC 62443-3-3"]["total"] > 0
+    assert report["NERC CIP"]["total"] > 0
+
+
+def test_ics_technique_maps_to_iec_and_nerc():
+    m = controls_for_technique("T0889")              # Modify Program (PLC logic)
+    assert ("SR 3.4", "Software and Information Integrity") in m["IEC 62443-3-3"]
+    assert ("CIP-010", "Configuration Change Management") in m["NERC CIP"]
+
+
+def test_ot_rule_coverage_lights_up_ics_controls():
+    # enabling OT rules (their T0NNN techniques) covers the mapped IEC/NERC controls
+    report = build_report({"T0855", "T0889"}, {"T0855": 4, "T0889": 1})
+    iec = {c["id"]: c for c in report["IEC 62443-3-3"]["controls"]}
+    assert iec["SR 2.1"]["covered"] is True and iec["SR 2.1"]["alerts"] == 5  # 4 + 1
+    nerc = {c["id"]: c for c in report["NERC CIP"]["controls"]}
+    assert nerc["CIP-010"]["covered"] is True

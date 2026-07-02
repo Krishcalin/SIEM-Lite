@@ -11,8 +11,11 @@ unit-tested.
 """
 from __future__ import annotations
 
-# Render frameworks in this order on the page.
-FRAMEWORKS = ["NIST 800-53", "CIS v8", "PCI DSS v4", "HIPAA"]
+# Render frameworks in this order on the page. The last two are OT/ICS-specific
+# (IEC 62443-3-3 System Requirements; NERC CIP for the bulk electric system) and are
+# populated by the ATT&CK-for-ICS techniques carried on the OT rule pack.
+FRAMEWORKS = ["NIST 800-53", "CIS v8", "PCI DSS v4", "HIPAA",
+              "IEC 62443-3-3", "NERC CIP"]
 
 # technique -> framework -> list of (control_id, control_name)
 MAP: dict[str, dict[str, list[tuple[str, str]]]] = {
@@ -75,6 +78,57 @@ MAP: dict[str, dict[str, list[tuple[str, str]]]] = {
         "CIS v8": [("11.2", "Perform Automated Backups"), ("10.1", "Deploy Anti-Malware")],
         "PCI DSS v4": [("12.10.1", "Incident Response Plan"), ("5.2.1", "Anti-Malware Deployed")],
         "HIPAA": [("164.308(a)(7)(ii)(A)", "Data Backup Plan")],
+    },
+    # ── ATT&CK for ICS (T0NNN) — OT rule pack -> IEC 62443-3-3 / NERC CIP ──────
+    "T0855": {  # Unauthorized Command Message
+        "NIST 800-53": [("AC-3", "Access Enforcement"), ("SC-7", "Boundary Protection")],
+        "IEC 62443-3-3": [("SR 2.1", "Authorization Enforcement"), ("SR 3.1", "Communication Integrity")],
+        "NERC CIP": [("CIP-005", "Electronic Security Perimeter(s)"), ("CIP-007", "System Security Management")],
+    },
+    "T0836": {  # Modify Parameter
+        "NIST 800-53": [("CM-5", "Access Restrictions for Change"), ("SI-10", "Information Input Validation")],
+        "IEC 62443-3-3": [("SR 2.1", "Authorization Enforcement"), ("SR 3.1", "Communication Integrity")],
+        "NERC CIP": [("CIP-010", "Configuration Change Management")],
+    },
+    "T0843": {  # Program Download
+        "NIST 800-53": [("CM-5", "Access Restrictions for Change"), ("CM-7", "Least Functionality")],
+        "IEC 62443-3-3": [("SR 2.1", "Authorization Enforcement"), ("SR 3.4", "Software and Information Integrity")],
+        "NERC CIP": [("CIP-010", "Configuration Change Management")],
+    },
+    "T0889": {  # Modify Program
+        "NIST 800-53": [("CM-5", "Access Restrictions for Change"), ("SI-7", "Software, Firmware, and Information Integrity")],
+        "IEC 62443-3-3": [("SR 3.4", "Software and Information Integrity"), ("SR 2.1", "Authorization Enforcement")],
+        "NERC CIP": [("CIP-010", "Configuration Change Management")],
+    },
+    "T0858": {  # Change Operating Mode
+        "NIST 800-53": [("AC-3", "Access Enforcement"), ("CM-7", "Least Functionality")],
+        "IEC 62443-3-3": [("SR 2.1", "Authorization Enforcement"), ("SR 1.1", "Human User Identification and Authentication")],
+        "NERC CIP": [("CIP-007", "System Security Management")],
+    },
+    "T0813": {  # Denial of Control
+        "NIST 800-53": [("SC-5", "Denial-of-Service Protection")],
+        "IEC 62443-3-3": [("SR 7.1", "Denial of Service Protection"), ("SR 7.2", "Resource Management")],
+        "NERC CIP": [("CIP-007", "System Security Management")],
+    },
+    "T0816": {  # Device Restart/Shutdown
+        "NIST 800-53": [("SC-5", "Denial-of-Service Protection"), ("CM-7", "Least Functionality")],
+        "IEC 62443-3-3": [("SR 7.1", "Denial of Service Protection"), ("SR 2.1", "Authorization Enforcement")],
+        "NERC CIP": [("CIP-007", "System Security Management")],
+    },
+    "T0814": {  # Denial of Service
+        "NIST 800-53": [("SC-5", "Denial-of-Service Protection")],
+        "IEC 62443-3-3": [("SR 7.1", "Denial of Service Protection"), ("SR 7.2", "Resource Management")],
+        "NERC CIP": [("CIP-007", "System Security Management")],
+    },
+    "T0878": {  # Alarm Suppression
+        "NIST 800-53": [("AU-6", "Audit Record Review, Analysis, and Reporting"), ("SI-4", "System Monitoring")],
+        "IEC 62443-3-3": [("SR 6.1", "Audit Log Accessibility"), ("SR 6.2", "Continuous Monitoring")],
+        "NERC CIP": [("CIP-007", "System Security Management")],
+    },
+    "T0846": {  # Remote System Discovery
+        "NIST 800-53": [("SC-7", "Boundary Protection"), ("SI-4", "System Monitoring")],
+        "IEC 62443-3-3": [("SR 5.1", "Network Segmentation"), ("SR 6.2", "Continuous Monitoring")],
+        "NERC CIP": [("CIP-005", "Electronic Security Perimeter(s)")],
     },
 }
 
