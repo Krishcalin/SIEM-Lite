@@ -51,3 +51,39 @@ def test_correlation_alert_dedup_is_stable_per_window_bucket():
     assert a1["dedup_hash"] != a3["dedup_hash"]
     assert a1["src_ip"] == "45.83.122.7" and a1["level"] == "high"
     assert "9 matching events" in a1["message"] and "T1110" in a1["techniques"]
+    assert a1["status"] == "open"        # regression: correlation alerts need `status`
+
+
+def test_all_alert_builders_cover_every_insert_param():
+    """Every alert-dict builder must supply all named params in _ALERT_INSERT.
+
+    Guards the whole class of "query parameter missing: X" bugs — a builder that
+    forgets a field the SQL binds (e.g. `status`) crashes insert_alerts at runtime.
+    """
+    import re
+    from datetime import datetime, timezone
+
+    from app import db
+    from app.detection.engine import Rule, alert_from_match
+    from app.models import NormalizedEvent
+    from app.threatintel.matcher import IocHit, ti_alert
+
+    required = set(re.findall(r"%\((\w+)\)s", db._ALERT_INSERT))
+    evt = NormalizedEvent(event_time=datetime.now(timezone.utc), vendor="v",
+                          src_ip="1.2.3.4", user_name="alice", message="m")
+
+    corr = correlation_alert(
+        CorrelationRule(id="c", title="t", level="high", description="", match={},
+                        group_by=["src_ip"], window=300, threshold=5),
+        {"src_ip": "1.2.3.4", "n": 5, "last_seen": None}, bucket=1)
+    rule = Rule(id="r", title="t", level="high", description="", logsource={},
+                detection={}, tactics=[], techniques=[])
+    detn = alert_from_match(rule, evt, dedup_hash="d", batch_id=1)
+    ti = ti_alert([IocHit(indicator="1.2.3.4", ioc_type="ip", source="s",
+                          severity="high", observed="1.2.3.4")],
+                  evt, dedup_hash="d2")
+
+    for name, alert in (("correlation_alert", corr), ("alert_from_match", detn),
+                        ("ti_alert", ti)):
+        missing = required - set(alert)
+        assert not missing, f"{name} is missing SQL params: {missing}"

@@ -268,6 +268,12 @@ def insert_alerts(conn, alerts: list[dict], return_inserted: bool = False) -> li
     notify on newly-raised alerts only. Otherwise use a fast executemany."""
     if not alerts:
         return []
+    # `status` is the one INSERT parameter with a SQL-side default (COALESCE …
+    # 'open'); psycopg still requires the key to be present when binding named
+    # params, so default it here — keeps any builder that omits it from crashing
+    # the pipeline while preserving explicit values (e.g. 'suppressed').
+    for a in alerts:
+        a.setdefault("status", "open")
     if not return_inserted:
         with conn.cursor() as cur:
             cur.executemany(_ALERT_INSERT, alerts)

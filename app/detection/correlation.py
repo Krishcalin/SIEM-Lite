@@ -104,7 +104,7 @@ def correlation_alert(rule: CorrelationRule, row: dict, bucket: int) -> dict:
         "src_ip": gv.get("src_ip"), "dst_ip": gv.get("dst_ip"),
         "user_name": gv.get("user_name"), "host_name": gv.get("host_name"),
         "message": f"{row.get('n')} matching events ({parts}) within {rule.window}s",
-        "dedup_hash": dedup, "batch_id": None,
+        "dedup_hash": dedup, "batch_id": None, "status": "open",
     }
 
 
