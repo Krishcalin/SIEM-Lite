@@ -34,6 +34,10 @@ ATT&CK tactics into attack stories and promotes them to cases. A **detection-eng
 workbench** (`/workbench`) maps ATT&CK coverage, flags noisy/never-fired rules, and tests
 Sigma rules against sample events. An optional **AI SOC copilot** (`COPILOT_ENABLED`,
 Claude) explains alerts, summarizes cases, and drafts Sigma rules from natural language.
+**OT / ICS monitoring** ingests **Zeek + ICSNPP** telemetry (Modbus / DNP3 / S7comm /
+CIP / EtherNet-IP …), enriching it into a normalized control-plane `action` + `ot.*`
+fields, with an **ATT&CK-for-ICS** rule pack, kill-chain, and Navigator layer —
+fully passive/agentless (never touches a device).
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -83,7 +87,31 @@ endpoint** pack that matches the fields `sysmon.py` lifts onto `raw`
 `log_type` — office-spawns-shell, LOLBin proxy exec, registry Run-key persistence,
 WMI persistence, LSASS dump, shadow-copy deletion, schtasks, command-line log
 clearing. Command-line rules match `CommandLine` OR `message` so they also fire on
-non-Sysmon sources that fill `message`.
+non-Sysmon sources that fill `message`. The pack also includes an **OT / ICS**
+group (7 per-event + 1 correlation) tagged with **ATT&CK for ICS** (`T0NNN`)
+matching the Zeek-ICSNPP enrichment (`action` / `log_type` / `ot.*`) — see the OT
+section below. Shipped total: **37 detection + 4 correlation rules**.
+
+**OT / ICS monitoring** (`app/parsers/zeek_ics.py`). LogOcean is passive/agentless
+for OT — it never touches a device, only ingests sensor telemetry. **Zeek + ICSNPP**
+(CISA/INL Industrial Control Systems Network Protocol Parsers) writes `modbus.log` /
+`dnp3.log` / `s7comm.log` / `cip.log` … in the usual Zeek `#fields` shape; the Zeek
+parsers call `zeek_ics.enrich(path, row)` which — for an OT `#path` — lifts the
+control-plane operation onto the normalized **`action`** (`write-registers` /
+`plc-stop` / `program-download` / `cold-restart` / `disable-unsolicited` /
+`write-attribute` …), sets `log_type` to the canonical protocol, and adds an
+**`ot.*`** dict to `raw` (`ot.protocol`, `ot.operation` = read/write/control,
+`ot.is_write`, `ot.function_code`, `ot.unit_id`, `ot.address`, …) so every OT field
+is rule-matchable without a schema change. The OT rule pack (`rules/ot_*.yml` +
+`rules/correlation_ot_scan.yml`) matches on those. ATT&CK for ICS also flows into
+kill-chain reconstruction (the ICS tactics `evasion` / `inhibit-response-function` /
+`impair-process-control` are merged into `KILL_CHAIN_TACTICS` for one IT→OT chain)
+and the Navigator export (`build_layer(..., domain="ics-attack")`, served at
+`/reports/attack-navigator.json?domain=ics-attack`; ICS techniques are `T0NNN`).
+`enrich` is pure/DB-free; `zeek_ics` is an enrichment helper, **not** a registered
+parser (so `PARSERS` is still 27). Serial Modbus and L2 GOOSE/SV need a sensor that
+sees them; OT response stays passive (alert / IT-boundary enforcement, never a
+device command).
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:
@@ -239,7 +267,8 @@ app/
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
-                 meraki, zeek_tsv, zeek_json, crowdstrike_csv, crowdstrike_json,
+                 meraki, zeek_tsv, zeek_json, zeek_ics (OT/ICS enrichment helper — not a
+                 registered parser), crowdstrike_csv, crowdstrike_json,
                  windows_security, sysmon, linux_auditd, web_access, suricata_eve, cef,
                  leef, generic_syslog, generic_json, aws_cloudtrail, gcp_audit,
                  azure_activity, m365_audit, entra_signin, okta_system_log,
@@ -261,7 +290,7 @@ tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, te
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
                  test_collectors, test_auth, test_audit, test_compliance, test_threatintel,
                  test_triage, test_severity, test_navigator, test_risk, test_compression,
-                 test_killchain, test_workbench, test_copilot, test_hardening
+                 test_killchain, test_workbench, test_copilot, test_hardening, test_ot
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker
@@ -372,6 +401,16 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
 - **Zeek** is driven by the `#separator`/`#fields`/`#path`/`#unset_field` header, so
   column order comes from the file; `ts` is epoch-seconds-with-fraction (pass through
   `float()` before `parse_ts`); `-`/`(empty)` become NULL; multiple logs may concatenate.
+- **Zeek ICS/OT (`zeek_ics.py`)** — when the Zeek `#path` (TSV) or `_path` (JSON) is an
+  ICSNPP protocol (`modbus[_detailed]` / `dnp3` / `s7comm[_plus]` / `cip` / `enip` /
+  `bacnet` / …, see `PATH_PROTOCOL`), the Zeek parsers call `enrich()` to override
+  `action` with the control-plane operation and attach `raw["ot"]`. `log_type` becomes
+  the *canonical* protocol (so `modbus_detailed` → `log_type: modbus`) — OT rules target
+  `log_type`/`service`, not the raw path. Modbus `func` may be a string
+  (`WRITE_MULTIPLE_REGISTERS`) or numeric (`_MODBUS_FUNC` table); DNP3 keys off
+  `fc_request`, S7comm off `function_name` (`download`→`program-download`,
+  `stop`→`plc-stop`), CIP off `cip_service`. `enrich` never raises — an unknown func
+  still yields a `protocol` tag.
 - **Generic syslog** decodes `<PRI>` → facility/severity names, then RFC 5424 (version
   digit first) or RFC 3164 (`Mmm dd hh:mm:ss`); unrecognized lines keep the whole line
   as the message. It is the **catch-all**, so `detect.py` checks it **last**.
@@ -534,6 +573,10 @@ Unit:
 - `test_hardening.py` — ingest input hardening: the JSON deep-nesting depth guard,
   gzip decompression-bomb cap, oversize-payload rejection, and numeric-overflow
   coercion on hostile log fields.
+- `test_ot.py` — OT/ICS: `zeek_ics.enrich` protocol mapping (Modbus/DNP3/S7comm/CIP,
+  string + numeric func), the Zeek parsers lifting `action`/`ot.*` from the ICS
+  samples, the OT rule pack firing on malicious ops (and staying quiet on reads),
+  ICS technique tags, and the OT-scan correlation rule.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 

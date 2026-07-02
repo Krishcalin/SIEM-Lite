@@ -50,6 +50,13 @@ retains them in PostgreSQL for **≥ 3 years**.
     - Cisco **Meraki** syslog (flows / urls / ids-alerts / security_event)
     - **Zeek** (Bro) **TSV** (`conn` / `dns` / `http` … via the `#fields` header)
     - **Zeek** (Bro) **JSON** (`LogAscii::use_json`; NDJSON or array)
+  - *OT / ICS (Zeek + ICSNPP):*
+    - **Modbus**, **DNP3**, **S7comm** (Siemens), **CIP / EtherNet-IP** (Rockwell),
+      **BACnet** and more — the Zeek `modbus.log` / `dnp3.log` / `s7comm.log` / `cip.log`
+      logs from the [ICSNPP](https://github.com/cisagov/icsnpp) analyzers are enriched
+      into a normalized control-plane `action` (`write-registers` / `plc-stop` /
+      `program-download` / `cold-restart` …) + an `ot.*` field set — see **OT / ICS
+      monitoring** below
   - *Endpoint / IDS / host:*
     - CrowdStrike Falcon **CSV export** (detections / incidents)
     - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
@@ -227,7 +234,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with a starter rule pack (30 detection + 3 correlation rules) covering
+Ships with a starter rule pack (37 detection + 4 correlation rules) covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
@@ -240,8 +247,11 @@ monitoring disabled, monitored-object deletion, plus a mass-change-burst
 correlation for ransomware / bulk tampering), and a **Sysmon / endpoint** pack
 (Office spawning a shell, LOLBin proxy execution, registry Run-key / WMI
 persistence, LSASS credential dumping, shadow-copy deletion, scheduled-task
-creation, command-line log clearing). Detection can be turned off with
-`DETECTION_ENABLED=false`.
+creation, command-line log clearing), and an **OT / ICS** pack (Modbus write /
+diagnostic, S7comm program download / PLC stop, DNP3 device restart / disable-
+unsolicited, CIP set-attribute write, and an OT-protocol enumeration correlation —
+tagged with **ATT&CK for ICS** techniques; see below). Detection can be turned off
+with `DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
 
@@ -282,7 +292,8 @@ and the toolbar buttons to export:
 - **ATT&CK Navigator layer** — `GET /reports/attack-navigator.json?days=N` returns a
   Navigator (layer 4.5) JSON scoring each technique by alert volume; load it at the
   [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to visualize
-  coverage.
+  coverage. Add `&domain=ics-attack` for an **ATT&CK for ICS** layer (OT `T0NNN`
+  techniques); the default is the Enterprise matrix.
 - **Alerts CSV** — `GET /alerts.csv` streams the alert list (honours the `/alerts`
   filters), with spreadsheet-formula injection neutralized.
 
@@ -369,6 +380,54 @@ trade cost for capability (e.g. `claude-sonnet-4-6`). Prompt construction and th
 Sigma-extraction logic (`app/copilot/prompts.py`) are pure and fully unit-tested; the SDK
 call is a thin wrapper that degrades gracefully when unconfigured. Every AI action is
 RBAC-gated (analyst) and written to the audit log.
+
+## OT / ICS monitoring (Zeek + ICSNPP)
+
+LogOcean monitors **operational-technology** networks — PLCs, RTUs, and other
+controllers — the safe way: **100% passive and agentless**. It never talks to a
+device or issues a control command; it ingests *copies of telemetry* produced by a
+network sensor, exactly the posture OT requires.
+
+The telemetry source is **Zeek** running the
+[ICSNPP](https://github.com/cisagov/icsnpp) (Industrial Control Systems Network
+Protocol Parsers, from CISA / INL) analyzers, which deep-packet-inspect the OT
+protocols and write `modbus.log` / `dnp3.log` / `s7comm.log` / `cip.log` … in the
+usual Zeek `#fields` shape. LogOcean's Zeek parsers **enrich** those records:
+
+- the control-plane operation is lifted onto the normalized **`action`**
+  (`write-registers`, `write-coils`, `diagnostic`, `program-download`, `plc-stop`,
+  `cold-restart`, `disable-unsolicited`, `write-attribute`, …), and `log_type` is
+  set to the canonical protocol (`modbus` / `dnp3` / `s7comm` / `cip` / `enip` / …);
+- an **`ot.*`** field set (`ot.protocol`, `ot.operation` = read/write/control,
+  `ot.is_write`, `ot.function_code`, `ot.unit_id`, `ot.address`, …) is added to the
+  event's `raw`, so every OT attribute is searchable and rule-matchable.
+
+On top of that, the shipped **OT rule pack** flags the dangerous operations, tagged
+with **ATT&CK for ICS** techniques:
+
+| Rule | Technique |
+|---|---|
+| Modbus write command to a controller | T0855 / T0836 |
+| Modbus diagnostic / restart function | T0814 |
+| S7comm program / block download to a PLC | T0843 / T0889 |
+| S7comm PLC stop / operating-mode change | T0858 / T0813 |
+| DNP3 device restart (cold / warm) | T0816 |
+| DNP3 disable unsolicited reporting | T0878 |
+| CIP set-attribute (write) to a device | T0855 / T0836 |
+| OT-protocol enumeration from one source (correlation) | T0846 |
+
+ATT&CK for ICS is wired through the rest of the platform too: **kill-chain
+reconstruction** understands the ICS tactics (`inhibit-response-function`,
+`impair-process-control`, …) in a **merged IT→OT kill chain**, so an intrusion that
+starts on IT and ends in process impact stitches into one attack story; and the
+Navigator export serves an ICS layer at
+`GET /reports/attack-navigator.json?domain=ics-attack`.
+
+**Scope & limits.** LogOcean is a log platform, not a sensor — it needs Zeek+ICSNPP
+(or a commercial DPI sensor) on the wire; it does no DPI itself. Serial Modbus and
+L2 GOOSE / Sampled-Values can't arrive over IP logs and need a sensor that sees
+them. OT response stays passive: alert / ticket / enforce at the IT boundary — never
+a device command.
 
 ## Agentless collectors & feeds
 
@@ -532,7 +591,8 @@ Log-Parser-Storage/
 │   ├── compliance.py       # MITRE technique → framework control mapping + report
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
-│   │                       #   zeek_{tsv,json}, crowdstrike_{csv,json}, windows_security, sysmon,
+│   │                       #   zeek_{tsv,json} (+ zeek_ics OT/ICS enrichment), crowdstrike_{csv,json},
+│   │                       #   windows_security, sysmon,
 │   │                       #   linux_auditd, web_access, suricata_eve, cef, leef, generic_{syslog,json},
 │   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
 │   │                       #   okta_system_log, github_audit, gitlab_audit
@@ -547,7 +607,7 @@ Log-Parser-Storage/
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
                             #   threatintel,triage,severity,navigator,risk,killchain,
-                            #   workbench,copilot,hardening,compression,audit,compliance}
+                            #   workbench,copilot,hardening,ot,compression,audit,compliance}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -584,9 +644,10 @@ ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring,
 the **detection workbench** (rule tester, ATT&CK coverage map, rule-health
 bucketing), the **AI copilot** (prompt construction, Sigma extraction/validation,
 and the explain/summarize/generate operations against a fake client), auth
-(password hashing, role ranking, the RBAC dependency), the audit helper, and the
-compliance coverage report — all without a database (the queue, pipeline, and
-worker tests mock the writers).
+(password hashing, role ranking, the RBAC dependency), the audit helper, the
+**OT/ICS** Zeek-ICSNPP enrichment + rule pack (with ATT&CK-for-ICS kill-chain and
+Navigator domain), and the compliance coverage report — all without a database (the
+queue, pipeline, and worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
