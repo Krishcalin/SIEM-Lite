@@ -33,10 +33,12 @@ retains them in PostgreSQL for **≥ 3 years**.
 > related alerts across ATT&CK tactics into attack stories, and a **detection
 > workbench** (`/workbench`) maps coverage, flags noisy/dead rules, and tests Sigma
 > rules live. An optional **AI SOC copilot** (Claude) explains alerts, summarizes cases,
-> and drafts Sigma rules from plain English. **Dashboards + `/reports`**
+> and drafts Sigma rules from plain English. **OT / ICS monitoring** (`/ot`) ingests
+> passive Zeek+ICSNPP telemetry (Modbus / DNP3 / S7comm / CIP …) with an ATT&CK-for-ICS
+> rule pack, asset inventory, and master→controller baselining. **Dashboards + `/reports`**
 > visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
-> audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA) round it out — all
-> tested unit + integration against real PostgreSQL in CI.
+> audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA + IEC 62443 / NERC CIP)
+> round it out — all tested unit + integration against real PostgreSQL in CI.
 
 ## Features
 
@@ -90,7 +92,8 @@ retains them in PostgreSQL for **≥ 3 years**.
 - **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
   (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
   (pretty raw record), **alerts** triage, **cases**, **kill-chain** (attack-story
-  reconstruction), **risk** (UEBA entity scoring), a detection **workbench**
+  reconstruction), **risk** (UEBA entity scoring), **OT/ICS** (controller asset
+  inventory + master→controller baselining), a detection **workbench**
   (coverage / rule-health / rule-tester),
   **reports** (print/PDF + ATT&CK-Navigator / CSV export), **compliance**, and an
   admin page (keys, rules, collectors, threat-intel feeds, suppressions, users,
@@ -234,7 +237,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with a starter rule pack (37 detection + 4 correlation rules) covering
+Ships with a starter rule pack (38 detection + 4 correlation rules) covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
@@ -249,9 +252,10 @@ correlation for ransomware / bulk tampering), and a **Sysmon / endpoint** pack
 persistence, LSASS credential dumping, shadow-copy deletion, scheduled-task
 creation, command-line log clearing), and an **OT / ICS** pack (Modbus write /
 diagnostic, S7comm program download / PLC stop, DNP3 device restart / disable-
-unsolicited, CIP set-attribute write, and an OT-protocol enumeration correlation —
-tagged with **ATT&CK for ICS** techniques; see below). Detection can be turned off
-with `DETECTION_ENABLED=false`.
+unsolicited, CIP set-attribute write, an **IT→OT write conduit-violation** (Purdue /
+IEC 62443 zone) rule, and an OT-protocol enumeration correlation — tagged with
+**ATT&CK for ICS** techniques; see below). Detection can be turned off with
+`DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
 
@@ -423,6 +427,21 @@ starts on IT and ends in process impact stitches into one attack story; and the
 Navigator export serves an ICS layer at
 `GET /reports/attack-navigator.json?domain=ics-attack`.
 
+**OT analysis (`/ot`).** A dedicated page turns the OT telemetry into operator
+analytics: an **asset inventory** of the controllers (PLCs / RTUs) seen on the wire —
+the protocols each speaks, how many masters talk to it, and its control-op volume; a
+**master → controller conversation** map that flags a **`new-writer`** (a source first
+seen in the last 24h already issuing write / control commands to a controller — the
+top OT signal, an unexpected engineering client); and **read / write / control**
+activity per protocol. It's pure PostgreSQL aggregation over the events, no schema
+change. The **IT→OT conduit-violation** rule (`rules/ot_it_to_ot_write.yml`) enforces
+the Purdue / IEC 62443 zone model with `cidr` selections — a write/control command
+from outside the OT zone alerts (tune the CIDRs to your control network).
+
+**Compliance.** OT rule coverage maps to **IEC 62443-3-3** System Requirements and
+**NERC CIP** (plus NIST 800-53) on the `/compliance` page, alongside the existing
+IT frameworks.
+
 **Scope & limits.** LogOcean is a log platform, not a sensor — it needs Zeek+ICSNPP
 (or a commercial DPI sensor) on the wire; it does no DPI itself. Serial Modbus and
 L2 GOOSE / Sampled-Values can't arrive over IP logs and need a sensor that sees
@@ -581,6 +600,7 @@ Log-Parser-Storage/
 │   ├── risk.py             # UEBA entity extraction + risk scoring (pure)
 │   ├── killchain.py        # kill-chain / attack-story reconstruction (pure)
 │   ├── killchain_runtime.py # DB-backed reconstruction + auto-create scheduler
+│   ├── ot.py               # OT/ICS analytics: asset/conversation classification (pure)
 │   ├── workbench.py        # detection workbench: rule tester + coverage + health (pure)
 │   ├── copilot/            # AI SOC copilot — prompts.py (pure) + client.py (Claude SDK wrapper)
 │   ├── severity.py         # canonical severity order + roll-up
@@ -597,7 +617,7 @@ Log-Parser-Storage/
 │   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
 │   │                       #   okta_system_log, github_audit, gitlab_audit
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
-│   │                       #   case, killchain, risk, entity, responses, compliance,
+│   │                       #   case, killchain, risk, entity, ot, responses, compliance,
 │   │                       #   report, workbench, admin, login, _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)

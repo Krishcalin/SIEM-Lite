@@ -21,7 +21,8 @@ notification channels and can trigger response playbooks (audited at `/responses
 and scheduled collectors pull vendor logs (Okta/GitHub/GitLab, AWS CloudTrail,
 Entra ID, Microsoft 365) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
-log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA).
+log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA +
+IEC 62443 / NERC CIP for OT).
 **Threat-intel enrichment** (`THREATINTEL_ENABLED`) matches events against IOC
 feeds and raises alerts on hits. **Triage & tuning** adds alert assignment, notes,
 suppression/allowlist rules, and **cases** (`/cases`) that group related alerts
@@ -34,10 +35,11 @@ ATT&CK tactics into attack stories and promotes them to cases. A **detection-eng
 workbench** (`/workbench`) maps ATT&CK coverage, flags noisy/never-fired rules, and tests
 Sigma rules against sample events. An optional **AI SOC copilot** (`COPILOT_ENABLED`,
 Claude) explains alerts, summarizes cases, and drafts Sigma rules from natural language.
-**OT / ICS monitoring** ingests **Zeek + ICSNPP** telemetry (Modbus / DNP3 / S7comm /
-CIP / EtherNet-IP …), enriching it into a normalized control-plane `action` + `ot.*`
-fields, with an **ATT&CK-for-ICS** rule pack, kill-chain, and Navigator layer —
-fully passive/agentless (never touches a device).
+**OT / ICS monitoring** (`/ot`) ingests **Zeek + ICSNPP** telemetry (Modbus / DNP3 /
+S7comm / CIP / EtherNet-IP …), enriching it into a normalized control-plane `action`
++ `ot.*` fields, with an **ATT&CK-for-ICS** rule pack, kill-chain, Navigator layer,
+a controller **asset inventory** + master→controller baselining, and **IEC 62443 /
+NERC CIP** compliance — fully passive/agentless (never touches a device).
 
 - **Stack:** Python 3.12, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
   PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
@@ -90,7 +92,7 @@ clearing. Command-line rules match `CommandLine` OR `message` so they also fire 
 non-Sysmon sources that fill `message`. The pack also includes an **OT / ICS**
 group (7 per-event + 1 correlation) tagged with **ATT&CK for ICS** (`T0NNN`)
 matching the Zeek-ICSNPP enrichment (`action` / `log_type` / `ot.*`) — see the OT
-section below. Shipped total: **37 detection + 4 correlation rules**.
+section below. Shipped total: **38 detection + 4 correlation rules**.
 
 **OT / ICS monitoring** (`app/parsers/zeek_ics.py`). LogOcean is passive/agentless
 for OT — it never touches a device, only ingests sensor telemetry. **Zeek + ICSNPP**
@@ -112,6 +114,26 @@ and the Navigator export (`build_layer(..., domain="ics-attack")`, served at
 parser (so `PARSERS` is still 27). Serial Modbus and L2 GOOSE/SV need a sensor that
 sees them; OT response stays passive (alert / IT-boundary enforcement, never a
 device command).
+
+**OT analysis (`/ot`, Phase D).** `app/ot.py` is pure (asset/conversation
+classification + activity roll-up); `db.ot_assets` / `db.ot_conversations` /
+`db.ot_activity_summary` do the SQL aggregation over `events` (filtered to
+`OT_PROTOCOLS`, the single source of truth `db` imports from `ot`; `raw->'ot'->>...`
+reads the enrichment). The `/ot` page shows a **controller asset inventory** (dst_ip =
+the PLC/RTU server side), **master→controller conversations** classed by
+`ot.classify_conversation` (`new-writer` = a source first seen in 24h already issuing
+write/control — the key OT signal; `new` / `known` otherwise), and read/write/control
+volume per protocol. All read-only over events — no schema change, no ingest-path
+touch. The **IT→OT conduit-violation** rule (`rules/ot_it_to_ot_write.yml`) is a
+Sigma-subset rule using `src_ip|cidr` / `dst_ip|cidr` selections to flag a
+write/control command crossing the IT→OT boundary (Purdue / IEC 62443 zone model);
+the CIDRs are operator-tuned placeholders (sample lab range 10.60.0.0/16).
+
+**OT compliance (Phase E).** `app/compliance.py` adds **IEC 62443-3-3** (System
+Requirements) and **NERC CIP** frameworks, with `MAP` entries for the ICS techniques
+(T0855/T0836/T0843/T0889/T0858/T0813/T0816/T0814/T0878/T0846) → IEC SRs + CIP
+standards (+ NIST 800-53). The `/compliance` view iterates `FRAMEWORKS` generically,
+so enabling the OT rule pack lights up the mapped OT controls automatically.
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:
@@ -236,6 +258,7 @@ app/
   models.py      NormalizedEvent dataclass (the common schema)
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   compliance.py  MITRE technique -> framework control mapping + coverage report
+                 (NIST/CIS/PCI/HIPAA + IEC 62443-3-3 / NERC CIP for ICS techniques)
   util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key;
                  iter_json_records (+ _exceeds_json_depth deep-nesting guard);
                  gunzip_capped (bounded gzip decompression for ingest)
@@ -262,6 +285,7 @@ app/
   risk.py        UEBA entity/association extraction + risk scoring (pure)
   killchain.py   kill-chain reconstruction: chain-building + story summary (pure)
   killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
+  ot.py          OT/ICS analytics: OT_PROTOCOLS + asset/conversation classification (pure)
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
   copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
@@ -274,7 +298,7 @@ app/
                  azure_activity, m365_audit, entra_signin, okta_system_log,
                  github_audit, gitlab_audit  (27 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
-                 killchain, risk, entity, responses, compliance, report, workbench,
+                 killchain, risk, entity, ot, responses, compliance, report, workbench,
                  admin, login, _macros
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
@@ -576,7 +600,8 @@ Unit:
 - `test_ot.py` — OT/ICS: `zeek_ics.enrich` protocol mapping (Modbus/DNP3/S7comm/CIP,
   string + numeric func), the Zeek parsers lifting `action`/`ot.*` from the ICS
   samples, the OT rule pack firing on malicious ops (and staying quiet on reads),
-  ICS technique tags, and the OT-scan correlation rule.
+  ICS technique tags, the OT-scan correlation rule, and the Phase-D OT analytics
+  (`is_ot_protocol`, conversation classification/ordering, activity roll-up).
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 
