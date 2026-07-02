@@ -43,6 +43,15 @@ def test_tactic_title():
     assert kc.tactic_title("credential_access") == "Credential Access"
 
 
+def test_ics_tactics_are_ranked_in_the_merged_kill_chain():
+    # ATT&CK for ICS tactics normalise + rank as end-stage OT progression
+    assert kc.normalize_tactic("attack.impair_process_control") == "impair-process-control"
+    assert kc.normalize_tactic("Inhibit Response Function") == "inhibit-response-function"
+    assert kc.tactic_rank("lateral-movement") < kc.tactic_rank("inhibit-response-function")
+    assert kc.tactic_rank("inhibit-response-function") < kc.tactic_rank("impact")
+    assert kc.tactic_rank("impair-process-control") < kc.tactic_rank("impact")
+
+
 def test_alert_entities():
     a = _a(1, 0, ["execution"], src_ip="10.0.0.1", user_name="bob", host_name="H1")
     assert kc.alert_entities(a) == {("ip", "10.0.0.1"), ("user", "bob"), ("host", "H1")}

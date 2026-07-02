@@ -18,3 +18,16 @@ def test_layer_empty_has_safe_gradient():
     layer = build_layer({})
     assert layer["techniques"] == []
     assert layer["gradient"]["maxValue"] == 1          # never a zero-width range
+
+
+def test_enterprise_domain_excludes_ics_techniques():
+    layer = build_layer({"T1110": 5, "T0858": 3})       # mixed IT + ICS
+    assert layer["domain"] == "enterprise-attack"
+    assert [t["techniqueID"] for t in layer["techniques"]] == ["T1110"]
+
+
+def test_ics_domain_selects_only_ics_techniques():
+    layer = build_layer({"T1110": 5, "T0858": 3, "T0889": 1}, domain="ics-attack")
+    assert layer["domain"] == "ics-attack"
+    assert [t["techniqueID"] for t in layer["techniques"]] == ["T0858", "T0889"]
+    assert "ICS" in layer["name"]
