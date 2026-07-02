@@ -245,7 +245,8 @@ app/
                  azure_activity, m365_audit, entra_signin, okta_system_log,
                  github_audit, gitlab_audit  (27 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
-                 risk, entity, responses, compliance, report, admin, login, _macros
+                 killchain, risk, entity, responses, compliance, report, workbench,
+                 admin, login, _macros
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
@@ -260,7 +261,7 @@ tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, te
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
                  test_collectors, test_auth, test_audit, test_compliance, test_threatintel,
                  test_triage, test_severity, test_navigator, test_risk, test_compression,
-                 test_killchain, test_workbench
+                 test_killchain, test_workbench, test_copilot, test_hardening
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker
@@ -530,6 +531,9 @@ Unit:
 - `test_copilot.py` — copilot prompt builders (alert/case/Sigma), Sigma extraction
   (fenced / bare / prose→None) + validation, and the explain/summarize/generate
   operations against a fake client (no SDK/key/network); config-gating checks.
+- `test_hardening.py` — ingest input hardening: the JSON deep-nesting depth guard,
+  gzip decompression-bomb cap, oversize-payload rejection, and numeric-overflow
+  coercion on hostile log fields.
 
 Integration (`tests/conftest.py` provides the `pg` + `clean_db` fixtures):
 

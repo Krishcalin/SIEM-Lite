@@ -547,7 +547,7 @@ Log-Parser-Storage/
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
                             #   threatintel,triage,severity,navigator,risk,killchain,
-                            #   workbench,copilot,compression,audit,compliance}
+                            #   workbench,copilot,hardening,compression,audit,compliance}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
