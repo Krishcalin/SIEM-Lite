@@ -326,9 +326,12 @@ def reports(request: Request):
 @app.get("/reports/attack-navigator.json")
 def reports_navigator(request: Request):
     days = _report_days(request)
-    layer = navigator.build_layer(db.alert_technique_counts(days), days=days)
+    domain = "ics-attack" if request.query_params.get("domain", "").lower().startswith("ics") \
+        else "enterprise-attack"
+    layer = navigator.build_layer(db.alert_technique_counts(days), days=days, domain=domain)
+    tag = "ics_" if domain == "ics-attack" else ""
     return JSONResponse(layer, headers={
-        "Content-Disposition": f"attachment; filename=logocean_attack_{days}d.json"})
+        "Content-Disposition": f"attachment; filename=logocean_{tag}attack_{days}d.json"})
 
 
 @app.get("/alerts.csv")

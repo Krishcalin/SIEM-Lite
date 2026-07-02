@@ -24,14 +24,19 @@ from typing import Any, Iterable, Optional
 
 from .severity import max_severity
 
-# ATT&CK Enterprise tactics in kill-chain order. Stored alert tactics use the
-# space/underscore lowercase form (e.g. "credential access"); we normalise to
-# the hyphenated key below.
+# ATT&CK tactics in kill-chain order — a merged Enterprise + ICS ordering, since
+# a real OT intrusion crosses the IT/OT boundary (IT foothold -> lateral move ->
+# OT control-plane action -> process impact). The ICS-only tactics (`evasion`,
+# `inhibit-response-function`, `impair-process-control`) are slotted into their
+# kill-chain positions alongside the Enterprise set. Stored alert tactics use the
+# space/underscore lowercase form (e.g. "impair process control" /
+# "impair_process_control"); we normalise to the hyphenated key below.
 KILL_CHAIN_TACTICS: tuple[str, ...] = (
     "reconnaissance", "resource-development", "initial-access", "execution",
-    "persistence", "privilege-escalation", "defense-evasion",
+    "persistence", "privilege-escalation", "defense-evasion", "evasion",
     "credential-access", "discovery", "lateral-movement", "collection",
-    "command-and-control", "exfiltration", "impact",
+    "command-and-control", "exfiltration", "inhibit-response-function",
+    "impair-process-control", "impact",
 )
 _TACTIC_RANK = {t: i for i, t in enumerate(KILL_CHAIN_TACTICS)}
 _UNKNOWN_RANK = len(KILL_CHAIN_TACTICS)

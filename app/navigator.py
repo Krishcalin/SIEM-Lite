@@ -9,15 +9,33 @@ from __future__ import annotations
 from typing import Optional
 
 
+def is_ics_technique(technique_id: str) -> bool:
+    """ATT&CK for ICS technique IDs are ``T0NNN`` (Enterprise are T1/T2/…)."""
+    return str(technique_id or "").upper().startswith("T0")
+
+
+def _in_domain(technique_id: str, domain: str) -> bool:
+    return is_ics_technique(technique_id) if domain == "ics-attack" \
+        else not is_ics_technique(technique_id)
+
+
 def build_layer(technique_counts: dict, days: int = 30,
-                attack_version: str = "14", name: Optional[str] = None) -> dict:
-    """A Navigator (layer format 4.5) document scoring each technique by alert volume."""
-    techniques = sorted((t, int(n)) for t, n in (technique_counts or {}).items() if t)
+                attack_version: str = "14", name: Optional[str] = None,
+                domain: str = "enterprise-attack") -> dict:
+    """A Navigator (layer format 4.5) document scoring each technique by alert volume.
+
+    ``domain`` selects the ATT&CK matrix: ``enterprise-attack`` (default) or
+    ``ics-attack``. Techniques are filtered to the chosen domain by ID prefix
+    (ICS = ``T0NNN``), so one call yields a clean single-domain layer.
+    """
+    label = "ICS " if domain == "ics-attack" else ""
+    techniques = sorted((t, int(n)) for t, n in (technique_counts or {}).items()
+                        if t and _in_domain(t, domain))
     max_score = max((n for _, n in techniques), default=0)
     return {
-        "name": name or f"LogOcean alerts (last {days}d)",
+        "name": name or f"LogOcean {label}alerts (last {days}d)".replace("  ", " "),
         "versions": {"attack": attack_version, "navigator": "4.9.0", "layer": "4.5"},
-        "domain": "enterprise-attack",
+        "domain": domain,
         "description": "Alert volume per MITRE ATT&CK technique, from LogOcean detections.",
         "techniques": [
             {"techniqueID": t, "score": n, "comment": f"{n} alert(s)",
