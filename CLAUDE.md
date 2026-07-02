@@ -78,8 +78,8 @@ Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
 `startswith` / `endswith` / `re` (`i`/`m`/`s` flags) / `cased`, `|all`, `cidr`,
 numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
 `base64offset` / `windash` — so most community rules load unmodified (gated only
-by whether our parsers populate the referenced field). The shipped pack is 30
-detection + 3 correlation rules across Windows, network, AWS, Entra, Okta, M365,
+by whether our parsers populate the referenced field). The shipped IT/enterprise
+pack is 30 detection + 3 correlation rules across Windows, network, AWS, Entra, Okta, M365,
 GitHub, **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
 disabled / object-removed per-event rules gated on `vendor|contains: tripwire` and
 matching the changed path via `message` + LEEF `attributes.resource`, plus a
@@ -90,7 +90,7 @@ endpoint** pack that matches the fields `sysmon.py` lifts onto `raw`
 WMI persistence, LSASS dump, shadow-copy deletion, schtasks, command-line log
 clearing. Command-line rules match `CommandLine` OR `message` so they also fire on
 non-Sysmon sources that fill `message`. The pack also includes an **OT / ICS**
-group (7 per-event + 1 correlation) tagged with **ATT&CK for ICS** (`T0NNN`)
+group (8 per-event + 1 correlation) tagged with **ATT&CK for ICS** (`T0NNN`)
 matching the Zeek-ICSNPP enrichment (`action` / `log_type` / `ot.*`) — see the OT
 section below. Shipped total: **38 detection + 4 correlation rules**.
 

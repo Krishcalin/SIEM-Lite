@@ -418,6 +418,7 @@ with **ATT&CK for ICS** techniques:
 | DNP3 device restart (cold / warm) | T0816 |
 | DNP3 disable unsolicited reporting | T0878 |
 | CIP set-attribute (write) to a device | T0855 / T0836 |
+| IT→OT write/control across a zone boundary (Purdue / IEC 62443) | T0855 / T0886 |
 | OT-protocol enumeration from one source (correlation) | T0846 |
 
 ATT&CK for ICS is wired through the rest of the platform too: **kill-chain
