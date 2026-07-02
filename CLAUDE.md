@@ -189,7 +189,7 @@ the verdict — never raising on bad input. All three are pure functions over ru
 ```
 app/
   main.py        FastAPI routes + UI (dashboard, upload, search, event, alerts, cases,
-                 risk, reports, compliance, admin) + lifespan
+                 killchain, risk, reports, workbench, compliance, admin) + lifespan
   api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
   config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
@@ -245,7 +245,8 @@ samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
                  test_collectors, test_auth, test_audit, test_compliance, test_threatintel,
-                 test_triage, test_severity, test_navigator, test_risk, test_compression
+                 test_triage, test_severity, test_navigator, test_risk, test_compression,
+                 test_killchain, test_workbench
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker

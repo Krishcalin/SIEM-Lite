@@ -29,7 +29,10 @@ retains them in PostgreSQL for **≥ 3 years**.
 > pull vendor/cloud/identity logs (Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
 > Microsoft 365) while other tools push findings to the API. **UEBA entity-risk**
 > analytics (`/risk`) baseline every user/host/IP and flag new-entity / new-association
-> anomalies beyond the rules. **Dashboards + `/reports`**
+> anomalies beyond the rules; **kill-chain reconstruction** (`/killchain`) stitches
+> related alerts across ATT&CK tactics into attack stories, and a **detection
+> workbench** (`/workbench`) maps coverage, flags noisy/dead rules, and tests Sigma
+> rules live. **Dashboards + `/reports`**
 > visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
 > audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA) round it out — all
 > tested unit + integration against real PostgreSQL in CI.
@@ -518,7 +521,8 @@ Log-Parser-Storage/
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,triage,severity,navigator,risk,...}
+                            #   threatintel,triage,severity,navigator,risk,killchain,
+                            #   workbench,compression,audit,compliance}
                             # integration (real Postgres): conftest.py +
                             #   test_integration_{db,api}.py
 ```
@@ -550,10 +554,12 @@ correlation-rule loading/dedup, notification routing + dispatcher, response
 playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
 Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
 matching + alerting), suppression/allowlist matching, case severity roll-up, the
-ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring, auth
-(password hashing, role ranking, the RBAC dependency), the audit helper, and the
-compliance coverage report — all without a database (the queue, pipeline, and
-worker tests mock the writers).
+ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring,
+**kill-chain reconstruction** (chain-building, tactic ordering, story summary),
+the **detection workbench** (rule tester, ATT&CK coverage map, rule-health
+bucketing), auth (password hashing, role ranking, the RBAC dependency), the audit
+helper, and the compliance coverage report — all without a database (the queue,
+pipeline, and worker tests mock the writers).
 
 The **integration** tests run against an actual PostgreSQL 16 and verify what
 mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
@@ -562,7 +568,8 @@ correlation SQL, the pipeline write path raising alert rows (detection and
 threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
 assignment/notes, **case grouping** (severity roll-up, related-alert discovery,
 status transitions), the alert analytics aggregations, **UEBA** entity baselines /
-new-entity & new-association anomalies / risk ranking, the IOC/suppression/auth/
+new-entity & new-association anomalies / risk ranking, **kill-chain** story→case
+creation, the **workbench** windowed rule-firing stats, the IOC/suppression/auth/
 collector/registry round-trips, and the HTTP stack end-to-end (TestClient →
 API-key auth → ingest → detect, plus the dashboard / report / Navigator / CSV
 endpoints). CI runs the unit tier on Python 3.11–3.13 and the integration tier
