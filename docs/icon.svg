@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256" role="img" aria-label="LogOcean logo mark — a shield over ocean waves">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#0b1220"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#38bdf8"/>
+      <stop offset="0.55" stop-color="#2dd4bf"/>
+      <stop offset="1" stop-color="#22c55e"/>
+    </linearGradient>
+    <linearGradient id="shield" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#15243f"/>
+      <stop offset="1" stop-color="#0d1830"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.42" r="0.55">
+      <stop offset="0" stop-color="#2dd4bf" stop-opacity="0.30"/>
+      <stop offset="1" stop-color="#2dd4bf" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="tile"><rect x="0" y="0" width="256" height="256" rx="56"/></clipPath>
+    <clipPath id="sh"><path d="M128 34 L196 60 L196 132 C196 182 166 206 128 220 C90 206 60 182 60 132 L60 60 Z"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#tile)">
+    <rect x="0" y="0" width="256" height="256" fill="url(#bg)"/>
+    <rect x="0" y="0" width="256" height="256" fill="url(#glow)"/>
+    <!-- faint pipeline ticks in the backdrop -->
+    <g stroke="#1b2b48" stroke-width="2" opacity="0.5">
+      <line x1="0" y1="70" x2="256" y2="70"/><line x1="0" y1="190" x2="256" y2="190"/>
+    </g>
+  </g>
+
+  <!-- shield -->
+  <path d="M128 34 L196 60 L196 132 C196 182 166 206 128 220 C90 206 60 182 60 132 L60 60 Z"
+        fill="url(#shield)" stroke="url(#accent)" stroke-width="5"/>
+
+  <!-- ocean waves inside the shield (log streams merging) -->
+  <g clip-path="url(#sh)">
+    <!-- layered water fill in the lower shield -->
+    <path d="M60 150 Q92 134 124 150 T196 150 V220 H60 Z" fill="#0ea5b7" opacity="0.20"/>
+    <path d="M60 166 Q92 150 124 166 T196 166 V220 H60 Z" fill="#16a34a" opacity="0.22"/>
+    <g fill="none" stroke-width="6" stroke-linecap="round">
+      <path d="M84 104 Q106 90 128 104 T172 104" stroke="#38bdf8"/>
+      <path d="M84 126 Q106 112 128 126 T172 126" stroke="#2dd4bf"/>
+      <path d="M84 148 Q106 134 128 148 T172 148" stroke="#22c55e"/>
+    </g>
+  </g>
+</svg>

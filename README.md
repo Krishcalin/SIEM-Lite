@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/banner.svg" alt="LogOcean" width="800"/>
+  <img src="docs/banner.svg" alt="LogOcean — agentless SIEM: ingest, parse, normalize, store, detect, alert" width="820"/>
 </p>
 
 <h1 align="center">LogOcean</h1>
