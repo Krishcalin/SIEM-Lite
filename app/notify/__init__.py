@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Notifications (Phase 3): fan newly-raised alerts out to channels."""
 from .dispatcher import (NotificationDispatcher, build_dispatcher, get_dispatcher,
                          set_dispatcher, submit_alerts)

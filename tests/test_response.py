@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for response playbooks: loading, matching, execution (no network)."""
 from pathlib import Path
 from types import SimpleNamespace

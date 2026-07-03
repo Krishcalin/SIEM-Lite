@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the audit Medium-severity hardening fixes (no database)."""
 import datetime as dt
 

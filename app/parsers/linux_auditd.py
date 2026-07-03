@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Linux auditd parser (``/var/log/audit/audit.log`` and forwarded audit records).
 
 The Linux Audit daemon writes one record per line:

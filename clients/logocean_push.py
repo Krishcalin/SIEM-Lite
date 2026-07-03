@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Tiny client for pushing logs / findings into LogOcean's ingest API.
 
 Copy this into another tool (e.g. an RHEL/Windows/SBOM/AWS audit scanner) to feed

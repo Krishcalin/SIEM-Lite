@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """CrowdStrike Falcon — JSON parser.
 
 Handles the shapes you get from manual exports and the streaming/FDR feeds:

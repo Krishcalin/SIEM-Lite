@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """CrowdStrike Falcon — CSV export parser (detections / incidents / events).
 
 Falcon console CSV exports include a header row whose columns vary by export

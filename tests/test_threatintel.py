@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for threat-intel: classification, feed parsing, matching, alerting.
 
 All DB-free — the IOC index and feed parsers are pure; only feed *loading*

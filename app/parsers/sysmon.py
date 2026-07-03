@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Microsoft Sysmon (System Monitor) parser — the key Windows endpoint telemetry.
 
 Sysmon logs process, network, file, registry, image-load, WMI and DNS activity to

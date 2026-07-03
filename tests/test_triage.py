@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for suppression / allowlist matching (pure, no DB)."""
 from app.triage.suppression import Suppression, SuppressionIndex, matches
 

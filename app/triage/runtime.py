@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Suppression runtime: hold the in-memory index and rebuild it from the DB.
 
 The ingest pipeline calls ``get_index()`` per write; the lifespan calls

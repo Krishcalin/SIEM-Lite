@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Tests for the detection-engineering workbench.
 
 Unit tests exercise the pure rule tester, coverage map, and rule-health buckets;

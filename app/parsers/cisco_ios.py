@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Cisco IOS / IOS-XE / NX-OS syslog parser.
 
 IOS-family devices log one event per line with a mnemonic tag::

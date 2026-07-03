@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Best-effort detection of a file's vendor+format from its name and content.
 
 Order matters: specific signatures (CEF, vendor JSON, PAN syslog, Fortinet KV)

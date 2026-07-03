@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Syslog receiver: UDP, TCP, and TCP-over-TLS (Phase 1 live ingestion).
 
 Each received message is parsed with the configured format (or auto-detected,

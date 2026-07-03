@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Detection-engine runtime: load rules, sync the DB registry, hold the singleton.
 
 The ingest pipeline calls `get_engine()` per event; the app lifespan calls

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Notification channels: webhook (Slack/Teams/generic) and email (SMTP).
 
 Each channel exposes ``send(alert: dict)``. Payload/summary builders are pure so

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Palo Alto NGFW — CSV export parser (Monitor > Logs > Export to CSV).
 
 The GUI export includes a header row of human-readable column names, so we map

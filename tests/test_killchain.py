@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Tests for kill-chain / attack-story reconstruction.
 
 Unit tests exercise the pure reconstructor in app/killchain.py (DB-free); the

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Microsoft Entra ID (Azure AD) sign-in log parser.
 
 Handles the Microsoft Graph ``auditLogs/signIns`` record shape (camelCase) and

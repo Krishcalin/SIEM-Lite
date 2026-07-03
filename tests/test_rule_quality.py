@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Rule-linter: structural quality gates on every shipped detection rule.
 
 Runs in CI (plain pytest) so a malformed or untagged rule fails the build. Parses

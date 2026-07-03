@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for collectors: URL building, cursor advancement, run glue (mocked)."""
 import app.collectors.runner as runner
 from app.collectors.base import FetchResult, json_records, max_time_iso

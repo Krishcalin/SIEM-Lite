@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Compliance mapping (Phase 5.5).
 
 Maps the MITRE ATT&CK techniques already carried on detection rules and alerts to

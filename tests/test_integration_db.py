@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Real-PostgreSQL integration tests for the data layer.
 
 These exercise what the DB-free unit tests cannot: month partitioning and its

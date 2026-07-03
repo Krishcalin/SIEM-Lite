@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Microsoft Azure — Activity Log parser.
 
 Azure Monitor exports the subscription Activity Log as JSON, usually wrapped in

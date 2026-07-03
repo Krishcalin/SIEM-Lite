@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the UEBA / entity-risk core (pure)."""
 from app.models import NormalizedEvent
 from app.risk import (SEVERITY_WEIGHT, decay, decayed_score, event_entities,

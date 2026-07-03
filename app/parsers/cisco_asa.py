@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Cisco ASA / Firepower Threat Defense (FTD) syslog parser.
 
 ASA/FTD emit one event per line keyed by a message ID::

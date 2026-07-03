@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Import community **SigmaHQ** rules into LogOcean's native detection engine.
 
 The thousands of open, ATT&CK-tagged Sigma rules are the fastest way to grow

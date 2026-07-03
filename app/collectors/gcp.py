@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Google Cloud Platform — Cloud Audit Logs collector.
 
 Unlike the token collectors in ``sources.py`` (Bearer/PRIVATE-TOKEN) and the AWS

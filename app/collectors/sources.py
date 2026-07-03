@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Concrete token-based REST collectors (Okta, GitHub, GitLab).
 
 Each uses a plain Bearer/token API over stdlib urllib (no SDK), pulls records

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Scheduled correlation rules (Phase 2.5): multi-event / threshold detections.
 
 A correlation rule aggregates *stored* events over a sliding time window and

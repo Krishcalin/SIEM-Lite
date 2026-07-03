@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Runtime configuration, read from environment variables (see .env.example)."""
 from __future__ import annotations
 

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Derive the dedup hash and full-text blob from a NormalizedEvent."""
 from __future__ import annotations
 

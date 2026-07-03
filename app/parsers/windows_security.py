@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Windows Security Event Log parser (CSV or JSON export).
 
 Accepts the two shapes analysts produce without extra tooling:

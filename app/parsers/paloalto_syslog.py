@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Palo Alto NGFW — syslog parser (comma-separated payload, no header row).
 
 PAN forwards logs as syslog whose payload is positional CSV. After splitting a

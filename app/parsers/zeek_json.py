@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Zeek (Bro) JSON log parser — conn / dns / http and other logs.
 
 When Zeek is configured with ``LogAscii::use_json=T`` it writes one JSON object

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Prompt construction and response parsing for the AI SOC copilot (pure).
 
 Everything here is dependency-free (except pyyaml, already a project dep) and

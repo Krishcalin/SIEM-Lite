@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Threat-intel feed loading + parsing.
 
 A feed is a local file path or an ``http(s)`` URL. The parser accepts the common

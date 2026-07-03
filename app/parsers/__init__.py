@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Log parsers. Each module exposes `parse(content: str) -> Iterator[NormalizedEvent]`."""
 from __future__ import annotations
 

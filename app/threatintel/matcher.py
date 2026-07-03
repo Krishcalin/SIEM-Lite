@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """IOC classification + the in-memory match index (pure, unit-testable).
 
 An ``IocIndex`` holds indicators bucketed by type for O(1) lookups (plus a list

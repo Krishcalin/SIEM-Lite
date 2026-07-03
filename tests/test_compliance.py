@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the compliance mapping + coverage report (no DB)."""
 from app.compliance import (FRAMEWORKS, build_report, controls_for_technique)
 

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Detection-engineering workbench (pure, unit-testable).
 
 Three analyst tools over the detection rule pack, all dependency-free:

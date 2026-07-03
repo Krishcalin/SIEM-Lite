@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Agentless response playbooks.
 
 A playbook matches certain alerts (by rule id, minimum severity, and/or MITRE

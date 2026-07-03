@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """UEBA / entity-risk core (pure, unit-testable).
 
 Two responsibilities, both dependency-free:

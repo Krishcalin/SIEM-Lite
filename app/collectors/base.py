@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Collector base + shared helpers.
 
 A collector pulls new records from a vendor API since a stored cursor and returns

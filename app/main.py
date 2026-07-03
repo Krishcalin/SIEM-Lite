@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """LogOcean FastAPI application: dashboard, upload, search, event detail, admin."""
 from __future__ import annotations
 

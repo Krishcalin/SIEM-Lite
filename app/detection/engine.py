@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Sigma-compatible detection engine — a native subset evaluator.
 
 Loads YAML detection rules (a practical subset of the Sigma format) and matches

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Threat-intelligence enrichment: match ingested events against IOC feeds.
 
 Indicators (IPs, CIDRs, domains, file hashes, URLs) are loaded from local files

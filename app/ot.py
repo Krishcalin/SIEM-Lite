@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """OT / ICS analysis helpers (pure, unit-testable).
 
 Phase D of the OT capability set: turn the OT events LogOcean already stores (the

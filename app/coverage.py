@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Detection-coverage scoreboard (pure, DB-free).
 
 Computes, from the loaded rule registry, how much of **MITRE ATT&CK** (Enterprise

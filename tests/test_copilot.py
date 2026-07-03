@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Tests for the AI SOC copilot.
 
 All DB-free and network-free: the pure prompt/parse helpers are tested directly,

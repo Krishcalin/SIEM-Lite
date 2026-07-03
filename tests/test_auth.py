@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for auth: password hashing, role ranking, the RBAC dependency."""
 from types import SimpleNamespace
 

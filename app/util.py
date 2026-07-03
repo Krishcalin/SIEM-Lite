@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Shared parsing helpers — tolerant timestamp / IP / int coercion."""
 from __future__ import annotations
 

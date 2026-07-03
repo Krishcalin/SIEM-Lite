@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Shared pytest fixtures.
 
 The integration fixtures here connect to a real PostgreSQL so the partitioning,

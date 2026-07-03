@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Integration test for inline detection in write_stream (DB calls mocked)."""
 from pathlib import Path
 

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """OT/ICS tests: Zeek ICSNPP enrichment, the OT rule pack, and OT analytics (no DB)."""
 from pathlib import Path
 

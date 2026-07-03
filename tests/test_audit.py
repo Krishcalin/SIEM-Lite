@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit test for the _audit helper field resolution (db write mocked)."""
 from types import SimpleNamespace
 

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Apache / Nginx access-log parser (Common & Combined Log Format).
 
 Both Apache's CLF/combined and Nginx's default ``combined`` log share one layout:

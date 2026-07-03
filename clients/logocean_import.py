@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Bulk-import a large [.gz] log file into LogOcean via the ingest API.
 
 Streams the file in size-bounded, line-aligned chunks and POSTs each to

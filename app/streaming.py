@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Async ingest queue with backpressure (Phase 1 live ingestion).
 
 Live sources (the syslog receiver, and anything else that pushes continuously)

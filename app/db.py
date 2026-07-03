@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """PostgreSQL access layer: pool, schema/partition management, insert, search,
 stats, batch tracking, and retention purge."""
 from __future__ import annotations

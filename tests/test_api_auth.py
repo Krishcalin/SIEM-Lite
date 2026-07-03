@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the API-key auth helpers (no database required)."""
 from app.util import extract_api_key, hash_api_key
 

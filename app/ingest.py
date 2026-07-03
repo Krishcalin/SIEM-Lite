@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Ingest orchestration: per-batch sha + lifecycle around the shared pipeline.
 
 The detect → parse → normalize → insert core lives in `pipeline`; this module

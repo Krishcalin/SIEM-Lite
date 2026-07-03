@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Suppression / allowlist matching (pure, unit-testable).
 
 A ``Suppression`` is a set of AND conditions over an alert's ``rule_id`` /

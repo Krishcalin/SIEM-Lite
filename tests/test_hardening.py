@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Regression tests for the audit hardening fixes (no database needed)."""
 import io
 import time

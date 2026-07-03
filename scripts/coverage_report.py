@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Print the LogOcean detection-coverage report and (optionally) write ATT&CK
 Navigator layers — the CI-publishable coverage artifact for the detection-coverage
 programme (see docs/DETECTION_COVERAGE_ROADMAP.md).

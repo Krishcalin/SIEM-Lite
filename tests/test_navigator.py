@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the ATT&CK Navigator layer export (pure)."""
 from app.navigator import build_layer
 

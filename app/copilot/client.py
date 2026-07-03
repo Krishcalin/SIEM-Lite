@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Claude client wrapper for the AI SOC copilot.
 
 Thin layer over the official ``anthropic`` SDK. The SDK is imported lazily so the

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Canonical severity ordering (pure helpers).
 
 Used to roll a case's severity up to the highest of its member alerts.

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Alert triage & tuning: suppression/allowlist matching + assignment/notes.
 
 Suppression rules are matched against newly-raised alerts inline in the ingest

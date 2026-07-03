@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Generic syslog parser — RFC 3164 (BSD) and RFC 5424.
 
 A catch-all for plain syslog lines that aren't a more specific vendor format.

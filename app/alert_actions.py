@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Coordinator for actions taken on newly-raised alerts.
 
 `dispatch()` fans alerts out to notifications and response playbooks; `active()`

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Generic CEF (Common Event Format) parser.
 
 CEF is emitted by a wide range of security products (ArcSight SmartConnectors,

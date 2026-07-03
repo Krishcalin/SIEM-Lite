@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for syslog TCP framing + format resolution (no sockets, no DB)."""
 from app.receivers.syslog import iter_tcp_messages, resolve_format
 

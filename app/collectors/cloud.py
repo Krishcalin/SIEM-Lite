@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Cloud & identity collectors that need request signing or OAuth2 (AWS, Entra,
 Microsoft 365).
 

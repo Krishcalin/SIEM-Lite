@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Source-agnostic ingest core.
 
 Upload, the HTTP ingest API, and the syslog receiver all funnel through here so

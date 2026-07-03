@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Import community SigmaHQ rules into LogOcean (Phase 1 of the detection-coverage
 programme; see docs/DETECTION_COVERAGE_ROADMAP.md).
 

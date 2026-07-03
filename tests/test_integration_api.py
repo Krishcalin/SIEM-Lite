@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Real-PostgreSQL integration tests for the HTTP stack.
 
 Drives the FastAPI app through a TestClient against a live database, so routing,

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Zeek (Bro) TSV log parser — conn / dns / http and other ``#fields`` logs.
 
 Classic Zeek logs are tab-separated with a metadata header::

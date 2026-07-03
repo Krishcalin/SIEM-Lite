@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Background notification dispatcher.
 
 Producers (the ingest threadpool workers and the correlation scheduler) call

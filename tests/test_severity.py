@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the canonical severity ordering (pure)."""
 from app.severity import SEVERITY_ORDER, max_severity, severity_rank
 

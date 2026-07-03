@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Generic JSON / NDJSON catch-all parser.
 
 The JSON analog of ``generic_syslog``: a best-effort mapper for JSON logs that

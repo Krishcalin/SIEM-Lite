@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """MITRE ATT&CK Navigator layer export (pure).
 
 Turns per-technique alert counts into a Navigator layer JSON document that can be

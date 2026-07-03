@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Authentication helpers: password hashing (pbkdf2, stdlib), roles, and the
 RBAC dependency. Session storage lives in `db`; route wiring lives in `main`.
 

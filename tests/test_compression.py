@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Tests for gzip ingest support + the bulk-import client's chunker (no DB)."""
 import gzip
 import importlib.util

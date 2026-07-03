@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for correlation rule loading + alert building (no DB needed)."""
 from pathlib import Path
 

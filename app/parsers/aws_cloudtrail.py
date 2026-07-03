@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """AWS CloudTrail parser (management & data events).
 
 CloudTrail delivers JSON as ``{"Records": [ ... ]}``, a single event, or NDJSON.

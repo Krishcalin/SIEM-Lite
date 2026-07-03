@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Unit tests for the SigmaHQ importer (no database)."""
 from pathlib import Path
 

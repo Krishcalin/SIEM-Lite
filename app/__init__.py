@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """LogOcean — parse, index, and store multi-source security logs."""
 
 __version__ = "1.0.0"

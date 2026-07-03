@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """GitHub audit log parser (organization / enterprise).
 
 The GitHub audit-log API and exports return JSON entries (array or NDJSON). Each

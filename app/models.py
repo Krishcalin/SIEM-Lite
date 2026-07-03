@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """The common normalized event every parser emits."""
 from __future__ import annotations
 

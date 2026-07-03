@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Kill-chain / attack-story reconstruction (pure, unit-testable).
 
 Individual alerts describe single steps; an intrusion is a *sequence* of steps

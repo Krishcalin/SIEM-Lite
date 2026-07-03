@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """ICS/OT protocol enrichment for Zeek logs (ICSNPP).
 
 Zeek with the `ICSNPP <https://github.com/cisagov/icsnpp>`_ (Industrial Control

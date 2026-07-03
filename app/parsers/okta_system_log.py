@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Okta System Log parser (identity / SSO events).
 
 The Okta System Log API returns JSON events (array or NDJSON) describing

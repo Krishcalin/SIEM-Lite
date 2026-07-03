@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Agentless collectors (Phase 4): scheduled pull of vendor logs into ingest."""
 from .base import Collector, FetchResult
 from .runner import (CollectorScheduler, build_collectors, get_scheduler,

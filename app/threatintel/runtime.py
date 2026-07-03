@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Threat-intel runtime: hold the IOC index singleton, sync feeds into the DB,
 and rebuild the index. A background scheduler refreshes remote feeds on a timer.
 

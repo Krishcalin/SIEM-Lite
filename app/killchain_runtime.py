@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Kill-chain reconstruction runtime (DB-backed).
 
 Bridges the pure :mod:`app.killchain` reconstructor to the database: pulls the

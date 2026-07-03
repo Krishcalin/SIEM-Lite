@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Generic LEEF (Log Event Extended Format) parser.
 
 LEEF is IBM QRadar's structured log format and the format **Tripwire Log Center**

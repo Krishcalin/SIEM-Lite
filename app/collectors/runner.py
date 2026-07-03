@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Collector orchestration: build configured collectors, run one (pull -> ingest
 -> persist cursor), and a background scheduler that polls the enabled ones.
 

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Fortinet FortiGate parser (key=value syslog).
 
 FortiGate emits one event per line as space-separated ``key=value`` pairs (values

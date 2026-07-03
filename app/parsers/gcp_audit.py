@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Google Cloud Platform — Cloud Audit Logs parser.
 
 Cloud Logging exports each entry as a JSON ``LogEntry`` whose ``protoPayload`` is

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Suricata EVE JSON parser (IDS/IPS).
 
 Suricata's ``eve.json`` is NDJSON (one JSON object per line); manual exports may

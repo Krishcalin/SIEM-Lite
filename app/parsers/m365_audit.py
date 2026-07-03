@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Microsoft 365 Unified Audit Log parser.
 
 Handles the Office 365 Management Activity API record shape (and the

@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Nutanix Prism Central parser — remote-syslog audit, API and Flow logs.
 
 Prism Central forwards its security-relevant modules to a remote syslog server,

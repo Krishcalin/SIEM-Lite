@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """GitLab audit event parser.
 
 GitLab's audit events (API ``/audit_events`` or exports) are JSON objects (array

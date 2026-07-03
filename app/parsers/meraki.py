@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Cisco Meraki syslog parser.
 
 Meraki MX/MR/MS devices emit RFC 5424-style syslog where the message body starts

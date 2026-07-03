@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Parser + detection unit tests (no database required)."""
 from pathlib import Path
 

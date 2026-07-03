@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """HTTP ingest API (Phase 1, live ingestion).
 
 A single authenticated endpoint that accepts a raw log payload (the same text a

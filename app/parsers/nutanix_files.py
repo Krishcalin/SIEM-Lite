@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Nutanix Files / Data Lens parser — file-access audit events.
 
 Nutanix Files (Nutanix Unified Storage) audits SMB/NFS file activity and streams
