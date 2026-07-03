@@ -18,8 +18,8 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import (api, auth, collectors, compliance, db, ingest, killchain_runtime,
-               navigator, notify, ot, streaming, workbench)
+from . import (api, auth, collectors, compliance, coverage, db, ingest,
+               killchain_runtime, navigator, notify, ot, streaming, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -366,6 +366,37 @@ def reports_navigator(request: Request):
     tag = "ics_" if domain == "ics-attack" else ""
     return JSONResponse(layer, headers={
         "Content-Disposition": f"attachment; filename=logocean_{tag}attack_{days}d.json"})
+
+
+def _coverage_rules():
+    """The loaded detection + correlation rules for the coverage scoreboard."""
+    eng = detection_runtime.get_engine()
+    det = list(eng.rules) if eng else []
+    return det, list(detection_runtime.get_correlation_rules())
+
+
+@app.get("/coverage", response_class=HTMLResponse)
+def coverage_page(request: Request):
+    det, corr = _coverage_rules()
+    return templates.TemplateResponse("coverage.html", _ctx(
+        request, report=coverage.coverage_report(det, corr)))
+
+
+@app.get("/coverage.json")
+def coverage_report_json(request: Request):
+    det, corr = _coverage_rules()
+    return JSONResponse(coverage.coverage_report(det, corr))
+
+
+@app.get("/coverage/attack-navigator.json")
+def coverage_navigator(request: Request):
+    det, corr = _coverage_rules()
+    domain = "ics-attack" if request.query_params.get("domain", "").lower().startswith("ics") \
+        else "enterprise-attack"
+    layer = coverage.navigator_layer(det + corr, domain=domain)
+    tag = "ics_" if domain == "ics-attack" else ""
+    return JSONResponse(layer, headers={
+        "Content-Disposition": f"attachment; filename=logocean_{tag}coverage.json"})
 
 
 @app.get("/alerts.csv")

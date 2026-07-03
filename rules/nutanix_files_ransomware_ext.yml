@@ -2,6 +2,8 @@ title: Nutanix Files - Ransomware-Encrypted Extension / Ransom Note Written
 id: lo-nutanix-files-ransomware-ext
 description: A Nutanix Files write / create / rename produced a file whose name matches a known ransomware-encrypted extension or ransom-note pattern. On a shared filesystem this is a strong indicator of an active encryption campaign - correlate with the mass-delete burst and isolate the source client / user immediately.
 level: critical
+fidelity: high
+data_source: [nutanix_files]
 logsource:
   vendor: nutanix
   product: files

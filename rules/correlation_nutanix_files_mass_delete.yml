@@ -1,6 +1,8 @@
 title: Nutanix Files - Mass File Deletion by One User (ransomware / wiper / insider)
 id: lo-corr-nutanix-files-mass-delete
 level: high
+fidelity: high
+data_source: [nutanix_files]
 description: Fifty or more Nutanix Files delete operations by a single user within ten minutes. On a shared filesystem this is consistent with ransomware cleanup, a wiper, or a malicious insider destroying data. Data Lens flags the same behaviour - correlate with the ransomware-extension rule and recover from the latest clean snapshot.
 correlation:
   match:

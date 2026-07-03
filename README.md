@@ -228,6 +228,8 @@ condition grammar.
 title: RDP Connection Allowed
 id: lo-rdp-allowed
 level: medium
+fidelity: medium            # high | medium | hunt — drives the coverage scoreboard
+data_source: [firewall]     # ATT&CK-style data-source key(s)
 detection:
   selection: { dst_port: 3389 }
   permitted: { action: [allow, accept] }
@@ -272,6 +274,16 @@ and a **Nutanix Files / Data Lens** pack (ransomware-encrypted-extension / ranso
 write, share ACL / permission change, plus a mass-file-deletion-per-user correlation
 for ransomware / wiper / insider destruction).
 Detection can be turned off with `DETECTION_ENABLED=false`.
+
+**Coverage scoreboard (`/coverage`).** The detection pack is grown against a measured
+**MITRE ATT&CK** (Enterprise + ICS) and **MITRE ATLAS** (adversarial-AI) coverage map,
+computed from the rules themselves — what LogOcean *can* detect, not what has fired.
+The page rolls coverage up by tactic, **fidelity** (`high` / `medium` / `hunt`) and
+**data source**, renders the ATLAS matrix (a scaffold until AI/LLM telemetry lands), and
+exports MITRE ATT&CK **Navigator** layers scored by rule coverage
+(`/coverage/attack-navigator.json`, `?domain=ics` for the ICS matrix). A CI rule-linter
+enforces per-rule quality (unique ids, valid level/fidelity, an `attack.*`/`atlas.*` tag).
+The programme is tracked in [docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md).
 
 ### Notifications & agentless response
 
@@ -632,6 +644,7 @@ Log-Parser-Storage/
 │   ├── models.py           # NormalizedEvent
 │   ├── auth.py             # password hashing (pbkdf2), roles, RBAC dependency
 │   ├── compliance.py       # MITRE technique → framework control mapping + report
+│   ├── coverage.py         # ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json} (+ zeek_ics OT/ICS enrichment), crowdstrike_{csv,json},
@@ -641,11 +654,13 @@ Log-Parser-Storage/
 │   │                       #   okta_system_log, github_audit, gitlab_audit, nutanix_pc, nutanix_files
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, killchain, risk, entity, ot, responses, compliance,
-│   │                       #   report, workbench, admin, login, _macros (chart partials)
+│   │                       #   report, coverage, workbench, admin, login, _macros (chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML)
 ├── playbooks/              # agentless response playbooks
 ├── clients/                # logocean_push.py (push helper) · logocean_import.py (bulk file import)
+├── scripts/                # coverage_report.py (ATT&CK/ATLAS coverage report + Navigator layers)
+├── docs/                   # DETECTION_COVERAGE_ROADMAP.md (living detection-coverage plan)
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
                             #   pipeline,correlation,notify,response,collectors,auth,

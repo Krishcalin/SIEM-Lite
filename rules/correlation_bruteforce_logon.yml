@@ -1,6 +1,8 @@
 title: Brute Force - Failed Logon Burst
 id: lo-corr-bruteforce-logon
 level: high
+fidelity: medium
+data_source: [authentication]
 description: Five or more failed logons from a single source IP within five minutes — credential brute force or password guessing.
 correlation:
   match:

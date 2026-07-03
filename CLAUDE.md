@@ -298,6 +298,7 @@ app/
   killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
   ot.py          OT/ICS analytics: OT_PROTOCOLS + asset/conversation classification (pure)
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
+  coverage.py    ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard (pure)
   copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + gcp.py (GCP signed-JWT) + runner.py (scheduler)
@@ -309,8 +310,8 @@ app/
                  azure_activity, m365_audit, entra_signin, okta_system_log,
                  github_audit, gitlab_audit, nutanix_pc, nutanix_files  (29 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
-                 killchain, risk, entity, ot, responses, compliance, report, workbench,
-                 admin, login, _macros
+                 killchain, risk, entity, ot, responses, compliance, report, coverage,
+                 workbench, admin, login, _macros
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
@@ -564,6 +565,22 @@ field modifiers (`|contains`, `|cidr`, `|gte`, `|base64offset|contains`,
 Rules are loaded on startup and synced into `detection_rules`; enable/disable from
 the Admin page (applies live). Match logic is unit-tested in `tests/test_detection.py`
 (per-event) and `tests/test_correlation.py` (correlation) — no DB needed.
+
+**Rule metadata + coverage (Phase 0 of the detection-coverage programme,
+`docs/DETECTION_COVERAGE_ROADMAP.md`).** Rules carry optional metadata parsed by
+`engine.rule_from_dict` / `correlation.load_correlation_rules`: `fidelity`
+(`high`/`medium`/`hunt`, default `medium`), `data_source` (list or comma-string of
+ATT&CK-style keys), `references`, and **ATLAS** tags `atlas.aml.tNNNN` (→ a rule's
+`atlas_techniques`, alongside the `attack.tNNNN` → `techniques`). `app/coverage.py`
+(pure) computes the scoreboard: per-technique/tactic/fidelity/data-source ATT&CK
+coverage (enterprise + ICS split) + the curated `ATLAS_MATRIX` (0% until AI/LLM
+telemetry lands), and ATT&CK **Navigator** layers scored by *rule coverage* (via
+`navigator.build_layer(..., comment_suffix="rule(s)")`). Surfaced at **`/coverage`**
+(+ `/coverage.json`, `/coverage/attack-navigator.json?domain=enterprise|ics`) and the
+`scripts/coverage_report.py` CLI. **`tests/test_rule_quality.py` is the CI rule-linter**
+— unique ids, required title/description, valid level/fidelity, ≥1 `attack.*`/`atlas.*`
+tag; every new rule must pass it. When adding a rule, set `fidelity` + `data_source` so
+the scoreboard stays accurate.
 
 ## Adding a response playbook
 

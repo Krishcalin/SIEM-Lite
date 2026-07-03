@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Detection coverage — LogOcean{% endblock %}
+{% block body %}
+<h1>Detection coverage</h1>
+<p class="muted">How much of MITRE ATT&amp;CK (Enterprise + ICS) and MITRE ATLAS the loaded
+   rule pack can practically detect. Scored from the rules themselves (what we <em>can</em>
+   catch), not from alert volume. See the
+   <a href="https://github.com/Krishcalin/SIEM-Lite/blob/main/docs/DETECTION_COVERAGE_ROADMAP.md">coverage roadmap</a>.</p>
+
+<!-- ── ATT&CK ─────────────────────────────────────────────────────────────── -->
+<h2>MITRE ATT&amp;CK</h2>
+<div class="cards">
+  <div class="card"><div class="num">{{ report.attack.enterprise_covered }}</div>
+    <div class="lbl">Enterprise techniques (~{{ report.attack.enterprise_pct }}%)</div></div>
+  <div class="card"><div class="num">{{ report.attack.ics_covered }}</div>
+    <div class="lbl">ICS techniques (~{{ report.attack.ics_pct }}%)</div></div>
+  <div class="card"><div class="num">{{ report.rules.total }}</div>
+    <div class="lbl">rules ({{ report.rules.detection }} event + {{ report.rules.correlation }} corr)</div></div>
+  <div class="card"><div class="num">{{ report.attack.untagged_rules }}</div>
+    <div class="lbl">untagged rules</div></div>
+</div>
+<p class="muted">Fidelity of covered techniques:
+  <span class="badge critical">{{ report.attack.fidelity.high }} high</span>
+  <span class="badge medium">{{ report.attack.fidelity.medium }} medium</span>
+  <span class="badge low">{{ report.attack.fidelity.hunt }} hunt</span>
+  &nbsp;·&nbsp;
+  <a href="/coverage/attack-navigator.json">Navigator layer (Enterprise)</a> ·
+  <a href="/coverage/attack-navigator.json?domain=ics">ICS</a> ·
+  <a href="/coverage.json">JSON</a></p>
+
+<table class="results">
+  <tr><th>Tactic</th><th class="r">Rules</th><th>Covered techniques</th><th>Gaps (disabled-only)</th></tr>
+  {% for t in report.attack.tactics %}
+  <tr>
+    <td><strong>{{ t.title }}</strong></td>
+    <td class="r">{{ t.rules }}</td>
+    <td>{% for tid in t.enabled_techniques %}<span class="badge open">{{ tid }}</span> {% endfor %}
+        {% if not t.enabled_techniques %}<span class="muted">—</span>{% endif %}</td>
+    <td>{% for tid in t.gaps %}<span class="badge high">{{ tid }}</span> {% endfor %}
+        {% if not t.gaps %}<span class="muted">—</span>{% endif %}</td>
+  </tr>
+  {% else %}<tr><td colspan="4" class="muted">No rules loaded.</td></tr>{% endfor %}
+</table>
+
+{% if report.attack.data_sources %}
+<h3>Coverage by data source</h3>
+<p>{% for ds, n in report.attack.data_sources.items() %}<span class="badge open">{{ ds }}: {{ n }}</span> {% endfor %}</p>
+{% endif %}
+
+<!-- ── ATLAS ──────────────────────────────────────────────────────────────── -->
+<h2>MITRE ATLAS <span class="muted">— adversarial AI</span></h2>
+<div class="cards">
+  <div class="card"><div class="num">{{ report.atlas.covered }}/{{ report.atlas.total }}</div>
+    <div class="lbl">ATLAS techniques ({{ report.atlas.coverage_pct }}%)</div></div>
+</div>
+<p class="muted">ATLAS needs AI/LLM telemetry we don't yet ingest — this matrix is the scaffold for
+  the Phase-7 track (LLM / AI-gateway parser + adversarial-AI rules). It stays at 0% until then.</p>
+<table class="results">
+  <tr><th>Tactic</th><th>Techniques</th></tr>
+  {% for t in report.atlas.tactics %}
+  <tr>
+    <td><strong>{{ t.title }}</strong></td>
+    <td>{% for tech in t.techniques %}<span class="badge {{ 'open' if tech.covered else 'muted' }}"
+          title="{{ tech.name }}">{{ tech.id }}</span> {% endfor %}</td>
+  </tr>
+  {% endfor %}
+</table>
+{% endblock %}

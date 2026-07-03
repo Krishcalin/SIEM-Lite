@@ -2,6 +2,8 @@ title: Nutanix Files - Share Permission / ACL Change
 id: lo-nutanix-files-permission-change
 description: A SECURITY (ACL / permission) change was audited on a Nutanix Files share. Unexpected permission changes can indicate an attacker widening access, breaking inheritance to conceal a backdoor path, or an insider granting themselves rights to sensitive data. Review against the change ticket and the acting user.
 level: medium
+fidelity: medium
+data_source: [nutanix_files]
 logsource:
   vendor: nutanix
   product: files

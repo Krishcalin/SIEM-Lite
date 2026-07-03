@@ -1,6 +1,8 @@
 title: Nutanix Flow - Microsegmentation Drop Burst from One Source
 id: lo-corr-nutanix-flow-drop-burst
 level: medium
+fidelity: medium
+data_source: [nutanix_flow]
 description: Twenty or more Flow Network Security policy DROPs from a single source within five minutes. A host repeatedly hitting deny rules across the microsegmentation fabric is consistent with internal port scanning, lateral-movement attempts, or a misconfigured / compromised workload probing segmented services.
 correlation:
   match:

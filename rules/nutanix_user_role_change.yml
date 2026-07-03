@@ -2,6 +2,8 @@ title: Nutanix Prism Central - User / Role / Authentication Change
 id: lo-nutanix-privilege-change
 description: A Prism Central audit event modified an identity or access-control object - a role mapping, admin role assignment, local user, or the directory / authentication (SAML / IdP) configuration. Track these for privilege escalation, backdoor account creation, and unauthorized changes to who can access the fabric.
 level: medium
+fidelity: medium
+data_source: [nutanix_prism_central]
 logsource:
   vendor: nutanix
 detection:

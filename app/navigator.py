@@ -21,12 +21,16 @@ def _in_domain(technique_id: str, domain: str) -> bool:
 
 def build_layer(technique_counts: dict, days: int = 30,
                 attack_version: str = "14", name: Optional[str] = None,
-                domain: str = "enterprise-attack") -> dict:
-    """A Navigator (layer format 4.5) document scoring each technique by alert volume.
+                domain: str = "enterprise-attack",
+                description: Optional[str] = None,
+                comment_suffix: str = "alert(s)") -> dict:
+    """A Navigator (layer format 4.5) document scoring each technique by a count.
 
     ``domain`` selects the ATT&CK matrix: ``enterprise-attack`` (default) or
     ``ics-attack``. Techniques are filtered to the chosen domain by ID prefix
-    (ICS = ``T0NNN``), so one call yields a clean single-domain layer.
+    (ICS = ``T0NNN``), so one call yields a clean single-domain layer. The default
+    scoring is alert volume; pass ``description`` / ``comment_suffix`` to reuse the
+    same builder for rule-coverage layers.
     """
     label = "ICS " if domain == "ics-attack" else ""
     techniques = sorted((t, int(n)) for t, n in (technique_counts or {}).items()
@@ -36,9 +40,10 @@ def build_layer(technique_counts: dict, days: int = 30,
         "name": name or f"LogOcean {label}alerts (last {days}d)".replace("  ", " "),
         "versions": {"attack": attack_version, "navigator": "4.9.0", "layer": "4.5"},
         "domain": domain,
-        "description": "Alert volume per MITRE ATT&CK technique, from LogOcean detections.",
+        "description": description or
+        "Alert volume per MITRE ATT&CK technique, from LogOcean detections.",
         "techniques": [
-            {"techniqueID": t, "score": n, "comment": f"{n} alert(s)",
+            {"techniqueID": t, "score": n, "comment": f"{n} {comment_suffix}",
              "color": "", "enabled": True}
             for t, n in techniques
         ],

@@ -60,6 +60,9 @@ _PRODUCT_VENDOR = {
 }
 
 _TECH_RE = re.compile(r"t\d{4}(?:\.\d{3})?$", re.IGNORECASE)
+# MITRE ATLAS technique tag: `atlas.aml.tNNNN[.NNN]`.
+_ATLAS_RE = re.compile(r"aml\.t\d{4}(?:\.\d{3})?$", re.IGNORECASE)
+_FIDELITY = {"high", "medium", "hunt"}
 
 
 # --------------------------------------------------------------------------- #
@@ -382,6 +385,10 @@ class Rule:
     detection: dict
     tactics: list[str] = field(default_factory=list)
     techniques: list[str] = field(default_factory=list)
+    atlas_techniques: list[str] = field(default_factory=list)
+    fidelity: str = "medium"
+    data_source: list[str] = field(default_factory=list)
+    references: list[str] = field(default_factory=list)
     source: str = ""
     enabled: bool = True
 
@@ -399,6 +406,33 @@ def _parse_tags(tags) -> tuple[list[str], list[str]]:
     return tactics, techniques
 
 
+def parse_atlas_tags(tags) -> list[str]:
+    """MITRE ATLAS technique tags ``atlas.aml.tNNNN[.NNN]`` → ``AML.TNNNN``."""
+    out = []
+    for t in tags or []:
+        t = str(t).strip()
+        if t.lower().startswith("atlas."):
+            v = t.split(".", 1)[1]
+            if _ATLAS_RE.fullmatch(v):
+                out.append(v.upper())
+    return out
+
+
+def norm_fidelity(value) -> str:
+    """Coerce a rule's fidelity to one of high/medium/hunt (default medium)."""
+    v = str(value or "").strip().lower()
+    return v if v in _FIDELITY else "medium"
+
+
+def as_str_list(value) -> list[str]:
+    """A rule metadata field that may be a list or a comma-string → list[str]."""
+    if value is None or value == "":
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(x).strip() for x in value if str(x).strip()]
+    return [s.strip() for s in str(value).split(",") if s.strip()]
+
+
 def rule_from_dict(d: dict, source: str) -> Rule:
     tactics, techniques = _parse_tags(d.get("tags"))
     return Rule(
@@ -408,7 +442,12 @@ def rule_from_dict(d: dict, source: str) -> Rule:
         description=str(d.get("description") or ""),
         logsource=d.get("logsource") or {},
         detection=d.get("detection") or {},
-        tactics=tactics, techniques=techniques, source=source,
+        tactics=tactics, techniques=techniques,
+        atlas_techniques=parse_atlas_tags(d.get("tags")),
+        fidelity=norm_fidelity(d.get("fidelity")),
+        data_source=as_str_list(d.get("data_source") or d.get("data_sources")),
+        references=as_str_list(d.get("references")),
+        source=source,
     )
 
 

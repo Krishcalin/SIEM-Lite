@@ -37,6 +37,20 @@ def test_security_headers_present(clean_db):
     assert "frame-ancestors 'none'" in r.headers.get("content-security-policy", "")
 
 
+def test_coverage_scoreboard(clean_db):
+    with _client(clean_db) as c:
+        page = c.get("/coverage")
+        assert page.status_code == 200 and "MITRE ATT&CK" in page.text
+        rep = c.get("/coverage.json")
+        assert rep.status_code == 200
+        body = rep.json()
+        assert body["attack"]["enterprise_covered"] > 0     # rules loaded at lifespan
+        assert body["attack"]["ics_covered"] > 0
+        assert body["atlas"]["covered"] == 0 and body["atlas"]["total"] > 0
+        nav = c.get("/coverage/attack-navigator.json?domain=ics")
+        assert nav.status_code == 200 and nav.json()["domain"] == "ics-attack"
+
+
 def test_ingest_api_auth_and_end_to_end(clean_db):
     db = clean_db
     rec = db.create_api_key("ci-key")

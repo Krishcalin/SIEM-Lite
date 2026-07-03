@@ -33,7 +33,7 @@ import yaml
 from starlette.concurrency import run_in_threadpool
 
 from .. import alert_actions, db
-from .engine import _parse_tags
+from .engine import _parse_tags, as_str_list, norm_fidelity, parse_atlas_tags
 
 log = logging.getLogger("logocean")
 
@@ -61,6 +61,10 @@ class CorrelationRule:
     threshold: int
     tactics: list[str] = field(default_factory=list)
     techniques: list[str] = field(default_factory=list)
+    atlas_techniques: list[str] = field(default_factory=list)
+    fidelity: str = "medium"
+    data_source: list[str] = field(default_factory=list)
+    references: list[str] = field(default_factory=list)
     source: str = ""
     enabled: bool = True
 
@@ -85,7 +89,12 @@ def load_correlation_rules(rules_dir) -> list[CorrelationRule]:
                 group_by=list(corr.get("group_by") or []),
                 window=window_seconds(corr.get("window") or corr.get("timespan")),
                 threshold=int(corr.get("threshold") or 1),
-                tactics=tactics, techniques=techniques, source=path.name))
+                tactics=tactics, techniques=techniques,
+                atlas_techniques=parse_atlas_tags(doc.get("tags")),
+                fidelity=norm_fidelity(doc.get("fidelity")),
+                data_source=as_str_list(doc.get("data_source") or doc.get("data_sources")),
+                references=as_str_list(doc.get("references")),
+                source=path.name))
     return rules
 
 
