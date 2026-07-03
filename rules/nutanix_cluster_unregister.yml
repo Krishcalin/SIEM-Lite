@@ -1,0 +1,23 @@
+title: Nutanix Prism Central - Cluster Unregistered / Detached
+id: lo-nutanix-cluster-unregister
+description: A registered cluster (Prism Element) was unregistered or detached from Prism Central. This removes the cluster and its VMs from centralized management, monitoring and microsegmentation policy - a way to disrupt operations or evade centralized detection. Verify this was an intended administrative action.
+level: high
+logsource:
+  vendor: nutanix
+detection:
+  detach:
+    message|contains:
+      - unregister
+      - unregistered
+      - detach cluster
+      - detached cluster
+      - remove cluster
+      - cluster removed
+  condition: detach
+tags:
+  - attack.t1578
+  - attack.t1489
+  - attack.impact
+  - attack.defense_evasion
+falsepositives:
+  - Planned cluster migration or decommissioning between Prism Central instances.

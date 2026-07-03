@@ -272,6 +272,50 @@ def test_engine_fires_sysmon_endpoint_rules():
                 if i.startswith(("lo-sysmon", "lo-inhibit", "lo-schtasks", "lo-clear-eventlog-cmd"))}
 
 
+def test_engine_fires_nutanix_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def api(action=None, endpoint=None):
+        return dict(vendor="nutanix", product="prism-central", log_type="api_audit",
+                    action=action, rule_name=endpoint,
+                    raw={"restEndpoint": endpoint, "httpMethod": action})
+
+    def audit(message=None, action=None):
+        return dict(vendor="nutanix", product="prism-central", log_type="audit",
+                    action=action, message=message)
+
+    # api DELETE on a specific VM fires; a benign GET / a DELETE on /vms/list do not.
+    assert "lo-nutanix-vm-destruction" in hits(
+        **api(action="DELETE", endpoint="/api/nutanix/v3/vms/5f3c9d2a-1b2c"))
+    assert "lo-nutanix-vm-destruction" not in hits(
+        **api(action="GET", endpoint="/api/nutanix/v3/vms/list"))
+    assert "lo-nutanix-vm-destruction" not in hits(
+        **api(action="DELETE", endpoint="/api/nutanix/v3/vms/list"))
+
+    # consolidated-audit indicators
+    assert "lo-nutanix-cluster-unregister" in hits(
+        **audit(message="Unregistered cluster Prod-PE-01 from Prism Central", action="Delete"))
+    assert "lo-nutanix-privilege-change" in hits(
+        **audit(message="Updated role mapping for user contractor01 to Cluster Admin"))
+
+    # a benign VM-list read from a non-nutanix source trips none of these rules
+    assert not {i for i in hits(vendor="okta", message="role mapping updated")
+                if i.startswith("lo-nutanix")}
+
+
+def test_load_nutanix_flow_drop_correlation_rule():
+    from app.detection.correlation import load_correlation_rules
+    by_id = {r.id: r for r in load_correlation_rules(RULES_DIR)}
+    fd = by_id["lo-corr-nutanix-flow-drop-burst"]
+    assert fd.match["vendor"] == "nutanix" and fd.match["action"] == "drop"
+    assert fd.group_by == ["src_ip"]
+    assert fd.window == 300 and fd.threshold == 20
+    assert "T1046" in fd.techniques
+
+
 def test_alert_from_match_builds_row():
     rule = next(r for r in load_rules(RULES_DIR) if r.id == "lo-win-failed-logon")
     evt = NormalizedEvent(event_time=None, vendor="microsoft", log_type="security",

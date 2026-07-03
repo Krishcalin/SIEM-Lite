@@ -42,6 +42,10 @@ _MERAKI_RE = re.compile(
     r"(?:flows|urls|ids-alerts|security_event|ip_flow_start|ip_flow_end|firewall|"
     r"vpn_firewall|dhcp_lease|dhcp_no_offers|events|airmarshal_events)\b",
     re.MULTILINE)
+# Nutanix Prism Central remote-syslog tags (api_audit / consolidated_audit /
+# flow-hitCountN), each a syslog program name ending in ':'.
+_NUTANIX_RE = re.compile(
+    r"(?:^|\s)(?:api_audit|consolidated_audit|flow-hitCount\d*)\b\s*:", re.IGNORECASE)
 # Zeek TSV metadata header.
 _ZEEK_RE = re.compile(r"^#(?:separator|fields)\b", re.MULTILINE)
 # Fortinet key=value syslog: needs devname= plus a Forti-specific key.
@@ -99,6 +103,10 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     # Cisco Meraki — RFC 5424 syslog with a Meraki event type (before generic syslog).
     if _MERAKI_RE.search(sample):
         return "meraki"
+
+    # Nutanix Prism Central — api_audit / consolidated_audit / flow-hitCount tags.
+    if _NUTANIX_RE.search(sample):
+        return "nutanix_pc"
 
     # Linux auditd — 'type=... msg=audit(...):' record header.
     if _AUDITD_RE.search(sample):
@@ -181,6 +189,11 @@ def _detect_json(text: str) -> Optional[str]:
     # GitLab audit events.
     if "entity_type" in keys and "details" in keys:
         return "gitlab_audit"
+    # Nutanix Prism Central consolidated-audit export (bare JSON / NDJSON).
+    if ("affectedentitylist" in keys or "affected_entity_list" in keys) and \
+            ({"operationtype", "op_type", "recordtype", "record_type",
+              "originatingclusteruuid", "alertuid"} & keys):
+        return "nutanix_pc"
     # CrowdStrike Falcon JSON (detection-summary or flat/FDR shapes).
     if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event"} <= keys):
         return "crowdstrike_json"

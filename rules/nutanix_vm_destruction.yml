@@ -1,0 +1,23 @@
+title: Nutanix Prism Central - VM / Cloud Instance Deleted via API
+id: lo-nutanix-vm-destruction
+description: A Prism Central REST API call deleted a VM (HTTP DELETE on a /vms/<uuid> endpoint). Adversaries delete virtual/cloud instances to destroy data, disrupt services, or remove forensic evidence. Confirm the deletion was a planned, authorized change and not an account compromise.
+level: high
+logsource:
+  vendor: nutanix
+  service: api_audit
+detection:
+  api_delete:
+    action: DELETE
+  vm_endpoint:
+    - rule_name|contains: /vms/
+    - restendpoint|contains: /vms/
+  list_endpoint:
+    rule_name|endswith: /list
+  condition: api_delete and vm_endpoint and not list_endpoint
+tags:
+  - attack.t1578.003
+  - attack.t1485
+  - attack.impact
+  - attack.defense_evasion
+falsepositives:
+  - Planned VM decommissioning, automated cleanup jobs, or IaC teardown.

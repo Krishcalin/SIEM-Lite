@@ -1,0 +1,29 @@
+title: Nutanix Prism Central - User / Role / Authentication Change
+id: lo-nutanix-privilege-change
+description: A Prism Central audit event modified an identity or access-control object - a role mapping, admin role assignment, local user, or the directory / authentication (SAML / IdP) configuration. Track these for privilege escalation, backdoor account creation, and unauthorized changes to who can access the fabric.
+level: medium
+logsource:
+  vendor: nutanix
+detection:
+  identity:
+    message|contains:
+      - role mapping
+      - role for user
+      - cluster admin
+      - prism admin
+      - user admin
+      - added user
+      - created user
+      - local user
+      - directory service
+      - authentication config
+      - identity provider
+      - saml
+  condition: identity
+tags:
+  - attack.t1098
+  - attack.t1136
+  - attack.persistence
+  - attack.privilege_escalation
+falsepositives:
+  - Routine onboarding / offboarding and planned RBAC administration.

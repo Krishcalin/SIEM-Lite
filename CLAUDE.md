@@ -92,7 +92,11 @@ clearing. Command-line rules match `CommandLine` OR `message` so they also fire 
 non-Sysmon sources that fill `message`. The pack also includes an **OT / ICS**
 group (8 per-event + 1 correlation) tagged with **ATT&CK for ICS** (`T0NNN`)
 matching the Zeek-ICSNPP enrichment (`action` / `log_type` / `ot.*`) — see the OT
-section below. Shipped total: **38 detection + 4 correlation rules**.
+section below, and a **Nutanix Prism Central** group (VM/cloud-instance deletion via
+the REST API gated on `action: DELETE` + `restEndpoint|contains: /vms/`, cluster
+unregister/detach and user/role/auth change matched on the audit `message`, plus a
+Flow microseg drop-burst correlation grouped by `src_ip`). Shipped total:
+**41 detection + 5 correlation rules**.
 
 **OT / ICS monitoring** (`app/parsers/zeek_ics.py`). LogOcean is passive/agentless
 for OT — it never touches a device, only ingests sensor telemetry. **Zeek + ICSNPP**
@@ -296,7 +300,7 @@ app/
                  windows_security, sysmon, linux_auditd, web_access, suricata_eve, cef,
                  leef, generic_syslog, generic_json, aws_cloudtrail, gcp_audit,
                  azure_activity, m365_audit, entra_signin, okta_system_log,
-                 github_audit, gitlab_audit  (27 total)
+                 github_audit, gitlab_audit, nutanix_pc  (28 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
                  killchain, risk, entity, ot, responses, compliance, report, workbench,
                  admin, login, _macros
@@ -450,6 +454,20 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
 - **Cisco Meraki** is RFC 5424 syslog whose body is `<etype> key=value… note:` — the
   event type is the log_type; `src`/`dst` may carry `:port` (use `split_ip_port`);
   `pattern:`/`request:`/`message:` becomes the message. Detected before generic syslog.
+- **Nutanix Prism Central (`nutanix_pc.py`)** — the private-cloud/HCI management plane,
+  forwarded to remote syslog on three **tags** (program names) the parser routes on:
+  `api_audit` (REST calls; `INFO <ts> k=v||k=v||…` **double-pipe** kv — `httpMethod` →
+  `action`, `restEndpoint` → `rule_name`), `consolidated_audit` (a **JSON** audit/alert
+  record — `operationType` → `action`, `clientIp` → `src_ip`, `defaultMsg` → `message`,
+  `recordType` → `log_type`, `creationTimestampUsecs` → time; camelCase syslog **or**
+  snake_case v3-API export both resolve via an underscore-folding key index), and
+  `flow-hitCountN` (Flow Network Security microseg hits — `SRC/DST/PROTO/SPORT/DPORT/
+  ACTION` 5-tuple + `ORIG:`/`REPLY:` `BYTES` **summed** into `bytes_total`, `ACTION` →
+  `action`, policy name → `rule_name`). Envelope `<PRI>ISO-ts host tag:` is stripped
+  first (PRI → severity fallback); a whole-document `{`/`[` payload is treated as an
+  **offline JSON export** of the audit trail. Detected before generic syslog by the
+  `api_audit|consolidated_audit|flow-hitCount` tag regex (and a bare-JSON export by the
+  `affectedEntityList`+`operationType`/`recordType` keys in `_detect_json`).
 - **Zeek JSON** mirrors `zeek_tsv` but from `LogAscii::use_json` records (dotted keys like
   `id.orig_h`); path comes from `_path` or is inferred from the fields present.
 - **GCP/Azure/GitHub/GitLab** JSON each map their own shape: GCP `protoPayload.*`
@@ -495,7 +513,8 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `LEEF:n|` (Tripwire
   Log Center / QRadar), then `%ASA-…` (numeric)
   → Cisco ASA, then `%FAC-SEV-MNEMONIC` (alpha) → Cisco IOS, then Zeek `#fields`, then PAN
-  syslog, then Fortinet KV, then Meraki, then auditd (`type=… msg=audit(…):`), then
+  syslog, then Fortinet KV, then Meraki, then Nutanix PC (`api_audit`/
+  `consolidated_audit`/`flow-hitCount` tags), then auditd (`type=… msg=audit(…):`), then
   Apache/Nginx access (CLF/combined), then CSV headers, and finally **generic syslog**.
 
 ## Adding a new format / vendor

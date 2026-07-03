@@ -7,7 +7,7 @@ from app.parsers import (aws_cloudtrail, azure_activity, cef, cisco_asa,
                          entra_signin, fortinet_fortigate, gcp_audit,
                          generic_json, generic_syslog, github_audit,
                          gitlab_audit, leef, linux_auditd, m365_audit, meraki,
-                         okta_system_log, paloalto_csv, paloalto_syslog,
+                         nutanix_pc, okta_system_log, paloalto_csv, paloalto_syslog,
                          suricata_eve, sysmon, web_access, windows_security,
                          zeek_json, zeek_tsv)
 
@@ -648,3 +648,65 @@ def test_detect_format():
     assert detect_format("gh.json", _read("github_audit.json")) == "github_audit"
     assert detect_format("gl.json", _read("gitlab_audit.json")) == "gitlab_audit"
     assert detect_format("gj.json", _read("generic_json.json")) == "generic_json"
+    assert detect_format("ntnx.log", _read("nutanix_pc.log")) == "nutanix_pc"
+
+
+def test_nutanix_pc():
+    evs = list(nutanix_pc.parse(_read("nutanix_pc.log")))
+    assert len(evs) == 6
+    for e in evs:
+        assert e.vendor == "nutanix" and e.product == "prism-central"
+        assert e.event_time.year == 2026 and e.event_time.month == 6
+
+    # api_audit — REST call, http method -> action, endpoint -> rule_name.
+    get = evs[0]
+    assert get.log_type == "api_audit"
+    assert get.action == "GET"
+    assert get.user_name == "admin"
+    assert get.rule_name == "/api/nutanix/v3/vms/list"
+    assert get.app == "prism-api"
+    delete = evs[1]
+    assert delete.action == "DELETE"
+    assert delete.user_name == "svc-automation"
+    assert "/vms/5f3c9d2a" in delete.rule_name
+    assert delete.severity == "warning"          # WARNING level word
+
+    # consolidated_audit — JSON payload, operationType -> action, clientIp -> src_ip.
+    role = evs[2]
+    assert role.log_type == "audit"
+    assert role.action == "Update"
+    assert role.src_ip == "10.20.30.55"
+    assert role.user_name == "admin"
+    assert role.severity == "informational"       # "AUDIT" normalized
+    assert "role mapping" in (role.message or "").lower()
+    unregister = evs[3]
+    assert unregister.action == "Delete"
+    assert unregister.src_ip == "45.83.122.7"
+    assert unregister.severity == "warning"
+    assert "unregistered" in (unregister.message or "").lower()
+
+    # flow — microsegmentation hit, ACTION -> action, ORIG+REPLY bytes summed.
+    drop = evs[4]
+    assert drop.log_type == "flow" and drop.app == "flow"
+    assert drop.action == "drop"
+    assert drop.src_ip == "10.20.30.99" and drop.dst_ip == "10.20.30.10"
+    assert drop.dst_port == 445 and drop.protocol == "tcp"
+    assert drop.rule_name == "Quarantine_Isolation"
+    assert drop.bytes_total == 468                # 468 orig + 0 reply
+    allow = evs[5]
+    assert allow.action == "allow"
+    assert allow.dst_port == 443
+    assert allow.bytes_total == 1440 + 8320
+
+
+def test_nutanix_pc_json_export():
+    """An offline bare-JSON export of the consolidated audit trail is parsed too."""
+    doc = ('[{"operationType":"Delete","recordType":"Audit","userName":"root",'
+           '"clientIp":"203.0.113.9","originatingClusterUuid":"c6162d80-9d3c",'
+           '"affectedEntityList":[{"entityType":"vm","name":"db-prod-01"}],'
+           '"defaultMsg":"Deleted VM db-prod-01","creationTimestampUsecs":1782641865978858}]')
+    assert detect_format("audits.json", doc) == "nutanix_pc"
+    evs = list(nutanix_pc.parse(doc))
+    assert len(evs) == 1
+    assert evs[0].vendor == "nutanix" and evs[0].action == "Delete"
+    assert evs[0].src_ip == "203.0.113.9" and evs[0].user_name == "root"

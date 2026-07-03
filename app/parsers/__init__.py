@@ -4,9 +4,9 @@ from __future__ import annotations
 from . import (aws_cloudtrail, azure_activity, cef, cisco_asa, cisco_ios,
                crowdstrike_csv, crowdstrike_json, entra_signin, fortinet_fortigate,
                gcp_audit, generic_json, generic_syslog, github_audit, gitlab_audit,
-               leef, linux_auditd, m365_audit, meraki, okta_system_log, paloalto_csv,
-               paloalto_syslog, suricata_eve, sysmon, web_access, windows_security,
-               zeek_json, zeek_tsv)
+               leef, linux_auditd, m365_audit, meraki, nutanix_pc, okta_system_log,
+               paloalto_csv, paloalto_syslog, suricata_eve, sysmon, web_access,
+               windows_security, zeek_json, zeek_tsv)
 
 # Format key -> parser module. Keys are also the values of the UI "format" dropdown.
 PARSERS = {
@@ -31,6 +31,7 @@ PARSERS = {
     "entra_signin": entra_signin,
     "cisco_ios": cisco_ios,
     "meraki": meraki,
+    "nutanix_pc": nutanix_pc,
     "zeek_json": zeek_json,
     "gcp_audit": gcp_audit,
     "azure_activity": azure_activity,
@@ -61,6 +62,7 @@ FORMAT_LABELS = {
     "entra_signin": "Microsoft Entra ID — sign-in logs",
     "cisco_ios": "Cisco IOS / IOS-XE / NX-OS — syslog",
     "meraki": "Cisco Meraki — syslog",
+    "nutanix_pc": "Nutanix Prism Central — audit / API / Flow (syslog)",
     "zeek_json": "Zeek (Bro) — JSON (conn / dns / http …)",
     "gcp_audit": "Google Cloud — Cloud Audit Logs",
     "azure_activity": "Microsoft Azure — Activity Log",

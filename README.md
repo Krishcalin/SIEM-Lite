@@ -42,7 +42,7 @@ retains them in PostgreSQL for **≥ 3 years**.
 
 ## Features
 
-- **Twenty-seven parsers**, auto-detected on upload:
+- **Twenty-eight parsers**, auto-detected on upload:
   - *Network / firewall:*
     - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
     - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
@@ -78,6 +78,11 @@ retains them in PostgreSQL for **≥ 3 years**.
     - **Okta** System Log (auth / admin activity)
     - **GitHub** audit log (`repo.*` / `git.*` / `org.*` actions)
     - **GitLab** audit events (`/audit_events`)
+  - *Private cloud / virtualization:*
+    - **Nutanix Prism Central** — the management-plane **audit trail**
+      (`consolidated_audit`), REST **API audit** (`api_audit`), and **Flow Network
+      Security** microsegmentation **hit logs** (`flow-hitCount`), as forwarded to a
+      remote syslog server (also a bare-JSON export of the audit trail)
   - *Generic:*
     - **CEF** — Common Event Format (ArcSight & many firewalls / WAFs / proxies / AV)
     - **LEEF** — Log Event Extended Format 1.0 / 2.0 (**Tripwire Log Center** &
@@ -254,8 +259,11 @@ creation, command-line log clearing), and an **OT / ICS** pack (Modbus write /
 diagnostic, S7comm program download / PLC stop, DNP3 device restart / disable-
 unsolicited, CIP set-attribute write, an **IT→OT write conduit-violation** (Purdue /
 IEC 62443 zone) rule, and an OT-protocol enumeration correlation — tagged with
-**ATT&CK for ICS** techniques; see below). Detection can be turned off with
-`DETECTION_ENABLED=false`.
+**ATT&CK for ICS** techniques; see below), and a **Nutanix Prism Central** pack
+(VM / cloud-instance deletion via the REST API, cluster unregister / detach,
+user / role / authentication change, plus a Flow microsegmentation
+drop-burst correlation for internal scanning / lateral movement).
+Detection can be turned off with `DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
 
@@ -525,6 +533,7 @@ THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usua
 | Okta | System Log API export (JSON array / NDJSON) | Okta System Log (auto) |
 | GitHub | Org/Enterprise ▸ audit log ▸ **Export** (JSON / NDJSON) | GitHub audit (auto) |
 | GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
+| Nutanix Prism Central | Settings ▸ **Syslog server** (modules: Audit / API Audit / Flow) → your collector | Nutanix Prism Central (auto) |
 | Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
 | Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
 | IBM QRadar | Routing/forwarding rule ▸ export events as **LEEF** (its native format), or CEF / syslog. *(A QRadar system-backup archive is proprietary — export events first.)* | LEEF (auto) |
@@ -616,7 +625,7 @@ Log-Parser-Storage/
 │   │                       #   windows_security, sysmon,
 │   │                       #   linux_auditd, web_access, suricata_eve, cef, leef, generic_{syslog,json},
 │   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
-│   │                       #   okta_system_log, github_audit, gitlab_audit
+│   │                       #   okta_system_log, github_audit, gitlab_audit, nutanix_pc
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, killchain, risk, entity, ot, responses, compliance,
 │   │                       #   report, workbench, admin, login, _macros (chart partials)
