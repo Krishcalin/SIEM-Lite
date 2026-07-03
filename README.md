@@ -2,17 +2,125 @@
   <img src="docs/banner.svg" alt="LogOcean" width="800"/>
 </p>
 
-# LogOcean
+<h1 align="center">LogOcean</h1>
 
-[![tests](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml/badge.svg)](https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml)
+<p align="center">
+  <a href="https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml"><img src="https://github.com/Krishcalin/SIEM-Lite/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <img src="https://img.shields.io/badge/python-3.11%E2%80%933.13-blue" alt="python">
+  <img src="https://img.shields.io/badge/postgres-16-336791" alt="postgres">
+  <img src="https://img.shields.io/badge/SIEM-agentless-0b7285" alt="agentless siem">
+</p>
 
-A self-hosted **log parser, indexer, and long-term store** for **network, endpoint,
-cloud, and identity** logs from many vendors. Logs arrive three ways — **web upload**,
-the **HTTP ingest API**, or the **syslog receiver** (UDP/TCP/TLS) — and LogOcean
-parses and normalizes them, indexes them for full-text + structured search, and
-retains them in PostgreSQL for **≥ 3 years**.
+<p align="center">
+  <b>A self-hosted, agentless SIEM — parse, normalize, detect, and retain security logs from 29 vendors in PostgreSQL.</b>
+</p>
 
-```
+LogOcean ingests **network, endpoint, cloud, identity, and OT/ICS** logs from many
+vendors through three front doors — **web upload**, an **HTTP ingest API**, and a
+**syslog receiver** (UDP/TCP/TLS) — then auto-detects the format, parses and
+normalizes each record to one common schema, indexes it for full-text and
+structured search, matches it against a **Sigma-based detection & correlation
+engine** plus **threat-intel** feeds, and retains everything in PostgreSQL for
+**≥ 3 years**. Alerts flow into triage, cases, notifications, and agentless
+response — with UEBA, kill-chain reconstruction, a detection-coverage scoreboard,
+an AI copilot, and passive OT/ICS monitoring on top.
+
+## Table of contents
+
+- [Overview](#overview)
+- [Key features](#key-features)
+- [Architecture](#architecture)
+- [Quick start](#quick-start)
+  - [Docker](#docker)
+  - [Local (without Docker)](#local-without-docker)
+- [Supported log sources](#supported-log-sources)
+- [Live ingestion](#live-ingestion)
+  - [HTTP ingest API](#http-ingest-api)
+  - [Syslog receiver](#syslog-receiver)
+  - [Bulk import (large / historical backups)](#bulk-import-large--historical-backups)
+- [Detection & alerting](#detection--alerting)
+  - [Rules](#rules)
+  - [Triage & tuning](#triage--tuning)
+  - [Cases / incidents](#cases--incidents)
+- [Detection coverage](#detection-coverage)
+  - [Coverage scoreboard](#coverage-scoreboard)
+  - [Import community SigmaHQ rules](#import-community-sigmahq-rules)
+- [Notifications & response](#notifications--response)
+- [UEBA & entity risk](#ueba--entity-risk)
+- [Kill-chain reconstruction](#kill-chain-reconstruction)
+- [Detection-engineering workbench](#detection-engineering-workbench)
+- [AI SOC copilot](#ai-soc-copilot)
+- [OT / ICS monitoring](#ot--ics-monitoring)
+- [Agentless collectors & feeds](#agentless-collectors--feeds)
+- [Threat-intelligence enrichment](#threat-intelligence-enrichment)
+- [Dashboards & reporting](#dashboards--reporting)
+- [Configuration](#configuration)
+- [Project layout](#project-layout)
+- [Testing & CI](#testing--ci)
+- [Data model & retention](#data-model--retention)
+- [Parser accuracy notes](#parser-accuracy-notes)
+- [Security](#security)
+- [Roadmap](#roadmap)
+- [License & attribution](#license--attribution)
+
+## Overview
+
+LogOcean is an **agentless SIEM**. Ingested events are matched against a
+Sigma-based **detection & correlation** engine and **threat-intel** IOC feeds,
+raising alerts you work at `/alerts`: **triage** them (assign, note, suppress
+noise) and group related ones into **cases** (`/cases`). New alerts are pushed to
+your channels and can trigger **agentless response** playbooks (audited at
+`/responses`). **Collectors** pull vendor / cloud / identity logs (Okta, GitHub,
+GitLab, AWS CloudTrail, Entra ID, Microsoft 365, GCP Cloud Audit Logs) while other
+tools push findings to the API.
+
+**UEBA entity-risk** analytics (`/risk`) baseline every user / host / IP and flag
+new-entity / new-association anomalies beyond the rules; **kill-chain
+reconstruction** (`/killchain`) stitches related alerts across ATT&CK tactics into
+attack stories; and a **detection workbench** (`/workbench`) maps coverage, flags
+noisy / dead rules, and tests Sigma rules live. A `/coverage` scoreboard measures
+**MITRE ATT&CK + ATLAS** coverage, and a **SigmaHQ importer** brings in the
+community rule corpus. An optional **AI SOC copilot** (Claude) explains alerts,
+summarizes cases, and drafts Sigma rules from plain English. **OT / ICS
+monitoring** (`/ot`) ingests passive Zeek + ICSNPP telemetry (Modbus / DNP3 /
+S7comm / CIP …) with an ATT&CK-for-ICS rule pack, asset inventory, and
+master→controller baselining. **Dashboards + `/reports`** visualize it all
+(charts, top-N, ATT&CK-Navigator / CSV export), and **auth / RBAC**, an audit log,
+and a `/compliance` view (MITRE → PCI / NIST / CIS / HIPAA + IEC 62443 / NERC CIP)
+round it out — all tested unit + integration against real PostgreSQL in CI.
+
+## Key features
+
+- **29 parsers, auto-detected** across network / firewall, endpoint / IDS, cloud /
+  identity, private cloud (Nutanix), OT / ICS, and generic CEF / LEEF / syslog / JSON.
+- **One normalized schema** (time, vendor, type, src/dst IP+port, user, host, action,
+  severity, rule, bytes, message) with the **full original record kept** in `jsonb`.
+- **Three ingest paths** — web upload, HTTP API (API-key auth, gzip-aware), and a
+  syslog receiver (UDP/TCP/TLS) fronted by a bounded async queue.
+- **Sigma-based detection & correlation** (43 detection + 6 correlation rules shipped)
+  with the common Sigma modifiers, plus a **community SigmaHQ importer**.
+- **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
+  **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
+- **Threat-intelligence** IOC enrichment, **notifications** (webhook / email), and
+  **agentless response** playbooks.
+- **Investigation & analytics** — UEBA entity risk, kill-chain reconstruction, a
+  detection-engineering workbench, and an optional **AI SOC copilot** (Claude).
+- **Passive OT / ICS monitoring** (Zeek + ICSNPP) with an ATT&CK-for-ICS rule pack,
+  asset inventory, and IEC 62443 / NERC CIP compliance mapping.
+- **Agentless collectors** for Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
+  Microsoft 365, and GCP Cloud Audit Logs.
+- **PostgreSQL storage**, RANGE-partitioned by month, with GIN full-text, a `jsonb`
+  GIN index, and btree indexes on the common fields — plus **≥ 3-year retention**
+  (purge = instant partition drop).
+- **Auth / RBAC**, security headers + CSRF, an audit log, and compliance reporting.
+
+## Architecture
+
+Three inputs share one core: a source-agnostic **detect → parse → normalize →
+store** pipeline. Live sources buffer in a bounded async queue drained by writer
+workers, so a burst never blocks the receiver.
+
+```text
  upload (web) ───────────────┐
  POST /api/v1/ingest (key) ──┤─► auto-detect ─► parse ─► normalize ─► store (Postgres)
  syslog UDP/TCP/TLS ─► queue ┘     format                common      month-partitioned
@@ -21,100 +129,19 @@ retains them in PostgreSQL for **≥ 3 years**.
                                                   search ◄── filters + full-text ◄──┘
 ```
 
-> LogOcean is an **agentless SIEM**. Ingested events are matched against a Sigma-based
-> **detection & correlation** engine and **threat-intel** IOC feeds, raising alerts
-> you work at `/alerts`: **triage** them (assign, note, suppress noise) and group
-> related ones into **cases** (`/cases`). New alerts are pushed to your channels and
-> can trigger **agentless response** playbooks (audited at `/responses`). **Collectors**
-> pull vendor/cloud/identity logs (Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
-> Microsoft 365, GCP Cloud Audit Logs) while other tools push findings to the API. **UEBA entity-risk**
-> analytics (`/risk`) baseline every user/host/IP and flag new-entity / new-association
-> anomalies beyond the rules; **kill-chain reconstruction** (`/killchain`) stitches
-> related alerts across ATT&CK tactics into attack stories, and a **detection
-> workbench** (`/workbench`) maps coverage, flags noisy/dead rules, and tests Sigma
-> rules live. An optional **AI SOC copilot** (Claude) explains alerts, summarizes cases,
-> and drafts Sigma rules from plain English. **OT / ICS monitoring** (`/ot`) ingests
-> passive Zeek+ICSNPP telemetry (Modbus / DNP3 / S7comm / CIP …) with an ATT&CK-for-ICS
-> rule pack, asset inventory, and master→controller baselining. **Dashboards + `/reports`**
-> visualize it (charts, top-N, ATT&CK-Navigator / CSV export), and **auth/RBAC**, an
-> audit log and a `/compliance` view (MITRE→PCI/NIST/CIS/HIPAA + IEC 62443 / NERC CIP)
-> round it out — all tested unit + integration against real PostgreSQL in CI.
+Every event is evaluated inline against per-event detection rules as it is stored;
+a background scheduler runs correlation (threshold) rules over the event store.
+Both raise rows in `alerts`, which fan out to notifications and response. The full
+original record is always kept in `events.raw` (`jsonb`) so nothing is lost and any
+field stays searchable.
 
-## Features
+- **Stack:** Python 3.11–3.13, FastAPI + Uvicorn, Jinja2 (server-rendered UI),
+  PostgreSQL 16 via `psycopg` 3 (+ `psycopg_pool`), `python-dateutil`.
+- **No JS build step, no chart library** — charts are server-rendered CSS/SVG.
 
-- **Twenty-nine parsers**, auto-detected on upload:
-  - *Network / firewall:*
-    - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
-    - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
-    - Fortinet **FortiGate** syslog (`key=value`; traffic / UTM / event)
-    - Cisco **ASA / Firepower (FTD)** syslog (`%ASA-L-NNNNNN` message IDs)
-    - Cisco **IOS / IOS-XE / NX-OS** syslog (`%FACILITY-SEVERITY-MNEMONIC`)
-    - Cisco **Meraki** syslog (flows / urls / ids-alerts / security_event)
-    - **Zeek** (Bro) **TSV** (`conn` / `dns` / `http` … via the `#fields` header)
-    - **Zeek** (Bro) **JSON** (`LogAscii::use_json`; NDJSON or array)
-  - *OT / ICS (Zeek + ICSNPP):*
-    - **Modbus**, **DNP3**, **S7comm** (Siemens), **CIP / EtherNet-IP** (Rockwell),
-      **BACnet** and more — the Zeek `modbus.log` / `dnp3.log` / `s7comm.log` / `cip.log`
-      logs from the [ICSNPP](https://github.com/cisagov/icsnpp) analyzers are enriched
-      into a normalized control-plane `action` (`write-registers` / `plc-stop` /
-      `program-download` / `cold-restart` …) + an `ot.*` field set — see **OT / ICS
-      monitoring** below
-  - *Endpoint / IDS / host:*
-    - CrowdStrike Falcon **CSV export** (detections / incidents)
-    - CrowdStrike Falcon **JSON** (array, single object, `{"resources":[…]}`, or NDJSON / FDR)
-    - **Windows Security Event Log** (CSV, or `Get-WinEvent | ConvertTo-Json`)
-    - **Microsoft Sysmon** — Operational log (process / network / file / registry /
-      image-load / WMI / DNS; JSON or CSV export)
-    - **Linux auditd** — `audit.log` (SYSCALL / EXECVE / USER_* records; EXECVE args
-      reassembled into the command line)
-    - **Apache / Nginx** — access logs (Common & Combined Log Format)
-    - **Suricata** EVE JSON (alert / flow / dns / http / tls; NDJSON or array)
-  - *Cloud / identity (JSON):*
-    - **AWS CloudTrail** (`{"Records":[…]}`, single event, or NDJSON)
-    - **Google Cloud** Audit Logs (`protoPayload` AuditLog; array / NDJSON / `entries`)
-    - **Microsoft Azure** Activity Log (`{"records":[…]}` or REST list)
-    - **Microsoft 365** Unified Audit Log (Management API / `Search-UnifiedAuditLog`)
-    - **Microsoft Entra ID** (Azure AD) sign-in logs
-    - **Okta** System Log (auth / admin activity)
-    - **GitHub** audit log (`repo.*` / `git.*` / `org.*` actions)
-    - **GitLab** audit events (`/audit_events`)
-  - *Private cloud / virtualization:*
-    - **Nutanix Prism Central** — the management-plane **audit trail**
-      (`consolidated_audit`), REST **API audit** (`api_audit`), and **Flow Network
-      Security** microsegmentation **hit logs** (`flow-hitCount`), as forwarded to a
-      remote syslog server (also a bare-JSON export of the audit trail)
-    - **Nutanix Files / Data Lens** — SMB/NFS **file-access audit** events
-      (`FILE_CREATE` / `DELETE` / `READ` / `WRITE` / `RENAME` / `SECURITY` …) from the
-      Files **partner-server** notification stream — bare JSON, an export, or a JSON
-      payload inside a syslog envelope; the operation is normalized so the
-      ransomware / mass-delete detections fire
-  - *Generic:*
-    - **CEF** — Common Event Format (ArcSight & many firewalls / WAFs / proxies / AV)
-    - **LEEF** — Log Event Extended Format 1.0 / 2.0 (**Tripwire Log Center** &
-      Tripwire Enterprise forwarding, IBM QRadar, Juniper, Check Point …)
-    - **Generic syslog** — RFC 3164 (BSD) and RFC 5424 catch-all
-    - **Generic JSON / NDJSON** — flat or Elastic Common Schema (ECS) catch-all
-- **Normalization** to one common schema (time, vendor, type, src/dst IP+port, user,
-  host, action, severity, rule, bytes, message) — the **full original record is kept**
-  in a `jsonb` column so nothing is lost and any field stays searchable.
-- **PostgreSQL storage**, RANGE-**partitioned by month**, with GIN full-text, a `jsonb`
-  GIN index, and btree indexes on the common fields.
-- **Web UI**: dashboard (charts, top-N, open alerts/cases), drag-drop upload, search
-  (time range + vendor/type/IP/user/host/severity/action + full-text), event detail
-  (pretty raw record), **alerts** triage, **cases**, **kill-chain** (attack-story
-  reconstruction), **risk** (UEBA entity scoring), **OT/ICS** (controller asset
-  inventory + master→controller baselining), a detection **workbench**
-  (coverage / rule-health / rule-tester),
-  **reports** (print/PDF + ATT&CK-Navigator / CSV export), **compliance**, and an
-  admin page (keys, rules, collectors, threat-intel feeds, suppressions, users,
-  retention, audit log).
-- **3-year retention** as policy: monthly partitions make purge a cheap partition
-  DROP. The app **never purges below `RETENTION_YEARS`**; purge is manual unless
-  `AUTO_PURGE=true`.
-- **Idempotent ingest**: every record has a dedup hash, so re-uploading the same
-  file (or overlapping exports) does not create duplicates.
+## Quick start
 
-## Quick start (Docker)
+### Docker
 
 ```bash
 cp .env.example .env          # optional: adjust retention / limits
@@ -124,7 +151,7 @@ docker compose up --build     # starts Postgres + the app
 
 Then **Upload** a file (try the ones in `samples/`), and **Search**.
 
-## Quick start (local, without Docker)
+### Local (without Docker)
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -137,12 +164,71 @@ uvicorn app.main:app --reload
 
 The schema (tables, partitions, indexes) is created automatically on startup.
 
-## Live ingestion (HTTP API & syslog)
+## Supported log sources
+
+All 29 parsers are **auto-detected on upload** (or selectable explicitly). Grouped
+by domain:
+
+| Domain | Sources |
+|---|---|
+| **Network / firewall** | Palo Alto NGFW (CSV export & syslog), Fortinet FortiGate, Cisco ASA / Firepower, Cisco IOS / IOS-XE / NX-OS, Cisco Meraki, Zeek (TSV & JSON) |
+| **Endpoint / IDS / host** | CrowdStrike Falcon (CSV & JSON), Windows Security Event Log, Microsoft Sysmon, Linux auditd, Apache / Nginx access logs, Suricata EVE |
+| **Cloud / identity** | AWS CloudTrail, Google Cloud Audit Logs, Microsoft Azure Activity, Microsoft 365 Unified Audit, Microsoft Entra ID sign-ins, Okta System Log, GitHub audit, GitLab audit |
+| **Private cloud / virtualization** | Nutanix Prism Central (audit / API / Flow), Nutanix Files / Data Lens (file-access audit) |
+| **OT / ICS (Zeek + ICSNPP)** | Modbus, DNP3, S7comm, CIP / EtherNet-IP, BACnet … enriched into a control-plane `action` + `ot.*` fields (see [OT / ICS monitoring](#ot--ics-monitoring)) |
+| **Generic** | CEF (ArcSight & many WAFs / proxies / AV), LEEF 1.0 / 2.0 (Tripwire, QRadar, Juniper, Check Point …), generic syslog (RFC 3164 / 5424), generic JSON / NDJSON (flat or ECS) |
+
+Every parser normalizes to one schema and keeps the full original record in `jsonb`.
+
+<details>
+<summary><b>How to export logs from each source</b></summary>
+
+| Source | How to export | Upload as |
+|---|---|---|
+| Palo Alto NGFW | Monitor ▸ Logs ▸ (Traffic/Threat/URL/System/Config) ▸ **Export to CSV** | Palo Alto CSV (auto) |
+| Palo Alto NGFW | Syslog file from your collector / forwarder | Palo Alto syslog (auto) |
+| Fortinet FortiGate | Syslog from your collector, or FortiAnalyzer ▸ **Log download** | Fortinet FortiGate (auto) |
+| CrowdStrike Falcon | Endpoint security ▸ Detections / Incidents ▸ **Export** (CSV) | CrowdStrike CSV (auto) |
+| CrowdStrike Falcon | Event Search / API / FDR export (JSON or NDJSON) | CrowdStrike JSON (auto) |
+| Windows hosts | `Get-WinEvent -LogName Security` ▸ **Export-Csv** (or **ConvertTo-Json**); or Event Viewer ▸ **Save All Events As CSV** | Windows Security (auto) |
+| Windows hosts (Sysmon) | `Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational'` ▸ **ConvertTo-Json** / **Export-Csv** | Sysmon (auto) |
+| Linux hosts | `/var/log/audit/audit.log` (auditd) | Linux auditd (auto) |
+| Apache / Nginx | `access.log` (Common / Combined Log Format) | Apache / Nginx access (auto) |
+| Suricata IDS/IPS | `eve.json` (NDJSON) or an exported JSON array | Suricata EVE (auto) |
+| Cisco ASA / Firepower | Syslog from your collector (lines with `%ASA-…`/`%FTD-…`) | Cisco ASA / Firepower (auto) |
+| Cisco IOS / IOS-XE / NX-OS | Device syslog (lines with `%FACILITY-SEV-MNEMONIC`) | Cisco IOS (auto) |
+| Cisco Meraki | Dashboard ▸ syslog server output (flows / urls / ids-alerts …) | Cisco Meraki (auto) |
+| Zeek (Bro) | `conn.log` / `dns.log` / `http.log` — classic TSV (`#fields`) **or** JSON | Zeek TSV / JSON (auto) |
+| AWS CloudTrail | S3/CloudWatch export or `aws cloudtrail lookup-events` (JSON) | AWS CloudTrail (auto) |
+| Google Cloud | Cloud Logging export or `gcloud logging read --format json` | Google Cloud Audit (auto) |
+| Microsoft Azure | Activity Log export (`{"records":…}`) or `az monitor activity-log list` | Microsoft Azure Activity (auto) |
+| Microsoft 365 | `Search-UnifiedAuditLog` ▸ **AuditData**, or Management Activity API (JSON) | Microsoft 365 (auto) |
+| Microsoft Entra ID | Sign-in logs via Graph `auditLogs/signIns` or Azure Monitor export (JSON) | Microsoft Entra ID (auto) |
+| Okta | System Log API export (JSON array / NDJSON) | Okta System Log (auto) |
+| GitHub | Org/Enterprise ▸ audit log ▸ **Export** (JSON / NDJSON) | GitHub audit (auto) |
+| GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
+| Nutanix Prism Central | Settings ▸ **Syslog server** (modules: Audit / API Audit / Flow) → your collector | Nutanix Prism Central (auto) |
+| Nutanix Files / Data Lens | **Partner server** (`vendor_name: syslog`, :1468) file-audit notifications, or a File-Analytics / Data-Lens JSON export | Nutanix Files (auto) |
+| Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
+| Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
+| IBM QRadar | Routing/forwarding rule ▸ export events as **LEEF** (its native format), or CEF / syslog. *(A QRadar system-backup archive is proprietary — export events first.)* | LEEF (auto) |
+| Any LEEF source (QRadar, Juniper, Check Point …) | Syslog / file in Log Event Extended Format (`LEEF:1.0\|…` / `LEEF:2.0\|…`) | LEEF (auto) |
+| Any syslog source | Plain RFC 3164 / 5424 syslog not matched above | Generic syslog (auto) |
+| Any JSON source | Flat or ECS-style JSON / NDJSON not matched above | Generic JSON (auto) |
+
+Auto-detect inspects the header/content; if a file is ambiguous, pick the format
+explicitly in the upload form.
+
+</details>
+
+## Live ingestion
 
 Besides manual upload, LogOcean accepts logs in near-real-time through two front
 doors that share the same detect → parse → normalize → store pipeline.
 
-**HTTP ingest API.** Create a key on the **Admin** page, then POST raw log content:
+### HTTP ingest API
+
+Create a key on the **Admin** page, then POST raw log content:
 
 ```bash
 curl -X POST "http://localhost:8000/api/v1/ingest?format=auto&filename=fw.log" \
@@ -157,8 +243,10 @@ Bearer`. Only the sha256 of each key is stored (the plaintext is shown once). A
 decompressed size, with a decompression-bomb guard. Drag-dropping a `.gz` file
 into the web **Upload** page works the same way.
 
-**Syslog receiver.** Set `SYSLOG_ENABLED=true` to listen on UDP+TCP (default
-port 5514; TLS optional). Point a collector or device at it:
+### Syslog receiver
+
+Set `SYSLOG_ENABLED=true` to listen on UDP+TCP (default port 5514; TLS optional).
+Point a collector or device at it:
 
 ```bash
 logger -n localhost -P 5514 -d "<134>1 2026-06-24T10:00:00Z fw test message"
@@ -198,21 +286,7 @@ scheduler runs **correlation rules** over the event store. Matches raise **alert
 you can filter, drill into (down to the originating event), and triage at
 **`/alerts`**; open-alert counts show on the dashboard.
 
-**Triage & tuning.** Each alert can be **acknowledged / closed / reopened**,
-**assigned** to an analyst, and annotated with threaded **notes**. To cut noise,
-build **suppression / allowlist** rules — by rule id, source IP/CIDR, user, host
-and/or vendor (each set field is an AND condition). A matching alert is stored as
-`suppressed` (kept for audit, hidden from the default queue, and never notified or
-actioned), and the suppression's hit count is tracked. The fastest way to make one
-is the **Suppress similar** form on any alert (pre-filled from its attributes);
-manage them all under **Admin ▸ Suppressions**.
-
-**Cases / incidents.** Group related alerts into one investigation at **`/cases`**.
-Create a case from any alert (or add it to an open one), give it a status
-(`open` / `investigating` / `closed`), an assignee and threaded notes; its severity
-**rolls up** to the highest of its member alerts. The case page suggests **related
-alerts** — open, un-cased alerts sharing a source IP, user or host with the case —
-so a burst of activity folds into a single timeline with one click.
+### Rules
 
 Rules are YAML files in `rules/` (a Sigma-compatible subset), tagged with MITRE
 ATT&CK, and enable/disable from the Admin page (applies immediately). The engine
@@ -220,7 +294,7 @@ supports the common Sigma field modifiers so many community rules load as-is:
 `contains`/`startswith`/`endswith`/`re` (with `i`/`m`/`s` flags)/`cased`, value
 lists with `|all`, `cidr` (IP-in-network), numeric `lt`/`lte`/`gt`/`gte`,
 `exists`, `fieldref`, and the `base64`/`base64offset`/`windash` encoding
-modifiers for command-line obfuscation — plus the `and`/`or`/`not` + `N of … `
+modifiers for command-line obfuscation — plus the `and`/`or`/`not` + `N of …`
 condition grammar.
 
 ```yaml
@@ -236,6 +310,7 @@ detection:
   condition: selection and permitted
 tags: [attack.t1021.001, attack.lateral_movement]
 ```
+
 ```yaml
 # correlation (threshold) rule — e.g. brute force
 title: Brute Force - Failed Logon Burst
@@ -249,48 +324,80 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with a starter rule pack (43 detection + 6 correlation rules) covering
+LogOcean ships a starter pack of **43 detection + 6 correlation rules** covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
 (logging disabled, root console login, world-open security groups, access-key
 creation), Entra ID (risky sign-in succeeded, legacy auth), Okta (admin grant,
-MFA deactivation), Microsoft 365 (mailbox forwarding rules), GitHub (repo
-made public), **Tripwire file-integrity monitoring** (critical system /
-credential file change, web-shell drop, persistence-mechanism change, integrity
-monitoring disabled, monitored-object deletion, plus a mass-change-burst
-correlation for ransomware / bulk tampering), and a **Sysmon / endpoint** pack
-(Office spawning a shell, LOLBin proxy execution, registry Run-key / WMI
-persistence, LSASS credential dumping, shadow-copy deletion, scheduled-task
-creation, command-line log clearing), and an **OT / ICS** pack (Modbus write /
-diagnostic, S7comm program download / PLC stop, DNP3 device restart / disable-
-unsolicited, CIP set-attribute write, an **IT→OT write conduit-violation** (Purdue /
-IEC 62443 zone) rule, and an OT-protocol enumeration correlation — tagged with
-**ATT&CK for ICS** techniques; see below), and a **Nutanix Prism Central** pack
-(VM / cloud-instance deletion via the REST API, cluster unregister / detach,
-user / role / authentication change, plus a Flow microsegmentation
-drop-burst correlation for internal scanning / lateral movement).
-and a **Nutanix Files / Data Lens** pack (ransomware-encrypted-extension / ransom-note
-write, share ACL / permission change, plus a mass-file-deletion-per-user correlation
-for ransomware / wiper / insider destruction).
+MFA deactivation), Microsoft 365 (mailbox forwarding rules), GitHub (repo made
+public), and these purpose-built packs:
+
+- **Tripwire file-integrity monitoring** — critical system / credential file
+  change, web-shell drop, persistence-mechanism change, integrity monitoring
+  disabled, monitored-object deletion, plus a mass-change-burst correlation for
+  ransomware / bulk tampering.
+- **Sysmon / endpoint** — Office spawning a shell, LOLBin proxy execution, registry
+  Run-key / WMI persistence, LSASS credential dumping, shadow-copy deletion,
+  scheduled-task creation, command-line log clearing.
+- **OT / ICS** — Modbus write / diagnostic, S7comm program download / PLC stop,
+  DNP3 device restart / disable-unsolicited, CIP set-attribute write, an **IT→OT
+  write conduit-violation** (Purdue / IEC 62443 zone) rule, and an OT-protocol
+  enumeration correlation — tagged with **ATT&CK for ICS** (see
+  [OT / ICS monitoring](#ot--ics-monitoring)).
+- **Nutanix Prism Central** — VM / cloud-instance deletion via the REST API, cluster
+  unregister / detach, user / role / authentication change, plus a Flow
+  microsegmentation drop-burst correlation for internal scanning / lateral movement.
+- **Nutanix Files / Data Lens** — ransomware-encrypted-extension / ransom-note write,
+  share ACL / permission change, plus a mass-file-deletion-per-user correlation for
+  ransomware / wiper / insider destruction.
+
 Detection can be turned off with `DETECTION_ENABLED=false`.
 
-**Coverage scoreboard (`/coverage`).** The detection pack is grown against a measured
-**MITRE ATT&CK** (Enterprise + ICS) and **MITRE ATLAS** (adversarial-AI) coverage map,
-computed from the rules themselves — what LogOcean *can* detect, not what has fired.
-The page rolls coverage up by tactic, **fidelity** (`high` / `medium` / `hunt`) and
-**data source**, renders the ATLAS matrix (a scaffold until AI/LLM telemetry lands), and
-exports MITRE ATT&CK **Navigator** layers scored by rule coverage
-(`/coverage/attack-navigator.json`, `?domain=ics` for the ICS matrix). A CI rule-linter
-enforces per-rule quality (unique ids, valid level/fidelity, an `attack.*`/`atlas.*` tag).
-The programme is tracked in [docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md).
+### Triage & tuning
 
-**Import community SigmaHQ rules.** `scripts/import_sigma.py` translates the thousands of open,
-ATT&CK-tagged [SigmaHQ](https://github.com/SigmaHQ/sigma) rules into LogOcean's engine — Sigma
-`logsource` becomes a gate over our normalized fields (a `process_creation` rule only fires on
-process-create events), Sigma field names pass through (our Sysmon/endpoint parsers lift them onto
-`raw`), and anything we can't faithfully run is **skipped with a reason** (unmapped logsource,
-unsupported modifier, Sigma aggregation/correlation, deprecated). Point it at a clone and it emits
+Each alert can be **acknowledged / closed / reopened**, **assigned** to an analyst,
+and annotated with threaded **notes**. To cut noise, build **suppression /
+allowlist** rules — by rule id, source IP/CIDR, user, host and/or vendor (each set
+field is an AND condition). A matching alert is stored as `suppressed` (kept for
+audit, hidden from the default queue, and never notified or actioned), and the
+suppression's hit count is tracked. The fastest way to make one is the **Suppress
+similar** form on any alert (pre-filled from its attributes); manage them all under
+**Admin ▸ Suppressions**.
+
+### Cases / incidents
+
+Group related alerts into one investigation at **`/cases`**. Create a case from any
+alert (or add it to an open one), give it a status (`open` / `investigating` /
+`closed`), an assignee and threaded notes; its severity **rolls up** to the highest
+of its member alerts. The case page suggests **related alerts** — open, un-cased
+alerts sharing a source IP, user or host with the case — so a burst of activity
+folds into a single timeline with one click.
+
+## Detection coverage
+
+### Coverage scoreboard
+
+The **`/coverage`** page grows the detection pack against a measured **MITRE ATT&CK**
+(Enterprise + ICS) and **MITRE ATLAS** (adversarial-AI) coverage map, computed from
+the rules themselves — what LogOcean *can* detect, not what has fired. It rolls
+coverage up by tactic, **fidelity** (`high` / `medium` / `hunt`) and **data
+source**, renders the ATLAS matrix (a scaffold until AI/LLM telemetry lands), and
+exports MITRE ATT&CK **Navigator** layers scored by rule coverage
+(`/coverage/attack-navigator.json`, `?domain=ics` for the ICS matrix). A CI
+rule-linter enforces per-rule quality (unique ids, valid level/fidelity, an
+`attack.*`/`atlas.*` tag). The programme is tracked in
+[docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md).
+
+### Import community SigmaHQ rules
+
+`scripts/import_sigma.py` translates the thousands of open, ATT&CK-tagged
+[SigmaHQ](https://github.com/SigmaHQ/sigma) rules into LogOcean's engine — Sigma
+`logsource` becomes a gate over our normalized fields (a `process_creation` rule
+only fires on process-create events), Sigma field names pass through (our
+Sysmon/endpoint parsers lift them onto `raw`), and anything we can't faithfully run
+is **skipped with a reason** (unmapped logsource, unsupported modifier, Sigma
+aggregation/correlation, deprecated). Point it at a clone and it emits
 `rules/imported/*.yml` (loaded alongside `rules/`, generated per-deployment):
 
 ```bash
@@ -298,7 +405,7 @@ git clone https://github.com/SigmaHQ/sigma
 python scripts/import_sigma.py --src sigma/rules --write   # then restart to load
 ```
 
-### Notifications & agentless response
+## Notifications & response
 
 Newly-raised alerts at or above `NOTIFY_MIN_LEVEL` are delivered to **notification
 channels** — a webhook (Slack/Teams/Discord/generic, `WEBHOOK_URL`) and/or email
@@ -320,27 +427,6 @@ match: { rule_id: [lo-corr-bruteforce-logon], min_level: high }
 action: { type: block_ip, target: src_ip }   # POSTs {action, target, alert} to your SOAR
 revert_after: 600
 ```
-
-## Dashboards & reporting
-
-The **dashboard** (`/`) shows headline counters (events, open alerts, open cases,
-on-disk size), an **alert-volume time series**, and **top-N** breakdowns — top
-firing rules, top MITRE ATT&CK techniques, and top alert/event source IPs — plus
-the existing per-vendor / per-log-type / partition tables. All charts are
-server-rendered CSS/SVG (no JS chart library, no extra dependencies).
-
-The **`/reports`** page is a print-friendly summary over a selectable period
-(7–90 days) — headline metrics, alert status, the same time series and top-N
-charts, and the coverage span. Use **Print / Save as PDF** for a shareable PDF,
-and the toolbar buttons to export:
-
-- **ATT&CK Navigator layer** — `GET /reports/attack-navigator.json?days=N` returns a
-  Navigator (layer 4.5) JSON scoring each technique by alert volume; load it at the
-  [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to visualize
-  coverage. Add `&domain=ics-attack` for an **ATT&CK for ICS** layer (OT `T0NNN`
-  techniques); the default is the Enterprise matrix.
-- **Alerts CSV** — `GET /alerts.csv` streams the alert list (honours the `/alerts`
-  filters), with spreadsheet-formula injection neutralized.
 
 ## UEBA & entity risk
 
@@ -368,65 +454,66 @@ across ATT&CK tactics over time. The **`/killchain`** page stitches related aler
 into **attack stories**:
 
 - alerts are linked when they **share an entity** (user / host / IP) and fall within
-  `KILLCHAIN_MAX_GAP_MINUTES` of each other (single-linkage, so a long campaign chained
-  through intermediate alerts stays one story);
+  `KILLCHAIN_MAX_GAP_MINUTES` of each other (single-linkage, so a long campaign
+  chained through intermediate alerts stays one story);
 - a linked group only qualifies when it spans **≥ `KILLCHAIN_MIN_TACTICS` distinct
-  ATT&CK tactics** — showing progression along the kill chain, not just a burst of one
-  behaviour;
-- each story is presented as **kill-chain-ordered stages** (Initial Access → Execution →
-  Credential Access → …), the **pivot entities** that tie it together, a rolled-up
-  severity, and a plain narrative.
+  ATT&CK tactics** — showing progression along the kill chain, not just a burst of
+  one behaviour;
+- each story is presented as **kill-chain-ordered stages** (Initial Access →
+  Execution → Credential Access → …), the **pivot entities** that tie it together, a
+  rolled-up severity, and a plain narrative.
 
-Promote a story to an investigation **case** with one click (severity + alert linkage
-roll up exactly like a manually built case). With `KILLCHAIN_AUTOCREATE=true`, a
-background scheduler auto-promotes stories at or above `KILLCHAIN_MIN_SEVERITY`,
-de-duplicated by the story's alert-set signature. The reconstruction runs over recent
-**un-cased** alerts, so once a story is folded into a case it won't be re-surfaced. Like
-UEBA, it's pure PostgreSQL — the reconstructor (`app/killchain.py`) is dependency-free
-and fully unit-tested.
+Promote a story to an investigation **case** with one click (severity + alert
+linkage roll up exactly like a manually built case). With `KILLCHAIN_AUTOCREATE=true`,
+a background scheduler auto-promotes stories at or above `KILLCHAIN_MIN_SEVERITY`,
+de-duplicated by the story's alert-set signature. The reconstruction runs over
+recent **un-cased** alerts, so once a story is folded into a case it won't be
+re-surfaced. Like UEBA, it's pure PostgreSQL — the reconstructor
+(`app/killchain.py`) is dependency-free and fully unit-tested.
 
 ## Detection-engineering workbench
 
 The **`/workbench`** page helps you tune the detection pack itself:
 
 - **ATT&CK coverage map** — per-tactic (kill-chain-ordered) view of which techniques
-  the **enabled** rules cover, and the **gaps** (techniques only a *disabled* rule would
-  catch, or none at all), plus an overall coverage %.
+  the **enabled** rules cover, and the **gaps** (techniques only a *disabled* rule
+  would catch, or none at all), plus an overall coverage %.
 - **Rule health** — every rule with its firing counts over the last
   `WORKBENCH_WINDOW_DAYS`, bucketed into **noisy** (≥ `WORKBENCH_NOISY_THRESHOLD`
-  alerts in the window), **never-fired** (enabled but no alert on record — untested or
-  dead), and **stale** (fired historically, silent now).
+  alerts in the window), **never-fired** (enabled but no alert on record — untested
+  or dead), and **stale** (fired historically, silent now).
 - **Rule tester** — paste a Sigma-subset rule and a sample event and evaluate it with
-  the *same* engine the pipeline uses; the result shows the final verdict, the logsource
-  match, and **each named selection's** boolean so you can see exactly why it did or
-  didn't fire. Event fields may be normalized names (`user_name`, `src_ip`…) or raw
-  vendor fields.
+  the *same* engine the pipeline uses; the result shows the final verdict, the
+  logsource match, and **each named selection's** boolean so you can see exactly why
+  it did or didn't fire. Event fields may be normalized names (`user_name`,
+  `src_ip`…) or raw vendor fields.
 
-The analytics (`app/workbench.py`) are pure functions over the rule registry, so they're
-fully unit-tested without a database.
+The analytics (`app/workbench.py`) are pure functions over the rule registry, so
+they're fully unit-tested without a database.
 
-## AI SOC copilot (Claude)
+## AI SOC copilot
 
-With `COPILOT_ENABLED=true` and an API key, LogOcean adds Claude-powered assistance at
-three points (off by default; the app runs fine without the `anthropic` package):
+With `COPILOT_ENABLED=true` and an API key, LogOcean adds Claude-powered assistance
+at three points (off by default; the app runs fine without the `anthropic`
+package):
 
-- **Alert explainer** — on any alert, *Explain this alert* sends the alert plus related
-  activity (same entity) to Claude and returns a plain-language "what happened / why it
-  fired / severity & likelihood / triage steps" briefing.
+- **Alert explainer** — on any alert, *Explain this alert* sends the alert plus
+  related activity (same entity) to Claude and returns a plain-language "what
+  happened / why it fired / severity & likelihood / triage steps" briefing.
 - **Case summarizer** — on a case, *Summarize this case* drafts an incident summary
   (attack narrative in ATT&CK order, impacted entities, recommended actions) from the
   member alerts and notes; one click saves it as a case note.
-- **Sigma-from-natural-language** — on the workbench, describe a detection in English and
-  Claude drafts a Sigma-subset rule, loaded straight into the **rule tester** so you can
-  validate it before adding it to `rules/`.
+- **Sigma-from-natural-language** — on the workbench, describe a detection in English
+  and Claude drafts a Sigma-subset rule, loaded straight into the **rule tester** so
+  you can validate it before adding it to `rules/`.
 
-The model is configurable (`COPILOT_MODEL`, default `claude-opus-4-8`) so operators can
-trade cost for capability (e.g. `claude-sonnet-4-6`). Prompt construction and the
-Sigma-extraction logic (`app/copilot/prompts.py`) are pure and fully unit-tested; the SDK
-call is a thin wrapper that degrades gracefully when unconfigured. Every AI action is
-RBAC-gated (analyst) and written to the audit log.
+The model is configurable (`COPILOT_MODEL`, default `claude-opus-4-8`) so operators
+can trade cost for capability (e.g. `claude-sonnet-4-6`). Prompt construction and
+the Sigma-extraction logic (`app/copilot/prompts.py`) are pure and fully
+unit-tested; the SDK call is a thin wrapper that degrades gracefully when
+unconfigured. Every AI action is RBAC-gated (analyst) and written to the audit log.
 
-## OT / ICS monitoring (Zeek + ICSNPP)
+## OT / ICS monitoring
 
 LogOcean monitors **operational-technology** networks — PLCs, RTUs, and other
 controllers — the safe way: **100% passive and agentless**. It never talks to a
@@ -470,25 +557,26 @@ Navigator export serves an ICS layer at
 `GET /reports/attack-navigator.json?domain=ics-attack`.
 
 **OT analysis (`/ot`).** A dedicated page turns the OT telemetry into operator
-analytics: an **asset inventory** of the controllers (PLCs / RTUs) seen on the wire —
-the protocols each speaks, how many masters talk to it, and its control-op volume; a
-**master → controller conversation** map that flags a **`new-writer`** (a source first
-seen in the last 24h already issuing write / control commands to a controller — the
-top OT signal, an unexpected engineering client); and **read / write / control**
-activity per protocol. It's pure PostgreSQL aggregation over the events, no schema
-change. The **IT→OT conduit-violation** rule (`rules/ot_it_to_ot_write.yml`) enforces
-the Purdue / IEC 62443 zone model with `cidr` selections — a write/control command
-from outside the OT zone alerts (tune the CIDRs to your control network).
+analytics: an **asset inventory** of the controllers (PLCs / RTUs) seen on the
+wire — the protocols each speaks, how many masters talk to it, and its control-op
+volume; a **master → controller conversation** map that flags a **`new-writer`** (a
+source first seen in the last 24h already issuing write / control commands to a
+controller — the top OT signal, an unexpected engineering client); and **read /
+write / control** activity per protocol. It's pure PostgreSQL aggregation over the
+events, no schema change. The **IT→OT conduit-violation** rule
+(`rules/ot_it_to_ot_write.yml`) enforces the Purdue / IEC 62443 zone model with
+`cidr` selections — a write/control command from outside the OT zone alerts (tune
+the CIDRs to your control network).
 
 **Compliance.** OT rule coverage maps to **IEC 62443-3-3** System Requirements and
-**NERC CIP** (plus NIST 800-53) on the `/compliance` page, alongside the existing
-IT frameworks.
+**NERC CIP** (plus NIST 800-53) on the `/compliance` page, alongside the existing IT
+frameworks.
 
 **Scope & limits.** LogOcean is a log platform, not a sensor — it needs Zeek+ICSNPP
 (or a commercial DPI sensor) on the wire; it does no DPI itself. Serial Modbus and
 L2 GOOSE / Sampled-Values can't arrive over IP logs and need a sensor that sees
-them. OT response stays passive: alert / ticket / enforce at the IT boundary — never
-a device command.
+them. OT response stays passive: alert / ticket / enforce at the IT boundary —
+never a device command.
 
 ## Agentless collectors & feeds
 
@@ -496,16 +584,17 @@ Two agentless ways to get logs in without manual upload:
 
 - **Pull collectors** — set `COLLECTORS_ENABLED=true` and a collector's credentials.
   A scheduler fetches new records every `COLLECTOR_INTERVAL` seconds, checkpointing a
-  per-source cursor so each run only pulls what's new, and feeds them through the same
-  parse→detect→alert pipeline. Status + enable/disable are on the **Admin** page.
-  Built-in collectors (each activates only when its credentials are set):
+  per-source cursor so each run only pulls what's new, and feeds them through the
+  same parse→detect→alert pipeline. Status + enable/disable are on the **Admin**
+  page. Built-in collectors (each activates only when its credentials are set):
   - **Okta** System Log (`OKTA_*`), **GitHub** audit log (`GITHUB_*`), **GitLab**
     audit events (`GITLAB_*`) — token-based REST.
   - **AWS CloudTrail** (`AWS_REGION` + `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY`,
     optional `AWS_SESSION_TOKEN`) — `LookupEvents` signed with **AWS SigV4** (stdlib).
   - **Microsoft Entra ID** sign-in logs and **Microsoft 365** unified audit log —
-    one Azure app registration (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`),
-    **OAuth2 client-credentials**. Entra uses Microsoft Graph; M365 uses the Office 365
+    one Azure app registration
+    (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`), **OAuth2
+    client-credentials**. Entra uses Microsoft Graph; M365 uses the Office 365
     Management Activity API and additionally needs `M365_ENABLED=true`.
   - **GCP Cloud Audit Logs** (`GCP_PROJECT_ID` + `GCP_CLIENT_EMAIL` + `GCP_PRIVATE_KEY`
     from a service-account key) — Cloud Logging `entries:list`, authenticated with a
@@ -523,12 +612,12 @@ Two agentless ways to get logs in without manual upload:
 
 Set `THREATINTEL_ENABLED=true` to match every ingested event against **indicators of
 compromise** — IPs, CIDRs, domains, file hashes, and URLs. A hit raises a **Threat
-Intelligence Match** alert that flows through the normal alert → notify → response path
-(its severity is the highest of the matched indicators).
+Intelligence Match** alert that flows through the normal alert → notify → response
+path (its severity is the highest of the matched indicators).
 
-- **Feeds** — `THREATINTEL_FEEDS` is a comma/space-separated list of local file paths or
-  `http(s)` URLs, refreshed every `THREATINTEL_REFRESH_MINUTES`. Each feed may be a plain
-  one-indicator-per-line list (`#` comments allowed), a CSV
+- **Feeds** — `THREATINTEL_FEEDS` is a comma/space-separated list of local file paths
+  or `http(s)` URLs, refreshed every `THREATINTEL_REFRESH_MINUTES`. Each feed may be a
+  plain one-indicator-per-line list (`#` comments allowed), a CSV
   (`indicator[,type[,severity[,description]]]`), or JSON (an array of strings or of
   objects). Indicator type is inferred when not given.
 - **Manual indicators** — add or remove individual IOCs from the **Admin** page; a
@@ -544,45 +633,30 @@ echo -e "# bad infra\n203.0.113.5\nevil.example\nhttp://drop.example/x" > feeds/
 THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usual
 ```
 
-## How to export the logs to upload
+## Dashboards & reporting
 
-| Source | How to export | Upload as |
-|---|---|---|
-| Palo Alto NGFW | Monitor ▸ Logs ▸ (Traffic/Threat/URL/System/Config) ▸ **Export to CSV** | Palo Alto CSV (auto) |
-| Palo Alto NGFW | Syslog file from your collector / forwarder | Palo Alto syslog (auto) |
-| Fortinet FortiGate | Syslog from your collector, or FortiAnalyzer ▸ **Log download** | Fortinet FortiGate (auto) |
-| CrowdStrike Falcon | Endpoint security ▸ Detections / Incidents ▸ **Export** (CSV) | CrowdStrike CSV (auto) |
-| CrowdStrike Falcon | Event Search / API / FDR export (JSON or NDJSON) | CrowdStrike JSON (auto) |
-| Windows hosts | `Get-WinEvent -LogName Security` ▸ **Export-Csv** (or **ConvertTo-Json**); or Event Viewer ▸ **Save All Events As CSV** | Windows Security (auto) |
-| Windows hosts (Sysmon) | `Get-WinEvent -LogName 'Microsoft-Windows-Sysmon/Operational'` ▸ **ConvertTo-Json** / **Export-Csv** | Sysmon (auto) |
-| Linux hosts | `/var/log/audit/audit.log` (auditd) | Linux auditd (auto) |
-| Apache / Nginx | `access.log` (Common / Combined Log Format) | Apache / Nginx access (auto) |
-| Suricata IDS/IPS | `eve.json` (NDJSON) or an exported JSON array | Suricata EVE (auto) |
-| Cisco ASA / Firepower | Syslog from your collector (lines with `%ASA-…`/`%FTD-…`) | Cisco ASA / Firepower (auto) |
-| Cisco IOS / IOS-XE / NX-OS | Device syslog (lines with `%FACILITY-SEV-MNEMONIC`) | Cisco IOS (auto) |
-| Cisco Meraki | Dashboard ▸ syslog server output (flows / urls / ids-alerts …) | Cisco Meraki (auto) |
-| Zeek (Bro) | `conn.log` / `dns.log` / `http.log` — classic TSV (`#fields`) **or** JSON | Zeek TSV / JSON (auto) |
-| AWS CloudTrail | S3/CloudWatch export or `aws cloudtrail lookup-events` (JSON) | AWS CloudTrail (auto) |
-| Google Cloud | Cloud Logging export or `gcloud logging read --format json` | Google Cloud Audit (auto) |
-| Microsoft Azure | Activity Log export (`{"records":…}`) or `az monitor activity-log list` | Microsoft Azure Activity (auto) |
-| Microsoft 365 | `Search-UnifiedAuditLog` ▸ **AuditData**, or Management Activity API (JSON) | Microsoft 365 (auto) |
-| Microsoft Entra ID | Sign-in logs via Graph `auditLogs/signIns` or Azure Monitor export (JSON) | Microsoft Entra ID (auto) |
-| Okta | System Log API export (JSON array / NDJSON) | Okta System Log (auto) |
-| GitHub | Org/Enterprise ▸ audit log ▸ **Export** (JSON / NDJSON) | GitHub audit (auto) |
-| GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
-| Nutanix Prism Central | Settings ▸ **Syslog server** (modules: Audit / API Audit / Flow) → your collector | Nutanix Prism Central (auto) |
-| Nutanix Files / Data Lens | **Partner server** (`vendor_name: syslog`, :1468) file-audit notifications, or a File-Analytics / Data-Lens JSON export | Nutanix Files (auto) |
-| Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
-| Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
-| IBM QRadar | Routing/forwarding rule ▸ export events as **LEEF** (its native format), or CEF / syslog. *(A QRadar system-backup archive is proprietary — export events first.)* | LEEF (auto) |
-| Any LEEF source (QRadar, Juniper, Check Point …) | Syslog / file in Log Event Extended Format (`LEEF:1.0\|…` / `LEEF:2.0\|…`) | LEEF (auto) |
-| Any syslog source | Plain RFC 3164 / 5424 syslog not matched above | Generic syslog (auto) |
-| Any JSON source | Flat or ECS-style JSON / NDJSON not matched above | Generic JSON (auto) |
+The **dashboard** (`/`) shows headline counters (events, open alerts, open cases,
+on-disk size), an **alert-volume time series**, and **top-N** breakdowns — top
+firing rules, top MITRE ATT&CK techniques, and top alert/event source IPs — plus
+the existing per-vendor / per-log-type / partition tables. All charts are
+server-rendered CSS/SVG (no JS chart library, no extra dependencies).
 
-Auto-detect inspects the header/content; if a file is ambiguous, pick the format
-explicitly in the upload form.
+The **`/reports`** page is a print-friendly summary over a selectable period (7–90
+days) — headline metrics, alert status, the same time series and top-N charts, and
+the coverage span. Use **Print / Save as PDF** for a shareable PDF, and the toolbar
+buttons to export:
 
-## Configuration (`.env`)
+- **ATT&CK Navigator layer** — `GET /reports/attack-navigator.json?days=N` returns a
+  Navigator (layer 4.5) JSON scoring each technique by alert volume; load it at the
+  [ATT&CK Navigator](https://mitre-attack.github.io/attack-navigator/) to visualize
+  coverage. Add `&domain=ics-attack` for an **ATT&CK for ICS** layer (OT `T0NNN`
+  techniques); the default is the Enterprise matrix.
+- **Alerts CSV** — `GET /alerts.csv` streams the alert list (honours the `/alerts`
+  filters), with spreadsheet-formula injection neutralized.
+
+## Configuration
+
+All settings are environment variables (see `.env.example`).
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -622,8 +696,8 @@ explicitly in the upload form.
 
 ## Project layout
 
-```
-Log-Parser-Storage/
+```text
+SIEM-Lite/                  # repo root (product: LogOcean)
 ├── docker-compose.yml      # Postgres + app
 ├── Dockerfile
 ├── schema.sql              # partitioned events table, FTS, indexes, batches
@@ -641,7 +715,7 @@ Log-Parser-Storage/
 │   ├── alert_actions.py    # fan new alerts to notifications + response
 │   ├── notify/             # webhook + email channels, background dispatcher
 │   ├── response/           # agentless response playbooks + audit log
-│   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365) + scheduler
+│   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365/GCP) + scheduler
 │   ├── threatintel/        # IOC matcher + feed loader + index runtime
 │   ├── triage/             # suppression/allowlist matcher + index runtime
 │   ├── navigator.py        # ATT&CK Navigator layer export (pure)
@@ -650,6 +724,8 @@ Log-Parser-Storage/
 │   ├── killchain_runtime.py # DB-backed reconstruction + auto-create scheduler
 │   ├── ot.py               # OT/ICS analytics: asset/conversation classification (pure)
 │   ├── workbench.py        # detection workbench: rule tester + coverage + health (pure)
+│   ├── coverage.py         # ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard
+│   ├── sigma_import.py     # translate community SigmaHQ rules → our engine (logsource gate)
 │   ├── copilot/            # AI SOC copilot — prompts.py (pure) + client.py (Claude SDK wrapper)
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
@@ -657,38 +733,24 @@ Log-Parser-Storage/
 │   ├── models.py           # NormalizedEvent
 │   ├── auth.py             # password hashing (pbkdf2), roles, RBAC dependency
 │   ├── compliance.py       # MITRE technique → framework control mapping + report
-│   ├── coverage.py         # ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard
-│   ├── sigma_import.py     # translate community SigmaHQ rules → our engine (logsource gate)
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
-│   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
-│   │                       #   zeek_{tsv,json} (+ zeek_ics OT/ICS enrichment), crowdstrike_{csv,json},
-│   │                       #   windows_security, sysmon,
-│   │                       #   linux_auditd, web_access, suricata_eve, cef, leef, generic_{syslog,json},
-│   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
-│   │                       #   okta_system_log, github_audit, gitlab_audit, nutanix_pc, nutanix_files
-│   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
-│   │                       #   case, killchain, risk, entity, ot, responses, compliance,
-│   │                       #   report, coverage, workbench, admin, login, _macros (chart partials)
+│   ├── parsers/            # 29 vendor/format parsers (+ zeek_ics OT/ICS enrichment helper)
+│   ├── templates/          # server-rendered Jinja2 pages (+ _macros chart partials)
 │   └── static/style.css
 ├── rules/                  # detection + correlation rules (Sigma-subset YAML) · imported/ (SigmaHQ imports)
 ├── playbooks/              # agentless response playbooks
 ├── clients/                # logocean_push.py (push helper) · logocean_import.py (bulk file import)
 ├── scripts/                # coverage_report.py (coverage + Navigator layers) · import_sigma.py (SigmaHQ import)
 ├── docs/                   # DETECTION_COVERAGE_ROADMAP.md (living detection-coverage plan)
-├── samples/                # one example file per format
-└── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,
-                            #   pipeline,correlation,notify,response,collectors,auth,
-                            #   threatintel,triage,severity,navigator,risk,killchain,
-                            #   workbench,copilot,hardening,ot,compression,audit,compliance}
-                            # integration (real Postgres): conftest.py +
-                            #   test_integration_{db,api}.py
+├── samples/                # one example file per format (+ samples/sigma/ importer fixtures)
+└── tests/                  # unit (DB-free) + integration (real Postgres) tiers
 ```
 
-## Tests
+## Testing & CI
 
-The suite has two tiers. **Unit tests** are DB-free and run anywhere;
-**integration tests** (marked `integration`) exercise a real PostgreSQL and
-self-skip when `DB_DSN` is unset.
+The suite has two tiers. **Unit tests** are DB-free and run anywhere; **integration
+tests** (marked `integration`) exercise a real PostgreSQL and self-skip when
+`DB_DSN` is unset.
 
 ```bash
 pip install pytest python-dateutil
@@ -701,93 +763,111 @@ DB_DSN=postgresql://logocean:logocean@localhost:5432/logocean \
   PYTHONPATH=. python -m pytest tests/ -m integration -q
 ```
 
-The **unit** tests cover parsers + auto-detection (over the bundled samples),
-API-key auth, the async ingest queue (grouping, worker loop, backpressure),
-syslog TCP framing, gzip ingest decompression (bomb-guarded) + the bulk-import
-client's line-aligned chunker, the detection engine (Sigma-subset matching, all
-field modifiers + condition grammar, incl. the Tripwire-FIM and Sysmon/endpoint
-rule packs), inline detection in the pipeline,
-correlation-rule loading/dedup, notification routing + dispatcher, response
-playbook matching/execution, collector URL/cursor logic (incl. AWS SigV4 +
-Microsoft OAuth helpers), threat-intel (IOC classification, feed parsing,
-matching + alerting), suppression/allowlist matching, case severity roll-up, the
-ATT&CK Navigator layer builder, UEBA entity extraction + risk scoring,
-**kill-chain reconstruction** (chain-building, tactic ordering, story summary),
-the **detection workbench** (rule tester, ATT&CK coverage map, rule-health
-bucketing), the **AI copilot** (prompt construction, Sigma extraction/validation,
-and the explain/summarize/generate operations against a fake client), auth
-(password hashing, role ranking, the RBAC dependency), the audit helper, the
-**OT/ICS** Zeek-ICSNPP enrichment + rule pack (with ATT&CK-for-ICS kill-chain and
-Navigator domain), and the compliance coverage report — all without a database (the
-queue, pipeline, and worker tests mock the writers).
+The **unit** tier covers parsers + auto-detection (over the bundled samples), API-key
+auth, the async ingest queue (grouping, worker loop, backpressure), syslog TCP
+framing, gzip ingest decompression (bomb-guarded) + the bulk-import client's
+line-aligned chunker, the detection engine (Sigma-subset matching, all field
+modifiers + condition grammar, incl. the Tripwire-FIM, Sysmon/endpoint, Nutanix, and
+OT packs), the **SigmaHQ importer** (translation, logsource gating, skip reasons),
+the **coverage scoreboard** + **rule-linter**, inline detection in the pipeline,
+correlation-rule loading/dedup, notification routing + dispatcher, response playbook
+matching/execution, collector URL/cursor logic (incl. AWS SigV4 + Microsoft OAuth +
+GCP signed-JWT helpers), threat-intel (IOC classification, feed parsing, matching +
+alerting), suppression/allowlist matching, case severity roll-up, the ATT&CK
+Navigator builder, UEBA entity extraction + risk scoring, kill-chain reconstruction,
+the detection workbench, the AI copilot (prompt construction + Sigma extraction
+against a fake client), auth (pbkdf2, role ranking, the RBAC dependency), the audit
+helper, the OT/ICS enrichment + rule pack, and the compliance report — all without a
+database.
 
-The **integration** tests run against an actual PostgreSQL 16 and verify what
-mocks can't: month-partition auto-creation, the GIN full-text index, inet/CIDR
-search, ON CONFLICT dedup, retention purge dropping whole partitions, the
-correlation SQL, the pipeline write path raising alert rows (detection and
-threat-intel) and **suppressing** matched ones, alert insert/dedup/queries plus
-assignment/notes, **case grouping** (severity roll-up, related-alert discovery,
-status transitions), the alert analytics aggregations, **UEBA** entity baselines /
-new-entity & new-association anomalies / risk ranking, **kill-chain** story→case
-creation, the **workbench** windowed rule-firing stats, the IOC/suppression/auth/
-collector/registry round-trips, and the HTTP stack end-to-end (TestClient →
-API-key auth → ingest → detect, plus the dashboard / report / Navigator / CSV
-endpoints). CI runs the unit tier on Python 3.11–3.13 and the integration tier
-against a Postgres service container (`.github/workflows/tests.yml`).
+The **integration** tier runs against an actual PostgreSQL 16 and verifies what mocks
+can't: month-partition auto-creation, the GIN full-text index, inet/CIDR search, ON
+CONFLICT dedup, retention purge dropping whole partitions, the correlation SQL, the
+pipeline raising and **suppressing** alert rows, alert/case round-trips, the alert
+analytics aggregations, UEBA baselines / anomalies / risk ranking, kill-chain
+story→case creation, the workbench windowed stats, the coverage endpoints, and the
+HTTP stack end-to-end (TestClient → API-key auth → ingest → detect, plus the
+dashboard / report / Navigator / CSV endpoints). CI runs the unit tier on Python
+3.11–3.13 and the integration tier against a Postgres service container
+(`.github/workflows/tests.yml`).
 
-## Data model & retention notes
+## Data model & retention
 
 - `events` is partitioned `BY RANGE (event_time)`; partitions are monthly
   (`events_YYYYMM`) and created on demand at ingest. A `events_default` partition
   catches out-of-range timestamps. Time-range searches prune to the relevant months.
-- Retention = dropping whole monthly partitions older than the cutoff (instant,
-  no row-by-row delete). The **Admin** page exposes a guarded purge; the floor is
+- Retention = dropping whole monthly partitions older than the cutoff (instant, no
+  row-by-row delete). The **Admin** page exposes a guarded purge; the floor is
   `RETENTION_YEARS`. For 3-year retention you typically never purge — set
   `AUTO_PURGE=true` only when you want to *stop* keeping data beyond the floor.
-- Scale: tuned for manual-upload volumes (tens of millions of rows). For very high
-  ingest, batch larger files, add a read replica, or move hot search to OpenSearch.
+- **Idempotent ingest** — every record has a dedup hash, so re-uploading the same
+  file (or overlapping exports) does not create duplicates.
+- **Scale** — tuned for manual-upload volumes (tens of millions of rows). For very
+  high ingest, batch larger files, add a read replica, or move hot search to
+  OpenSearch.
 
 ## Parser accuracy notes
 
 - Palo Alto **CSV** maps by column header (robust across PAN-OS versions).
 - Palo Alto **syslog** uses documented positional field maps for Traffic/Threat/
-  System/Config (PAN-OS 10/11 common layout). The **complete positional field list
-  is preserved** in `raw.fields`, so even if a field index drifts on your PAN-OS
-  version, the data is retained and searchable, and the maps in
+  System/Config (PAN-OS 10/11 common layout). The **complete positional field list is
+  preserved** in `raw.fields`, so even if a field index drifts on your PAN-OS version,
+  the data is retained and searchable, and the maps in
   `app/parsers/paloalto_syslog.py` are easy to adjust.
-- CrowdStrike CSV/JSON resolve each field from multiple candidate names to cope
-  with detection vs incident vs FDR shapes.
+- CrowdStrike CSV/JSON resolve each field from multiple candidate names to cope with
+  detection vs incident vs FDR shapes.
 - **Cisco ASA/Firepower** mines the 5-tuple, bytes and user from the free-text message
-  (best-effort `src`/`dst`, `from`/`to`, Built `for`/`to`); the full message is in `raw`.
-- **Zeek** reads the `#separator` / `#fields` / `#path` header, so column order is taken
-  from the file itself; a file may concatenate several logs (each with its own header).
-- **Cloud/identity** JSON (CloudTrail, GCP, Azure, M365, Entra, Okta, GitHub, GitLab) is
-  routed by record keys and resolves fields case-insensitively to tolerate camelCase
+  (best-effort `src`/`dst`, `from`/`to`, Built `for`/`to`); the full message is in
+  `raw`.
+- **Zeek** reads the `#separator` / `#fields` / `#path` header, so column order is
+  taken from the file itself; a file may concatenate several logs (each with its own
+  header).
+- **Cloud/identity** JSON (CloudTrail, GCP, Azure, M365, Entra, Okta, GitHub, GitLab)
+  is routed by record keys and resolves fields case-insensitively to tolerate camelCase
   (Graph) vs PascalCase (Azure Monitor) and wrapper shapes (`{"Records":…}`,
   `{"records":…}`, `{"entries":…}`, `{"value":…}`).
-- **Generic JSON** is the JSON catch-all: it flattens one level so Elastic Common Schema
-  keys (`source.ip`, `event.action`, `user.name`) resolve, and maps a wide set of
-  candidate field names; anything unmapped stays in `raw`. It is the JSON fallback, so
-  a recognized source is never shadowed by it.
+- **Generic JSON** is the JSON catch-all: it flattens one level so Elastic Common
+  Schema keys (`source.ip`, `event.action`, `user.name`) resolve, and maps a wide set
+  of candidate field names; anything unmapped stays in `raw`. It is the JSON fallback,
+  so a recognized source is never shadowed by it.
 
 ## Security
 
 Set `AUTH_ENABLED=true` for **built-in login + RBAC** (roles: `admin` / `analyst` /
 `viewer`). An admin is bootstrapped on first run from `ADMIN_USER`/`ADMIN_PASSWORD`
 (a random password is logged if blank); manage users from the Admin page. Passwords
-are pbkdf2-hashed and sessions are server-side (revocable). Use `SESSION_COOKIE_SECURE=true`
-behind HTTPS. Every response carries **security headers** (`X-Frame-Options: DENY`,
-`X-Content-Type-Options: nosniff`, `Referrer-Policy`, and a CSP with
-`frame-ancestors 'none'`); with auth on, state-changing UI requests also get a
-**CSRF** same-origin (Origin/Referer) check, and the last enabled admin can't be
-demoted or disabled (no self-lockout). Security-relevant actions (login/logout, purge,
-key/rule/collector/user changes, alert triage, upload) are recorded in an **audit log**
-on the Admin page. With auth off, run behind your SSO/reverse proxy or on a trusted
-network. Either way, keep the Postgres volume backed up (it is your 3-year archive).
+are pbkdf2-hashed and sessions are server-side (revocable). Use
+`SESSION_COOKIE_SECURE=true` behind HTTPS. Every response carries **security
+headers** (`X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`,
+`Referrer-Policy`, and a CSP with `frame-ancestors 'none'`); with auth on,
+state-changing UI requests also get a **CSRF** same-origin (Origin/Referer) check,
+and the last enabled admin can't be demoted or disabled (no self-lockout).
+Security-relevant actions (login/logout, purge, key/rule/collector/user changes,
+alert triage, upload) are recorded in an **audit log** on the Admin page. With auth
+off, run behind your SSO/reverse proxy or on a trusted network. Either way, keep the
+Postgres volume backed up (it is your 3-year archive).
 
 **Input hardening.** Ingest treats all log content as untrusted: uploads and the API
 body are size-capped (`MAX_UPLOAD_MB`) and streamed so a huge payload can't exhaust
-memory; a deeply-nested JSON "bomb" is rejected before parsing by an explicit
-depth guard (`_MAX_JSON_DEPTH`, version-stable — not reliant on the interpreter
-raising `RecursionError`); CSV exports neutralize spreadsheet formula injection; and
+memory; a deeply-nested JSON "bomb" is rejected before parsing by an explicit depth
+guard (`_MAX_JSON_DEPTH`, version-stable — not reliant on the interpreter raising
+`RecursionError`); CSV exports neutralize spreadsheet formula injection; and
 correlation/search SQL uses whitelisted columns with fully parameterized values.
+
+## Roadmap
+
+Detection coverage is grown as a phased programme — see
+[docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md) for the
+living plan. Highlights: a measured **ATT&CK (Enterprise + ICS) + ATLAS** coverage
+scoreboard (done), a **community SigmaHQ importer** (done), curated high-fidelity
+endpoint / cloud / identity packs, a behavioural upgrade (temporal-sequence +
+distinct-count correlation, GeoIP enrichment for impossible-travel), and an
+**adversarial-AI (ATLAS)** track built on an LLM / AI-gateway telemetry parser.
+
+## License & attribution
+
+**Author:** Krishnendu De · **Co-author:** Claude Fable 5.0.
+
+See [`LICENSE`](LICENSE) for terms. Imported SigmaHQ rules retain their original
+authorship and are used under the Detection Rule License (DRL); MITRE ATT&CK and
+ATLAS are trademarks of The MITRE Corporation.
