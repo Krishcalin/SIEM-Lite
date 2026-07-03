@@ -299,6 +299,7 @@ app/
   ot.py          OT/ICS analytics: OT_PROTOCOLS + asset/conversation classification (pure)
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
   coverage.py    ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard (pure)
+  sigma_import.py  translate community SigmaHQ rules -> our engine (logsource gate; pure)
   copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
                  Entra+M365 OAuth) + gcp.py (GCP signed-JWT) + runner.py (scheduler)
@@ -581,6 +582,24 @@ telemetry lands), and ATT&CK **Navigator** layers scored by *rule coverage* (via
 — unique ids, required title/description, valid level/fidelity, ≥1 `attack.*`/`atlas.*`
 tag; every new rule must pass it. When adding a rule, set `fidelity` + `data_source` so
 the scoreboard stays accurate.
+
+**Importing community SigmaHQ rules (Phase 1, `app/sigma_import.py`).** `translate(sigma_doc)`
+→ `(our_rule_dict | None, skip_reason)`. Design: Sigma `logsource` (category/product/service)
+maps to a **gate selection** over our normalized fields (`process_creation` → `{action:
+process-create}`, `registry_set` → `{action: [registry-set, registry-add-delete, ...]}`,
+`network_connection` → `{action: network-connect}`, windows `security` service → `{vendor:
+microsoft, log_type: security}`, cloud by product → `{vendor: aws|gcp|okta|github|microsoft}`),
+which is AND-ed into the condition as a synthetic `_lo_logsource` selection (so `logsource:` stays
+empty and no engine change is needed). Sigma **field names pass through** — our Sysmon/endpoint
+parsers already lift `Image`/`CommandLine`/`TargetObject`/`DestinationPort` onto `raw`, and the
+engine resolves raw keys case-insensitively. **Honest skips** with a reason: `unmapped-logsource:*`,
+`unsupported-modifier:*` (mods outside `_SUPPORTED_MODS` — utf16/wide/expand/gzip…),
+`aggregation-condition` (a `|` count()/near in the condition), `sigma-correlation` (deferred to
+Phase 5), `status-deprecated`/`status-unsupported`. Imports carry `fidelity: medium`, `data_source`
+from the mapped category, DRL attribution (original id/author + SigmaHQ reference), and id
+`sigma-<uuid>`. `engine._rule_files` loads `rules/` **and** `rules/imported/` (the CLI
+`scripts/import_sigma.py --src <sigma>/rules --write` target; gitignored, generated per-deployment).
+Sample Sigma-format fixtures live in `samples/sigma/`; tests in `tests/test_sigma_import.py`.
 
 ## Adding a response playbook
 

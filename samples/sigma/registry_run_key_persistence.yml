@@ -1,0 +1,19 @@
+# Example Sigma-format rule (LogOcean importer test fixture; not official SigmaHQ content).
+title: Registry Run Key Persistence
+id: 22222222-2222-4222-8222-222222222222
+status: stable
+description: A value written under a CurrentVersion\Run key - classic autostart persistence.
+author: LogOcean test fixtures
+logsource:
+  category: registry_set
+  product: windows
+detection:
+  selection:
+    TargetObject|contains:
+      - \CurrentVersion\Run
+      - \CurrentVersion\RunOnce
+  condition: selection
+level: medium
+tags:
+  - attack.t1547.001
+  - attack.persistence

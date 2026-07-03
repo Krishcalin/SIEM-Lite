@@ -1,0 +1,27 @@
+# Example Sigma-format rule (LogOcean importer test fixture; not official SigmaHQ content).
+title: Certutil Download / Decode
+id: 11111111-1111-4111-8111-111111111111
+status: test
+description: certutil.exe used to download or decode a payload (LOLBin ingress transfer).
+author: LogOcean test fixtures
+references:
+  - https://lolbas-project.github.io/lolbas/Binaries/Certutil/
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection_img:
+    Image|endswith: \certutil.exe
+  selection_flags:
+    CommandLine|contains:
+      - urlcache
+      - -decode
+      - -urlcache
+  condition: selection_img and selection_flags
+level: high
+tags:
+  - attack.t1105
+  - attack.t1140
+  - attack.command_and_control
+falsepositives:
+  - Admin scripts that legitimately use certutil.

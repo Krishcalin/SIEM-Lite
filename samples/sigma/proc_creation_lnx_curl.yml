@@ -1,0 +1,18 @@
+# Example Sigma-format rule (LogOcean importer test fixture; not official SigmaHQ content).
+title: Linux Curl / Wget Download
+id: 44444444-4444-4444-8444-444444444444
+status: stable
+description: curl or wget used to fetch a remote file on Linux (ingress tool transfer).
+logsource:
+  category: process_creation
+  product: linux
+detection:
+  selection:
+    Image|endswith:
+      - /curl
+      - /wget
+  condition: selection
+level: medium
+tags:
+  - attack.t1105
+  - attack.command_and_control

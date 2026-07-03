@@ -1,0 +1,15 @@
+# Example Sigma-format rule (LogOcean importer test fixture; not official SigmaHQ content).
+# SKIP case: a deprecated rule is not imported.
+title: Deprecated Rule
+id: 66666666-6666-4666-8666-666666666666
+status: deprecated
+logsource:
+  category: process_creation
+  product: windows
+detection:
+  selection:
+    Image|endswith: \evil.exe
+  condition: selection
+level: low
+tags:
+  - attack.t1059

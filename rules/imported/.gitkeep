@@ -1,0 +1,2 @@
+# SigmaHQ rules imported here by scripts/import_sigma.py are loaded alongside rules/.
+# This directory is intentionally empty in git; imports are generated per-deployment.

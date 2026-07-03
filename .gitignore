@@ -17,6 +17,11 @@ env/
 uploads/
 pgdata/
 
+# SigmaHQ imports are generated per-deployment (scripts/import_sigma.py), not vendored
+rules/imported/*.yml
+rules/imported/*.yaml
+!rules/imported/.gitkeep
+
 # OS / IDE
 .DS_Store
 Thumbs.db

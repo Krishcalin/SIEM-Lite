@@ -451,13 +451,21 @@ def rule_from_dict(d: dict, source: str) -> Rule:
     )
 
 
-def load_rules(rules_dir) -> list[Rule]:
-    """Load every *.yml / *.yaml document under `rules_dir` that has a detection."""
-    rules: list[Rule] = []
+def _rule_files(rules_dir) -> list[Path]:
+    """*.yml / *.yaml under `rules_dir` and its `imported/` subdir (Sigma imports)."""
     base = Path(rules_dir)
-    if not base.is_dir():
-        return rules
-    for path in sorted(list(base.glob("*.yml")) + list(base.glob("*.yaml"))):
+    files: list[Path] = []
+    for d in (base, base / "imported"):
+        if d.is_dir():
+            files += sorted(list(d.glob("*.yml")) + list(d.glob("*.yaml")))
+    return files
+
+
+def load_rules(rules_dir) -> list[Rule]:
+    """Load every *.yml / *.yaml document under `rules_dir` (+ `imported/`) with a
+    detection block. Imported SigmaHQ rules land in `rules_dir/imported/`."""
+    rules: list[Rule] = []
+    for path in _rule_files(rules_dir):
         text = path.read_text(encoding="utf-8")
         for doc in yaml.safe_load_all(text):
             if isinstance(doc, dict) and doc.get("detection"):

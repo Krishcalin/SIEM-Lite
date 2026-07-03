@@ -285,6 +285,19 @@ exports MITRE ATT&CK **Navigator** layers scored by rule coverage
 enforces per-rule quality (unique ids, valid level/fidelity, an `attack.*`/`atlas.*` tag).
 The programme is tracked in [docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md).
 
+**Import community SigmaHQ rules.** `scripts/import_sigma.py` translates the thousands of open,
+ATT&CK-tagged [SigmaHQ](https://github.com/SigmaHQ/sigma) rules into LogOcean's engine — Sigma
+`logsource` becomes a gate over our normalized fields (a `process_creation` rule only fires on
+process-create events), Sigma field names pass through (our Sysmon/endpoint parsers lift them onto
+`raw`), and anything we can't faithfully run is **skipped with a reason** (unmapped logsource,
+unsupported modifier, Sigma aggregation/correlation, deprecated). Point it at a clone and it emits
+`rules/imported/*.yml` (loaded alongside `rules/`, generated per-deployment):
+
+```bash
+git clone https://github.com/SigmaHQ/sigma
+python scripts/import_sigma.py --src sigma/rules --write   # then restart to load
+```
+
 ### Notifications & agentless response
 
 Newly-raised alerts at or above `NOTIFY_MIN_LEVEL` are delivered to **notification
@@ -645,6 +658,7 @@ Log-Parser-Storage/
 │   ├── auth.py             # password hashing (pbkdf2), roles, RBAC dependency
 │   ├── compliance.py       # MITRE technique → framework control mapping + report
 │   ├── coverage.py         # ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard
+│   ├── sigma_import.py     # translate community SigmaHQ rules → our engine (logsource gate)
 │   ├── util.py             # tolerant time/IP/int coercion; API-key helpers
 │   ├── parsers/            # paloalto_{csv,syslog}, fortinet_fortigate, cisco_{asa,ios}, meraki,
 │   │                       #   zeek_{tsv,json} (+ zeek_ics OT/ICS enrichment), crowdstrike_{csv,json},
@@ -656,10 +670,10 @@ Log-Parser-Storage/
 │   │                       #   case, killchain, risk, entity, ot, responses, compliance,
 │   │                       #   report, coverage, workbench, admin, login, _macros (chart partials)
 │   └── static/style.css
-├── rules/                  # detection + correlation rules (Sigma-subset YAML)
+├── rules/                  # detection + correlation rules (Sigma-subset YAML) · imported/ (SigmaHQ imports)
 ├── playbooks/              # agentless response playbooks
 ├── clients/                # logocean_push.py (push helper) · logocean_import.py (bulk file import)
-├── scripts/                # coverage_report.py (ATT&CK/ATLAS coverage report + Navigator layers)
+├── scripts/                # coverage_report.py (coverage + Navigator layers) · import_sigma.py (SigmaHQ import)
 ├── docs/                   # DETECTION_COVERAGE_ROADMAP.md (living detection-coverage plan)
 ├── samples/                # one example file per format
 └── tests/                  # unit: test_{parsers,api_auth,streaming,syslog,detection,

@@ -116,7 +116,7 @@ Surfaces:
 | Phase | Deliverable | Status |
 |---|---|---|
 | **0 — Framework & measurement** | Rule-metadata schema (`fidelity`/`data_source`/`references`/`atlas.*`), CI rule-linter, `app/coverage.py`, `/coverage` scoreboard + Navigator layers + CLI, baseline coverage | ✅ **DONE** |
-| **1 — Sigma importer (breadth)** | Map SigmaHQ logsource/fields → our schema; import + loaded-vs-skipped coverage report | ▫ planned |
+| **1 — Sigma importer (breadth)** | Map SigmaHQ logsource/fields → our schema; import + loaded-vs-skipped coverage report | ✅ **DONE** |
 | **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested | ▫ planned |
 | **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 | ▫ planned |
 | **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) | ▫ planned |
@@ -131,3 +131,25 @@ Each phase ships tested rules + a measured coverage delta (tracked on the `/cove
 Breadth from **importing** (SigmaHQ is already ATT&CK-tagged — Phase 1 gives the fastest jump);
 depth and low-noise from **authoring** high-fidelity packs for the telemetry Sigma barely covers
 (cloud, identity, Nutanix, OT, ATLAS). Hybrid, importer-first.
+
+### Phase 1 — using the Sigma importer
+
+`app/sigma_import.py` translates a Sigma rule into our native rule dict:
+Sigma `logsource` becomes a **gate selection** over our normalized fields (a
+`process_creation` rule only fires on `action=process-create`, etc.), Sigma field names
+(`Image` / `CommandLine` / `TargetObject` …) pass through (our parsers lift them onto
+`raw`), and anything we can't faithfully run is **skipped with a reason** (unmapped
+logsource, unsupported modifier like `utf16`/`wide`/`expand`, Sigma aggregation/correlation,
+deprecated rule). Imports keep the original Sigma `id` / `author` + a source reference (DRL).
+
+```bash
+git clone https://github.com/SigmaHQ/sigma
+python scripts/import_sigma.py --src sigma/rules            # dry-run: loaded-vs-skipped report
+python scripts/import_sigma.py --src sigma/rules --write    # emit rules/imported/*.yml
+# restart LogOcean → /coverage reflects the jump
+```
+
+`rules/imported/` is loaded alongside `rules/` but is **not vendored** (generated
+per-deployment, gitignored) so the pack never drifts from upstream. Imported rules default
+to `fidelity: medium`; promote the high-signal ones as you tune. Sigma **correlation** rules
+are deferred to Phase 5 (temporal engine).

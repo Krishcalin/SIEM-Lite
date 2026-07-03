@@ -70,11 +70,9 @@ class CorrelationRule:
 
 
 def load_correlation_rules(rules_dir) -> list[CorrelationRule]:
+    from .engine import _rule_files
     rules: list[CorrelationRule] = []
-    base = Path(rules_dir)
-    if not base.is_dir():
-        return rules
-    for path in sorted(list(base.glob("*.yml")) + list(base.glob("*.yaml"))):
+    for path in _rule_files(rules_dir):
         for doc in yaml.safe_load_all(path.read_text(encoding="utf-8")):
             corr = doc.get("correlation") if isinstance(doc, dict) else None
             if not isinstance(corr, dict):
