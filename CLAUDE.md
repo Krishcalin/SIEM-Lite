@@ -19,7 +19,7 @@ complete — ingested events are evaluated against detection + correlation rules
 raising alerts you triage in the UI (`/alerts`); newly-raised alerts are sent to
 notification channels and can trigger response playbooks (audited at `/responses`);
 and scheduled collectors pull vendor logs (Okta/GitHub/GitLab, AWS CloudTrail,
-Entra ID, Microsoft 365) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
+Entra ID, Microsoft 365, GCP Cloud Audit Logs) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
 log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA +
 IEC 62443 / NERC CIP for OT).
@@ -157,7 +157,11 @@ detect/alert/respond treatment. Token sources (Okta/GitHub/GitLab) live in
 `sources.py`; signed/OAuth sources in `cloud.py` — **AWS CloudTrail** (`LookupEvents`,
 SigV4-signed via stdlib `hmac`/`hashlib`), **Entra ID** sign-ins (Microsoft Graph) and
 **Microsoft 365** unified audit (Office 365 Management Activity API), the latter two
-using the OAuth2 client-credentials flow. Each collector re-shapes vendor JSON into the
+using the OAuth2 client-credentials flow. **GCP Cloud Audit Logs** live in `gcp.py`
+(Cloud Logging `entries:list`) and authenticate with a service-account **signed-JWT**
+grant — the RS256 JWT is signed by hand (a tiny DER reader pulls the PKCS#8 key's
+modulus/exponent; the signature is `pow(m, d, n)`), so no crypto dependency is added.
+Each collector re-shapes vendor JSON into the
 exact form its parser expects; all signing/URL/response logic is in pure, unit-tested
 functions (network isolated in `_http_get`/`_http_post`). Inbound *push* feeds (other
 tools → the ingest API) use `clients/logocean_push.py`.
@@ -296,7 +300,7 @@ app/
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
   copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
-                 Entra+M365 OAuth) + runner.py (scheduler)
+                 Entra+M365 OAuth) + gcp.py (GCP signed-JWT) + runner.py (scheduler)
   parsers/       paloalto_csv, paloalto_syslog, fortinet_fortigate, cisco_asa, cisco_ios,
                  meraki, zeek_tsv, zeek_json, zeek_ics (OT/ICS enrichment helper — not a
                  registered parser), crowdstrike_csv, crowdstrike_json,
@@ -579,8 +583,11 @@ URL builder + cursor advancement pure functions so they're testable without
 network (see Okta/GitHub/GitLab + `tests/test_collectors.py`). Register it in
 `runner.build_collectors()` and add its credentials to `config.py`/`.env.example`.
 The framework persists the cursor, feeds the response through `ingest.ingest`, and
-shows status on the Admin page. For sources needing SigV4/OAuth (AWS/Entra/M365),
-prefer the **push** path: have an external job pull + POST to the ingest API.
+shows status on the Admin page. Sources needing request signing or OAuth live in
+`cloud.py` (AWS SigV4, Entra/M365 client-credentials) or `gcp.py` (service-account
+signed-JWT) — keep the signing/token logic pure and unit-tested. When a vendor
+needs an SDK you'd rather not add, prefer the **push** path: have an external job
+pull + POST to the ingest API.
 
 ## Testing
 

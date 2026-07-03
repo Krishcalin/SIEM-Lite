@@ -27,7 +27,7 @@ retains them in PostgreSQL for **≥ 3 years**.
 > related ones into **cases** (`/cases`). New alerts are pushed to your channels and
 > can trigger **agentless response** playbooks (audited at `/responses`). **Collectors**
 > pull vendor/cloud/identity logs (Okta, GitHub, GitLab, AWS CloudTrail, Entra ID,
-> Microsoft 365) while other tools push findings to the API. **UEBA entity-risk**
+> Microsoft 365, GCP Cloud Audit Logs) while other tools push findings to the API. **UEBA entity-risk**
 > analytics (`/risk`) baseline every user/host/IP and flag new-entity / new-association
 > anomalies beyond the rules; **kill-chain reconstruction** (`/killchain`) stitches
 > related alerts across ATT&CK tactics into attack stories, and a **detection
@@ -482,6 +482,10 @@ Two agentless ways to get logs in without manual upload:
     one Azure app registration (`AZURE_TENANT_ID`/`AZURE_CLIENT_ID`/`AZURE_CLIENT_SECRET`),
     **OAuth2 client-credentials**. Entra uses Microsoft Graph; M365 uses the Office 365
     Management Activity API and additionally needs `M365_ENABLED=true`.
+  - **GCP Cloud Audit Logs** (`GCP_PROJECT_ID` + `GCP_CLIENT_EMAIL` + `GCP_PRIVATE_KEY`
+    from a service-account key) — Cloud Logging `entries:list`, authenticated with a
+    **service-account signed-JWT** OAuth2 grant (RS256 signed via stdlib — no SDK).
+    Grant the service account `roles/logging.viewer`.
 - **Push feeds** — point your own tools (RHEL/Windows/SBOM/AWS audit scanners) at
   the ingest API. Copy [`clients/logocean_push.py`](clients/logocean_push.py):
 
@@ -569,7 +573,7 @@ explicitly in the upload form.
 | `SMTP_HOST` … `SMTP_TO` | — | Email notification channel (host + from + to to activate) |
 | `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
 | `COLLECTORS_ENABLED` / `COLLECTOR_INTERVAL` | `false` / `300` | Scheduled pull collectors; poll period (s) |
-| `OKTA_*` / `GITHUB_*` / `GITLAB_*` / `AWS_*` / `AZURE_*` | — | Per-collector credentials (a collector activates when set) |
+| `OKTA_*` / `GITHUB_*` / `GITLAB_*` / `AWS_*` / `AZURE_*` / `GCP_*` | — | Per-collector credentials (a collector activates when set) |
 | `THREATINTEL_ENABLED` / `THREATINTEL_FEEDS` | `false` / — | Match events against IOC feeds (paths or URLs) |
 | `THREATINTEL_REFRESH_MINUTES` / `THREATINTEL_DEFAULT_SEVERITY` | `60` / `high` | Feed refresh period; severity when a feed omits one |
 | `UEBA_ENABLED` | `true` | Maintain entity baselines + the `/risk` page (behavioural analytics) |

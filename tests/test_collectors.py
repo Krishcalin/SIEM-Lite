@@ -6,6 +6,10 @@ from app.collectors.cloud import (AwsCloudTrailCollector, EntraSignInCollector,
                                   cloudtrail_records, content_uris, graph_signin_url,
                                   mgmt_content_url, ms_access_token, ms_token_form,
                                   ms_token_url, sigv4_headers)
+from app.collectors.gcp import (GcpAuditLogCollector, entries_list_body,
+                                entries_records, gcp_access_token, jwt_bearer_form,
+                                jwt_claims, logging_filter, make_jwt,
+                                rsa_sign_sha256, _b64url, _rsa_private_numbers)
 from app.collectors.sources import (GitHubCollector, GitLabCollector,
                                      OktaCollector, github_url, gitlab_url, okta_url)
 
@@ -170,3 +174,100 @@ def test_aws_fetch_unwraps_to_records(monkeypatch):
     res = c.fetch(None)
     assert res.count == 1
     assert '"Records"' in res.content and "ConsoleLogin" in res.content
+
+
+# --------------------------------------------------------------------------- #
+#  GCP Cloud Audit Logs (service-account signed-JWT OAuth2)                    #
+# --------------------------------------------------------------------------- #
+# A throwaway 1024-bit RSA key + the signature openssl produces over the exact
+# header.claims signing input below. Proves the hand-rolled DER parse + RS256
+# signing match a reference implementation (no `cryptography` dependency).
+_TEST_KEY = """-----BEGIN PRIVATE KEY-----
+MIICeAIBADANBgkqhkiG9w0BAQEFAASCAmIwggJeAgEAAoGBAOl7yEtIFcwQ/cWQ
+yLg0WVHz0pNEAnS4nP6eJx7FGLNqLjwLOKP2i4cl6AtYAbF+L5j8Y8chW51qaqac
+qkoCTkasvZl47z0qEgrzQ3GXG9LOkkC8rR7apZeRRh/fcLCzlO8KAfV/NVUxCE5M
+YxjEzl3sSKq9QbqEZZx5RcvMlimRAgMBAAECgYEAhx+EA01sj/UlaLkp8LEbIDqj
+m2a4pSRSd2i/6ybV7L9+knFMDlgY19YwPKBqGnaUxU0L0aqUgr2bi2EPjFVZRqJ0
+LQOr+45vr/GSh4xblzufm4udmc7Ybcafo1XuslOC2/m/tmcjG5vPO9fHw5mF+6+e
+2JWDecFo42cDPbxkrYECQQD9yPlcacD5Rvtke/ZvlEMYp267uj7VkpThHlRnf+/Q
+f+AHHWC/2YOeYiWrnSJiw9dEtMuSbgEHsxYvBTDQnOG1AkEA64Vy+I17XUPPIXj2
+OKAbFRFhPHIcCNbFySxs4dCfnCYt3dN2hFRnC0Jf36fPLCQxhHZjUphw0/4kVw8O
+3UmB7QJBAKJzZmOoclVfAYb17u7Hqhd6/d//PT97H//maUMDWyBM6rvDK25DLwRQ
+cSqkYCF2mTKqxHDMJ66lDXs1yGSRN80CQEObylY5Xwl11rbYH24/36Zbl9sfMpcC
++EH4o8Tq+3Z6qz37XxE7nVzpD9aHOHyGY0SQK5DhO7pPQSVQqEazvD0CQQCQ4yAG
+W+8k/eXTnpMOkdbeXeUp3WrB/51iHWjlN0vBphKQNmKRorUhEhp1pgO1tPQJ07X0
+Qps3Izf24B5s6FmX
+-----END PRIVATE KEY-----"""
+# openssl dgst -sha256 -sign key over the bytes of the header.claims below.
+_GOLDEN_SIG = ("JU3nrSnu_rcZ-qcOJVwUgibtqRS0wfgfVCnN8S4AFsQEBs_imLuXfNFIzQbS026k"
+               "Ww9MOPqZpce7aWhi0gdA0mhiej6tS_lRdHHT1-qxbL0HtLH7kH-DQLlHhprsm1j"
+               "J0b2TXxgXIYFSV1S7_G1kz1i-JvNgEP9bm2NRgIK4lvc")
+
+
+def test_gcp_rsa_sign_matches_openssl():
+    # This is exactly the "eyJhbGci...".<claims> signing input openssl signed.
+    signing_input = (
+        b"eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9."
+        b"eyJpc3MiOiJzdmMtYWNjdEBwcm9qLmlhbS5nc2VydmljZWFjY291bnQuY29tIn0")
+    n, d = _rsa_private_numbers(_TEST_KEY)
+    assert _b64url(rsa_sign_sha256(signing_input, n, d)) == _GOLDEN_SIG
+
+
+def test_gcp_rsa_handles_escaped_newline_pem():
+    # A key pasted from JSON keeps literal \n; the collector must normalize it.
+    n, _ = _rsa_private_numbers(_TEST_KEY.replace("\n", "\\n").replace("\\n", "\n"))
+    assert n.bit_length() >= 1000
+
+
+def test_gcp_make_jwt_shape_and_signature():
+    jwt = make_jwt("svc@proj.iam.gserviceaccount.com", _TEST_KEY,
+                   "https://oauth2.googleapis.com/token", iat=1_700_000_000)
+    header, claims, sig = jwt.split(".")
+    import base64 as _b
+    import json as _j
+    decoded = _j.loads(_b.urlsafe_b64decode(claims + "==="))
+    assert decoded["iss"] == "svc@proj.iam.gserviceaccount.com"
+    assert decoded["aud"] == "https://oauth2.googleapis.com/token"
+    assert decoded["exp"] - decoded["iat"] == 3600
+    assert header and sig  # signed, three-part
+
+
+def test_gcp_jwt_claims_and_token_helpers():
+    c = jwt_claims("svc@x.iam.gserviceaccount.com", "https://tok", iat=100)
+    assert c["scope"].endswith("logging.read") and c["exp"] == 3700
+    form = jwt_bearer_form("ASSERTION")
+    assert "grant_type=urn%3Aietf%3Aparams%3Aoauth%3Agrant-type%3Ajwt-bearer" in form
+    assert "assertion=ASSERTION" in form
+    assert gcp_access_token('{"access_token":"AT","expires_in":3600}') == "AT"
+    assert gcp_access_token("not json") is None
+
+
+def test_gcp_entries_body_filter_and_unwrap():
+    body = entries_list_body("my-proj", logging_filter("2026-06-25T00:00:00Z"), "PT")
+    import json as _j
+    payload = _j.loads(body)
+    assert payload["resourceNames"] == ["projects/my-proj"]
+    assert payload["pageToken"] == "PT" and payload["orderBy"] == "timestamp asc"
+    assert 'logName:"cloudaudit.googleapis.com"' in payload["filter"]
+    recs, tok = entries_records('{"entries":[{"timestamp":"2026-06-25T10:00:00Z"}],'
+                                '"nextPageToken":"NP"}')
+    assert tok == "NP" and recs[0]["timestamp"] == "2026-06-25T10:00:00Z"
+    assert entries_records("nope") == ([], None)
+
+
+def test_gcp_collector_configured_and_fetch(monkeypatch):
+    assert GcpAuditLogCollector("proj", "svc@x", "KEY", "", 24).configured()
+    assert not GcpAuditLogCollector("", "svc@x", "KEY", "", 24).configured()
+    assert not GcpAuditLogCollector("proj", "svc@x", "", "", 24).configured()
+
+    c = GcpAuditLogCollector("proj", "svc@x", "KEY", "", 24)
+    monkeypatch.setattr(c, "_token", lambda: "AT")
+    pages = iter([
+        '{"entries":[{"timestamp":"2026-06-25T10:00:00Z"}],"nextPageToken":"P2"}',
+        '{"entries":[{"timestamp":"2026-06-25T12:00:00Z"}]}',   # no token -> stop
+    ])
+    monkeypatch.setattr(c, "_post", lambda token, body: next(pages))
+    res = c.fetch("2026-06-25T00:00:00Z")
+    assert res.count == 2                                   # both pages walked
+    assert '"entries"' in res.content and "2026-06-25T12:00:00Z" in res.content
+    assert res.cursor.startswith("2026-06-25T12:00:00")    # advanced to newest

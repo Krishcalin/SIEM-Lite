@@ -16,6 +16,7 @@ from ..config import settings
 from .base import Collector
 from .cloud import (AwsCloudTrailCollector, EntraSignInCollector,
                     M365AuditCollector)
+from .gcp import GcpAuditLogCollector
 from .sources import GitHubCollector, GitLabCollector, OktaCollector
 
 log = logging.getLogger("logocean")
@@ -36,6 +37,9 @@ def build_collectors() -> list[Collector]:
                                settings.collector_lookback_hours),
         EntraSignInCollector(settings.azure_tenant_id, settings.azure_client_id,
                              settings.azure_client_secret,
+                             settings.collector_lookback_hours),
+        GcpAuditLogCollector(settings.gcp_project_id, settings.gcp_client_email,
+                             settings.gcp_private_key, settings.gcp_token_uri,
                              settings.collector_lookback_hours),
     ]
     if settings.m365_enabled:

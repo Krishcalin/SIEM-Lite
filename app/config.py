@@ -69,6 +69,14 @@ class Settings:
     azure_client_secret: str = os.getenv("AZURE_CLIENT_SECRET", "")
     m365_enabled: bool = _bool("M365_ENABLED", False)
     m365_content_type: str = os.getenv("M365_CONTENT_TYPE", "Audit.General")
+    # GCP Cloud Audit Logs (service-account signed-JWT OAuth2). Active when the
+    # project + service-account email + private key are set. Copy client_email
+    # and private_key straight out of the downloaded service-account JSON key
+    # (escaped "\n" in the PEM is handled).
+    gcp_project_id: str = os.getenv("GCP_PROJECT_ID", "")
+    gcp_client_email: str = os.getenv("GCP_CLIENT_EMAIL", "")
+    gcp_private_key: str = os.getenv("GCP_PRIVATE_KEY", "")
+    gcp_token_uri: str = os.getenv("GCP_TOKEN_URI", "https://oauth2.googleapis.com/token")
 
     # Threat-intelligence enrichment: match ingested events against IOC feeds
     # (IPs/CIDRs/domains/hashes/URLs) and raise an alert on a hit. THREATINTEL_FEEDS
