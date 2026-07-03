@@ -1,0 +1,57 @@
+title: Nutanix Files - Ransomware-Encrypted Extension / Ransom Note Written
+id: lo-nutanix-files-ransomware-ext
+description: A Nutanix Files write / create / rename produced a file whose name matches a known ransomware-encrypted extension or ransom-note pattern. On a shared filesystem this is a strong indicator of an active encryption campaign - correlate with the mass-delete burst and isolate the source client / user immediately.
+level: critical
+logsource:
+  vendor: nutanix
+  product: files
+detection:
+  write_op:
+    action:
+      - write
+      - create
+      - rename
+  encrypted_name:
+    - rule_name|endswith:
+        - .locked
+        - .encrypted
+        - .crypt
+        - .crypted
+        - .crypto
+        - .enc
+        - .wncry
+        - .wcry
+        - .wncryt
+        - .ryk
+        - .conti
+        - .lockbit
+        - .akira
+        - .basta
+        - .avdn
+        - .abcd
+    - rule_name|contains:
+        - _readme.txt
+        - how_to_decrypt
+        - how_to_back_files
+        - recover-files
+        - decrypt-instruction
+        - restore-my-files
+        - ryukreadme
+        - conti_readme
+        - lockbit_ransom
+        - "!!!read"
+    - message|contains:
+        - .locked
+        - .wncry
+        - .lockbit
+        - .akira
+        - .conti
+        - _readme.txt
+        - how_to_decrypt
+        - restore-my-files
+  condition: write_op and encrypted_name
+tags:
+  - attack.t1486
+  - attack.impact
+falsepositives:
+  - Legitimate software that uses .enc / .crypt for its own encrypted containers or backups.

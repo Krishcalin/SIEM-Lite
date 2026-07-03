@@ -7,9 +7,9 @@ from app.parsers import (aws_cloudtrail, azure_activity, cef, cisco_asa,
                          entra_signin, fortinet_fortigate, gcp_audit,
                          generic_json, generic_syslog, github_audit,
                          gitlab_audit, leef, linux_auditd, m365_audit, meraki,
-                         nutanix_pc, okta_system_log, paloalto_csv, paloalto_syslog,
-                         suricata_eve, sysmon, web_access, windows_security,
-                         zeek_json, zeek_tsv)
+                         nutanix_files, nutanix_pc, okta_system_log, paloalto_csv,
+                         paloalto_syslog, suricata_eve, sysmon, web_access,
+                         windows_security, zeek_json, zeek_tsv)
 
 SAMPLES = Path(__file__).resolve().parent.parent / "samples"
 
@@ -649,6 +649,7 @@ def test_detect_format():
     assert detect_format("gl.json", _read("gitlab_audit.json")) == "gitlab_audit"
     assert detect_format("gj.json", _read("generic_json.json")) == "generic_json"
     assert detect_format("ntnx.log", _read("nutanix_pc.log")) == "nutanix_pc"
+    assert detect_format("ntnxf.log", _read("nutanix_files.log")) == "nutanix_files"
 
 
 def test_nutanix_pc():
@@ -697,6 +698,52 @@ def test_nutanix_pc():
     assert allow.action == "allow"
     assert allow.dst_port == 443
     assert allow.bytes_total == 1440 + 8320
+
+
+def test_nutanix_files():
+    evs = list(nutanix_files.parse(_read("nutanix_files.log")))
+    assert len(evs) == 6
+    for e in evs:
+        assert e.vendor == "nutanix" and e.product == "files"
+        assert e.log_type == "file-audit"
+        assert e.host_name == "ntnx-files-01"
+        assert e.event_time.year == 2026 and e.event_time.month == 6
+
+    create = evs[0]
+    assert create.action == "create"
+    assert create.user_name == "CORP\\jdoe"
+    assert create.src_ip == "10.20.30.40"
+    assert create.app == "Finance"
+    assert create.protocol == "smb2"
+    assert create.rule_name == "/Finance/reports/q2.xlsx"
+
+    rename = evs[2]
+    assert rename.action == "rename"
+    assert rename.rule_name.endswith(".locked")
+    assert "renamed" in (rename.message or "")
+    assert rename.src_ip == "45.83.122.7"
+
+    sec = evs[3]
+    assert sec.action == "security-change"
+    delete = evs[4]
+    assert delete.action == "delete"
+    read = evs[5]
+    assert read.action == "read" and read.protocol == "nfs"
+
+
+def test_nutanix_files_json_and_detect():
+    # bare JSON (partner-server notification / Data Lens export), camelCase keys
+    doc = ('[{"operation":"FILE_DELETE","objectName":"/share/db.bak",'
+           '"userName":"CORP\\\\svc","clientIp":"10.0.0.9","shareName":"backups",'
+           '"protocolType":"SMB3","status":"ACCESS_DENIED",'
+           '"auditTimestampUsecs":1782642761334455}]')
+    assert detect_format("audit.json", doc) == "nutanix_files"
+    evs = list(nutanix_files.parse(doc))
+    assert len(evs) == 1
+    e = evs[0]
+    assert e.action == "delete" and e.app == "backups"
+    assert e.user_name == "CORP\\svc" and e.protocol == "smb3"
+    assert e.severity == "warning"        # ACCESS_DENIED status
 
 
 def test_nutanix_pc_json_export():

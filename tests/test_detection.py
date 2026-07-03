@@ -316,6 +316,46 @@ def test_load_nutanix_flow_drop_correlation_rule():
     assert "T1046" in fd.techniques
 
 
+def test_engine_fires_nutanix_files_rules():
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def fa(action=None, path=None, message=None):
+        return dict(vendor="nutanix", product="files", log_type="file-audit",
+                    action=action, rule_name=path, message=message)
+
+    # a rename to a ransomware extension fires; a normal .xlsx write does not
+    assert "lo-nutanix-files-ransomware-ext" in hits(
+        **fa(action="rename", path="/Finance/q2.xlsx.locked",
+             message="CORP\\attacker renamed /Finance/q2.xlsx -> /Finance/q2.xlsx.locked"))
+    assert "lo-nutanix-files-ransomware-ext" in hits(
+        **fa(action="create", path="/share/HOW_TO_DECRYPT.txt"))
+    assert "lo-nutanix-files-ransomware-ext" not in hits(
+        **fa(action="write", path="/Finance/q2.xlsx"))
+    # a read of an already-encrypted file is not the encryption act -> no fire
+    assert "lo-nutanix-files-ransomware-ext" not in hits(
+        **fa(action="read", path="/Finance/q2.xlsx.locked"))
+
+    assert "lo-nutanix-files-permission-change" in hits(**fa(action="security-change",
+                                                             path="/Finance/payroll"))
+    # benign ops trip nothing
+    assert not {i for i in hits(**fa(action="read", path="/HR/handbook.pdf"))
+                if i.startswith("lo-nutanix-files")}
+
+
+def test_load_nutanix_files_mass_delete_correlation_rule():
+    from app.detection.correlation import load_correlation_rules
+    by_id = {r.id: r for r in load_correlation_rules(RULES_DIR)}
+    md = by_id["lo-corr-nutanix-files-mass-delete"]
+    assert md.match["vendor"] == "nutanix" and md.match["product"] == "files"
+    assert "delete" in md.match["action"]
+    assert md.group_by == ["user_name"]
+    assert md.window == 600 and md.threshold == 50
+    assert "T1486" in md.techniques
+
+
 def test_alert_from_match_builds_row():
     rule = next(r for r in load_rules(RULES_DIR) if r.id == "lo-win-failed-logon")
     evt = NormalizedEvent(event_time=None, vendor="microsoft", log_type="security",

@@ -42,7 +42,7 @@ retains them in PostgreSQL for **≥ 3 years**.
 
 ## Features
 
-- **Twenty-eight parsers**, auto-detected on upload:
+- **Twenty-nine parsers**, auto-detected on upload:
   - *Network / firewall:*
     - Palo Alto NGFW **CSV export** (Monitor ▸ Logs ▸ Export)
     - Palo Alto NGFW **syslog** (positional payload; Traffic / Threat / System / Config)
@@ -83,6 +83,11 @@ retains them in PostgreSQL for **≥ 3 years**.
       (`consolidated_audit`), REST **API audit** (`api_audit`), and **Flow Network
       Security** microsegmentation **hit logs** (`flow-hitCount`), as forwarded to a
       remote syslog server (also a bare-JSON export of the audit trail)
+    - **Nutanix Files / Data Lens** — SMB/NFS **file-access audit** events
+      (`FILE_CREATE` / `DELETE` / `READ` / `WRITE` / `RENAME` / `SECURITY` …) from the
+      Files **partner-server** notification stream — bare JSON, an export, or a JSON
+      payload inside a syslog envelope; the operation is normalized so the
+      ransomware / mass-delete detections fire
   - *Generic:*
     - **CEF** — Common Event Format (ArcSight & many firewalls / WAFs / proxies / AV)
     - **LEEF** — Log Event Extended Format 1.0 / 2.0 (**Tripwire Log Center** &
@@ -242,7 +247,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-Ships with a starter rule pack (38 detection + 4 correlation rules) covering
+Ships with a starter rule pack (43 detection + 6 correlation rules) covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
@@ -263,6 +268,9 @@ IEC 62443 zone) rule, and an OT-protocol enumeration correlation — tagged with
 (VM / cloud-instance deletion via the REST API, cluster unregister / detach,
 user / role / authentication change, plus a Flow microsegmentation
 drop-burst correlation for internal scanning / lateral movement).
+and a **Nutanix Files / Data Lens** pack (ransomware-encrypted-extension / ransom-note
+write, share ACL / permission change, plus a mass-file-deletion-per-user correlation
+for ransomware / wiper / insider destruction).
 Detection can be turned off with `DETECTION_ENABLED=false`.
 
 ### Notifications & agentless response
@@ -534,6 +542,7 @@ THREATINTEL_ENABLED=true THREATINTEL_FEEDS=feeds/iocs.txt  # ...then run as usua
 | GitHub | Org/Enterprise ▸ audit log ▸ **Export** (JSON / NDJSON) | GitHub audit (auto) |
 | GitLab | Admin ▸ `/audit_events` API (JSON) | GitLab audit (auto) |
 | Nutanix Prism Central | Settings ▸ **Syslog server** (modules: Audit / API Audit / Flow) → your collector | Nutanix Prism Central (auto) |
+| Nutanix Files / Data Lens | **Partner server** (`vendor_name: syslog`, :1468) file-audit notifications, or a File-Analytics / Data-Lens JSON export | Nutanix Files (auto) |
 | Any CEF source | Syslog / file in Common Event Format (`CEF:0\|…`) | CEF (auto) |
 | Tripwire Log Center / Enterprise | Forwarder ▸ send events as **LEEF** or CEF (or the exported log file) | LEEF / CEF (auto) |
 | IBM QRadar | Routing/forwarding rule ▸ export events as **LEEF** (its native format), or CEF / syslog. *(A QRadar system-backup archive is proprietary — export events first.)* | LEEF (auto) |
@@ -625,7 +634,7 @@ Log-Parser-Storage/
 │   │                       #   windows_security, sysmon,
 │   │                       #   linux_auditd, web_access, suricata_eve, cef, leef, generic_{syslog,json},
 │   │                       #   aws_cloudtrail, gcp_audit, azure_activity, m365_audit, entra_signin,
-│   │                       #   okta_system_log, github_audit, gitlab_audit, nutanix_pc
+│   │                       #   okta_system_log, github_audit, gitlab_audit, nutanix_pc, nutanix_files
 │   ├── templates/          # dashboard, upload, search, event, alerts, alert, cases,
 │   │                       #   case, killchain, risk, entity, ot, responses, compliance,
 │   │                       #   report, workbench, admin, login, _macros (chart partials)

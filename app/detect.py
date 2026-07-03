@@ -46,6 +46,12 @@ _MERAKI_RE = re.compile(
 # flow-hitCountN), each a syslog program name ending in ':'.
 _NUTANIX_RE = re.compile(
     r"(?:^|\s)(?:api_audit|consolidated_audit|flow-hitCount\d*)\b\s*:", re.IGNORECASE)
+# Nutanix Files / Data Lens file-audit notification: a JSON payload (bare or
+# syslog-wrapped) whose operation field carries a documented file-op enum.
+_NUTANIX_FILES_RE = re.compile(
+    r'"(?:operation|audit_type|event_type|operation_?type|file_operation)"\s*:\s*'
+    r'"(?:FILE_(?:CREATE|DELETE|READ|WRITE|OPEN|CLOSE)|DIRECTORY_(?:CREATE|DELETE)'
+    r'|RENAME|SECURITY|SET_SECURITY|PERMISSION_CHANGED)\w*"', re.IGNORECASE)
 # Zeek TSV metadata header.
 _ZEEK_RE = re.compile(r"^#(?:separator|fields)\b", re.MULTILINE)
 # Fortinet key=value syslog: needs devname= plus a Forti-specific key.
@@ -67,6 +73,11 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     name = (filename or "").lower()
     sample = content[:16384]
     stripped = sample.lstrip()
+
+    # Nutanix Files / Data Lens file-audit — a JSON payload (bare or syslog-wrapped)
+    # identified by a documented file-operation enum; check before JSON routing.
+    if _NUTANIX_FILES_RE.search(sample):
+        return "nutanix_files"
 
     # JSON family — disambiguate by content (Suricata / Windows / CrowdStrike).
     if name.endswith((".json", ".ndjson")) or stripped[:1] in ("{", "["):
@@ -194,6 +205,12 @@ def _detect_json(text: str) -> Optional[str]:
             ({"operationtype", "op_type", "recordtype", "record_type",
               "originatingclusteruuid", "alertuid"} & keys):
         return "nutanix_pc"
+    # Nutanix Files file-audit (bare JSON) — object + client/share identity, even
+    # when the operation key uses an unusual spelling the enum regex missed.
+    if ({"objectname", "object_name", "objectid", "object_id"} & keys) and \
+            ({"clientip", "client_ip", "sharename", "share_name",
+              "sharepath", "share_path", "exportname", "export_name"} & keys):
+        return "nutanix_files"
     # CrowdStrike Falcon JSON (detection-summary or flat/FDR shapes).
     if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event"} <= keys):
         return "crowdstrike_json"

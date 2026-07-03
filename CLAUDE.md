@@ -5,7 +5,7 @@ Guidance for Claude Code (and other agents) working in this repository.
 ## What this is
 
 **LogOcean** — a self-hosted log parser, indexer, and long-term store for
-**network, endpoint, cloud, and identity** logs from many vendors (**27 parsers**,
+**network, endpoint, cloud, and identity** logs from many vendors (**29 parsers**,
 see `app/parsers/`). Logs arrive three ways — manual **web upload**, the
 **HTTP ingest API** (`POST /api/v1/ingest`), or the **syslog receiver**
 (UDP/TCP/TLS) — and all share one parse → normalize → store pipeline. The app
@@ -95,8 +95,11 @@ matching the Zeek-ICSNPP enrichment (`action` / `log_type` / `ot.*`) — see the
 section below, and a **Nutanix Prism Central** group (VM/cloud-instance deletion via
 the REST API gated on `action: DELETE` + `restEndpoint|contains: /vms/`, cluster
 unregister/detach and user/role/auth change matched on the audit `message`, plus a
-Flow microseg drop-burst correlation grouped by `src_ip`). Shipped total:
-**41 detection + 5 correlation rules**.
+Flow microseg drop-burst correlation grouped by `src_ip`), and a **Nutanix Files /
+Data Lens** group (ransomware-extension / ransom-note write gated on `action` in
+create/write/rename + `rule_name|endswith` a known crypto extension, share ACL
+`security-change`, plus a mass-file-deletion-per-`user_name` correlation). Shipped
+total: **43 detection + 6 correlation rules**.
 
 **OT / ICS monitoring** (`app/parsers/zeek_ics.py`). LogOcean is passive/agentless
 for OT — it never touches a device, only ingests sensor telemetry. **Zeek + ICSNPP**
@@ -300,7 +303,7 @@ app/
                  windows_security, sysmon, linux_auditd, web_access, suricata_eve, cef,
                  leef, generic_syslog, generic_json, aws_cloudtrail, gcp_audit,
                  azure_activity, m365_audit, entra_signin, okta_system_log,
-                 github_audit, gitlab_audit, nutanix_pc  (28 total)
+                 github_audit, gitlab_audit, nutanix_pc, nutanix_files  (29 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
                  killchain, risk, entity, ot, responses, compliance, report, workbench,
                  admin, login, _macros
@@ -468,6 +471,23 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   **offline JSON export** of the audit trail. Detected before generic syslog by the
   `api_audit|consolidated_audit|flow-hitCount` tag regex (and a bare-JSON export by the
   `affectedEntityList`+`operationType`/`recordType` keys in `_detect_json`).
+- **Nutanix Files / Data Lens (`nutanix_files.py`)** — SMB/NFS **file-access audit**
+  from the Files **partner-server** notification stream (`vendor_name: syslog`, :1468),
+  the same stream Data Lens analyses. Records are JSON — bare object / array / NDJSON,
+  a File-Analytics/Data-Lens export, or a JSON payload inside a `<PRI>ts host tag:`
+  syslog envelope (stripped first). The exact on-wire **key spelling varies by Files
+  version** (public docs wall the schema), so the mapper **folds case + underscores**
+  and accepts common snake_case/camelCase names for each verified field: operation /
+  object_name(+old) / user_name / client_ip / share_name / protocol_type / status /
+  audit_timestamp_usecs. The **operation enum** (`FILE_CREATE`/`FILE_DELETE`/`FILE_READ`/
+  `FILE_WRITE`/`DIRECTORY_*`/`RENAME`/`SECURITY`) → normalized `action`
+  (create/delete/read/write/rename/security-change) so rules + the mass-delete /
+  ransomware correlations match regardless of spelling; path → `rule_name`, share →
+  `app`, denied status → `warning`. A Data Lens ransomware/anomaly alert on the stream
+  maps to product `data-lens`, `log_type: ransomware-alert`, `severity: critical`.
+  **Detected before JSON routing** by the operation-enum regex `_NUTANIX_FILES_RE`
+  (works bare or syslog-wrapped), with a `_detect_json` fallback on
+  `object_name`+`client_ip`/`share_name` keys.
 - **Zeek JSON** mirrors `zeek_tsv` but from `LogAscii::use_json` records (dotted keys like
   `id.orig_h`); path comes from `_path` or is inferred from the fields present.
 - **GCP/Azure/GitHub/GitLab** JSON each map their own shape: GCP `protoPayload.*`
@@ -510,7 +530,9 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   `actor` → Okta; `userPrincipalName`/`appDisplayName` → Entra; `id.orig_h` → Zeek JSON;
   `protoPayload` → GCP; `operationName`+azure-keys → Azure; `action`+`actor` → GitHub;
   `entity_type`+`details` → GitLab; `metadata`+`event` (both) or `aid`/`cid`/… →
-  CrowdStrike; else **generic_json**. Text formats match `CEF:n|`, then `LEEF:n|` (Tripwire
+  CrowdStrike; else **generic_json**. **Nutanix Files** file-audit is caught *before*
+  JSON routing by the operation-enum regex (bare or syslog-wrapped). Text formats match
+  `CEF:n|`, then `LEEF:n|` (Tripwire
   Log Center / QRadar), then `%ASA-…` (numeric)
   → Cisco ASA, then `%FAC-SEV-MNEMONIC` (alpha) → Cisco IOS, then Zeek `#fields`, then PAN
   syslog, then Fortinet KV, then Meraki, then Nutanix PC (`api_audit`/
