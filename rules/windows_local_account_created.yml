@@ -1,0 +1,20 @@
+title: Local User Account Created (Event 4720)
+id: lo-win-local-account-created
+description: A Windows user account was created (Security event 4720). On a member server or workstation this is uncommon outside provisioning and is a frequent persistence / account-manipulation step after compromise.
+level: medium
+fidelity: medium
+data_source: [windows_security]
+references:
+  - https://attack.mitre.org/techniques/T1136/001/
+logsource:
+  vendor: microsoft
+  log_type: security
+detection:
+  selection:
+    action: user-created
+  condition: selection
+tags:
+  - attack.t1136.001
+  - attack.persistence
+falsepositives:
+  - Routine account provisioning by IT / identity-management systems.

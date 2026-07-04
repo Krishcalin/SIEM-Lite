@@ -1,0 +1,36 @@
+title: Known-Vulnerable Driver Loaded (BYOVD)
+id: lo-sysmon-byovd-driver-load
+description: A kernel driver whose filename matches a publicly documented vulnerable / abused driver (Bring-Your-Own-Vulnerable-Driver) was loaded (Sysmon EID 6). Adversaries load these signed-but-vulnerable drivers to disable EDR, tamper with protected processes, or gain kernel code execution.
+level: high
+fidelity: high
+data_source: [driver_load, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1068/
+  - https://www.loldrivers.io/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  vuln_driver:
+    log_type: driver-load
+    ImageLoaded|endswith:
+      - \RTCore64.sys
+      - \dbutil_2_3.sys
+      - \DBUtilDrv2.sys
+      - \gdrv.sys
+      - \iqvw64e.sys
+      - \mhyprot2.sys
+      - \procexp152.sys
+      - \viragt64.sys
+      - \TrueSight.sys
+      - \aswArPot.sys
+      - \kprocesshacker.sys
+      - \wnbios64.sys
+  condition: vuln_driver
+tags:
+  - attack.t1068
+  - attack.t1562.001
+  - attack.privilege_escalation
+  - attack.defense_evasion
+falsepositives:
+  - The genuine product that ships the driver if still deployed - several entries load benignly on real hosts: aswArPot.sys (Avast/AVG AV), procexp152.sys (Sysinternals Process Explorer), kprocesshacker.sys (Process Hacker / System Informer), RTCore64.sys (MSI Afterburner), gdrv.sys (Gigabyte tools), viragt64.sys (VirIT AV). Verify signer / path / version, not just filename.

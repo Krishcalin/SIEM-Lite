@@ -117,7 +117,7 @@ Surfaces:
 |---|---|---|
 | **0 — Framework & measurement** | Rule-metadata schema (`fidelity`/`data_source`/`references`/`atlas.*`), CI rule-linter, `app/coverage.py`, `/coverage` scoreboard + Navigator layers + CLI, baseline coverage | ✅ **DONE** |
 | **1 — Sigma importer (breadth)** | Map SigmaHQ logsource/fields → our schema; import + loaded-vs-skipped coverage report | ✅ **DONE** |
-| **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested | ▫ planned |
+| **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested (15 rules; adversarially IOC-verified) | ✅ **DONE** |
 | **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 | ▫ planned |
 | **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) | ▫ planned |
 | **5 — Behavioural upgrade** | temporal-sequence + distinct-count + GeoIP → impossible-travel, beaconing, spray-then-success, cross-source kill-chains | ▫ planned |
@@ -153,3 +153,30 @@ python scripts/import_sigma.py --src sigma/rules --write    # emit rules/importe
 per-deployment, gitignored) so the pack never drifts from upstream. Imported rules default
 to `fidelity: medium`; promote the high-signal ones as you tune. Sigma **correlation** rules
 are deferred to Phase 5 (temporal engine).
+
+### Phase 2 — endpoint high-fidelity pack
+
+Where Phase 1 gives breadth by import, Phase 2 gives **depth and low noise** by hand-authoring
+15 curated Windows / Sysmon rules for the endpoint techniques that matter most and that generic
+imports cover poorly — each tagged `fidelity: high|medium` + `data_source`, and each shipped with a
+positive **and** a benign-negative test (`tests/test_detection.py`):
+
+- **Credential access** — LSASS handle-open by mask (Sysmon EID 10 `GrantedAccess`), known
+  credential-dumper tools (Mimikatz/nanodump/pypykatz/… by image, original-filename **and**
+  argument syntax), NTDS.dit / SAM-hive extraction, WDigest `UseLogonCredential` plaintext-caching.
+- **Defense evasion** — BYOVD known-vulnerable driver load (EID 6), Microsoft Defender disabled /
+  excluded (registry **and** `Set-/Add-MpPreference`), AMSI / ETW in-memory tampering.
+- **Privilege escalation / persistence** — UAC registry command-hijack (fodhelper / eventvwr /
+  sdclt), LSA / AppInit / Winlogon-Notify autostart, remote-thread injection into system processes.
+- **Execution / lateral movement** — PsExec / remote-service exec, `msiexec` remote-package
+  proxy-exec, BITS-job download, Cobalt Strike default named pipes, local-account creation (4720).
+
+To ground the pack honestly, the Sysmon parser's `_LIFT` set was extended to surface the
+EID 6/7/8/10 fields (`SourceImage` / `TargetImage` / `GrantedAccess` / `ImageLoaded` / …) so the
+rules match the rendered-`Message` `Get-WinEvent` export analysts actually produce (proven by a
+parser round-trip test), not only shipper-emitted `EventData`. Every hardcoded indicator (driver
+names, CS pipe patterns, registry keys, API masks, dumper syntax) was **adversarially verified
+against public sources** (SigmaHQ / MITRE / loldrivers / vendor research) before ship — the pass
+caught and fixed a dead sdclt `runas`-vs-`open` verb, a mislabeled ETW-injection token, and two
+technique-tag errors. Delta on the `/coverage` scoreboard: **ATT&CK Enterprise 46 → 64 techniques;
+high-fidelity coverage 7 → 23**.

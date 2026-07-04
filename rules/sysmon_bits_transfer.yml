@@ -1,0 +1,24 @@
+title: BITS Job Used for Download / Persistence
+id: lo-sysmon-bits-transfer
+description: A Background Intelligent Transfer Service (BITS) job was created to fetch a remote file - bitsadmin /transfer or PowerShell Start-BitsTransfer - a living-off-the-land download and persistence channel that survives reboots and blends with legitimate update traffic.
+level: medium
+fidelity: medium
+data_source: [process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1197/
+detection:
+  bitsadmin:
+    - CommandLine|contains|all: [bitsadmin, /transfer]
+    - CommandLine|contains|all: [bitsadmin, /addfile]
+    - CommandLine|contains|all: [bitsadmin, /create]
+    - message|contains|all: [bitsadmin, /transfer]
+  ps_bits:
+    - CommandLine|contains: Start-BitsTransfer
+    - message|contains: Start-BitsTransfer
+  condition: bitsadmin or ps_bits
+tags:
+  - attack.t1197
+  - attack.defense_evasion
+  - attack.persistence
+falsepositives:
+  - Legitimate software updaters and admin scripts that use BITS for downloads.

@@ -1,0 +1,33 @@
+title: LSA / AppInit / Winlogon-Notify Autostart Persistence
+id: lo-sysmon-lsa-appinit-persistence
+description: A registry write to an LSA, AppInit or Winlogon-Notify autostart location that loads attacker code into privileged processes at boot / logon - AppInit_DLLs, Winlogon Notify packages, LSA Security / Authentication packages, or an LSA password-filter (Notification Packages).
+level: high
+fidelity: high
+data_source: [registry_set, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1547/005/
+  - https://attack.mitre.org/techniques/T1546/010/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  autostart:
+    TargetObject|contains:
+      - \Windows\AppInit_DLLs
+      - \Winlogon\Notify\
+      - \Control\Lsa\Security Packages
+      - \Control\Lsa\Authentication Packages
+      - \Control\Lsa\OSConfig\Security Packages
+      - \Control\Lsa\Notification Packages
+  condition: autostart
+tags:
+  - attack.t1546.010
+  - attack.t1547.002
+  - attack.t1547.004
+  - attack.t1547.005
+  - attack.t1556.002
+  - attack.persistence
+  - attack.privilege_escalation
+  - attack.credential_access
+falsepositives:
+  - Security / smart-card / GINA software legitimately registering an LSA or Winlogon package on install.

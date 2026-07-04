@@ -1,0 +1,31 @@
+title: PsExec / Remote Service Execution
+id: lo-sysmon-psexec-service-exec
+description: Evidence of PsExec-style remote execution - the PSEXESVC service image running, a psexec client invoked with -accepteula against a remote host, or an sc.exe service created / reconfigured with a binPath pointing at a shell or temp directory - a common lateral-movement and remote-code-execution technique.
+level: high
+fidelity: high
+data_source: [process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1569/002/
+  - https://attack.mitre.org/techniques/T1021/002/
+detection:
+  psexesvc:
+    Image|endswith:
+      - \PSEXESVC.exe
+      - \PsExec.exe
+      - \PsExec64.exe
+  psexec_cli:
+    - CommandLine|contains|all: [psexec, -accepteula]
+    - CommandLine|contains|all: [psexec, "\\\\"]
+    - message|contains|all: [psexec, -accepteula]
+  sc_binpath:
+    - CommandLine|contains|all: [sc, create, binpath]
+    - CommandLine|contains|all: [sc, config, binpath]
+    - message|contains|all: [sc, create, binpath]
+  condition: psexesvc or psexec_cli or sc_binpath
+tags:
+  - attack.t1569.002
+  - attack.t1021.002
+  - attack.lateral_movement
+  - attack.execution
+falsepositives:
+  - Administrators using Sysinternals PsExec or creating services for legitimate management - correlate with change control.

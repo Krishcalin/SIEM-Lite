@@ -1,0 +1,31 @@
+title: AMSI / ETW In-Memory Tampering
+id: lo-sysmon-amsi-etw-tamper
+description: A command line contains the classic in-memory patterns used to blind the Antimalware Scan Interface (AMSI) or Event Tracing for Windows (ETW) - patching AmsiScanBuffer, forcing amsiInitFailed, or zeroing EtwEventWrite - so that subsequent script / .NET payloads run unscanned and untraced.
+level: high
+fidelity: high
+data_source: [process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+  - https://attack.mitre.org/techniques/T1562/006/
+detection:
+  amsi_etw:
+    - CommandLine|contains:
+        - amsiInitFailed
+        - AmsiScanBuffer
+        - System.Management.Automation.AmsiUtils
+        - amsiContext
+        - "[Ref].Assembly.GetType"
+        - EtwEventWrite
+        - "System.Diagnostics.Eventing.EventProvider"
+    - message|contains:
+        - amsiInitFailed
+        - AmsiScanBuffer
+        - System.Management.Automation.AmsiUtils
+        - EtwEventWrite
+  condition: amsi_etw
+tags:
+  - attack.t1562.001
+  - attack.t1562.006
+  - attack.defense_evasion
+falsepositives:
+  - Security research / EDR-testing tooling exercising AMSI in a lab.

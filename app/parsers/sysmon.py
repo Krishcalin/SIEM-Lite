@@ -44,10 +44,16 @@ _KIND = {
 }
 _KV_LINE = re.compile(r"^\s*([A-Za-z0-9_]+):\s?(.*)$")
 # Fields lifted onto raw's top level so Sysmon/Sigma field names resolve directly.
+# The EID 6/7/8/10 fields (SourceImage/TargetImage/GrantedAccess/ImageLoaded/…) let
+# high-fidelity credential-access, injection and BYOVD rules match the rendered-Message
+# JSON export, not only shipper output that emits a named EventData object.
 _LIFT = ("Image", "CommandLine", "ParentImage", "ParentCommandLine", "OriginalFileName",
          "TargetFilename", "TargetObject", "Details", "QueryName", "QueryResults",
          "User", "Hashes", "ProcessId", "ParentProcessId", "IntegrityLevel",
-         "CurrentDirectory", "PipeName", "DestinationHostname")
+         "CurrentDirectory", "PipeName", "DestinationHostname",
+         "SourceImage", "TargetImage", "GrantedAccess", "CallTrace",
+         "ImageLoaded", "Signature", "Signed", "SignatureStatus",
+         "StartModule", "StartFunction")
 
 
 def _g(rec: dict, *names: str) -> Optional[Any]:

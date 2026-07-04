@@ -1,0 +1,26 @@
+title: UAC Bypass via Registry Command Hijack
+id: lo-sysmon-uac-bypass-registry
+description: A registry value was written under a protected-handler command key abused by fileless UAC bypasses - the ms-settings / mscfile / Folder\shell\open command hijacks used by fodhelper, computerdefaults, eventvwr, sdclt and CompMgmtLauncher to launch an attacker command with auto-elevation.
+level: high
+fidelity: high
+data_source: [registry_set, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1548/002/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  hijack:
+    TargetObject|contains:
+      - \ms-settings\Shell\Open\command
+      - \ms-settings\CurVer
+      - \mscfile\Shell\Open\command
+      - \Folder\shell\open\command
+      - \exefile\shell\runas\command\IsolatedCommand
+  condition: hijack
+tags:
+  - attack.t1548.002
+  - attack.privilege_escalation
+  - attack.defense_evasion
+falsepositives:
+  - Rare legitimate software registering these class handlers - inspect the Details value written.

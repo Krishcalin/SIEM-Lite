@@ -1,0 +1,37 @@
+title: LSASS Process Memory Access (Sysmon EID 10)
+id: lo-sysmon-lsass-memory-access
+description: A process opened a handle to lsass.exe with a memory-read / all-access mask (Sysmon ProcessAccess), the direct API-level signature of OS credential dumping (Mimikatz, procdump, nanodump, task-manager dump). Complements the command-line LSASS-dump rule by catching in-memory tooling that never shells out.
+level: critical
+fidelity: high
+data_source: [process_access, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1003/001/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  access:
+    TargetImage|endswith: \lsass.exe
+    GrantedAccess|contains:
+      - "0x1010"
+      - "0x1410"
+      - "0x1418"
+      - "0x1438"
+      - "0x143a"
+      - "0x1f0fff"
+      - "0x1f1fff"
+      - "0x1f2fff"
+      - "0x1fffff"
+  benign_source:
+    SourceImage|endswith:
+      - \MsMpEng.exe
+      - \wininit.exe
+      - \csrss.exe
+      - \Sysmon.exe
+      - \Sysmon64.exe
+  condition: access and not benign_source
+tags:
+  - attack.t1003.001
+  - attack.credential_access
+falsepositives:
+  - EDR / AV agents and sanctioned DFIR memory collection not on the exclusion list.

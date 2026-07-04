@@ -1,0 +1,35 @@
+title: Microsoft Defender Disabled or Excluded
+id: lo-sysmon-defender-disable
+description: Microsoft Defender was weakened via registry (DisableAntiSpyware, DisableRealtimeMonitoring, a new exclusion path) or via PowerShell Set-MpPreference / Add-MpPreference - a common defense-evasion step before dropping tooling.
+level: high
+fidelity: high
+data_source: [registry_set, process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+detection:
+  reg_disable:
+    TargetObject|contains:
+      - \Windows Defender\DisableAntiSpyware
+      - \Real-Time Protection\DisableRealtimeMonitoring
+      - \Real-Time Protection\DisableBehaviorMonitoring
+      - \Real-Time Protection\DisableScriptScanning
+      - \Windows Defender\Exclusions\Paths
+      - \Windows Defender\Exclusions\Extensions
+      - \Windows Defender\Exclusions\Processes
+  ps_disable:
+    - CommandLine|contains:
+        - "Set-MpPreference -DisableRealtimeMonitoring"
+        - "Set-MpPreference -DisableIOAVProtection"
+        - "Add-MpPreference -ExclusionPath"
+        - "Add-MpPreference -ExclusionProcess"
+        - "Add-MpPreference -ExclusionExtension"
+    - message|contains:
+        - "Set-MpPreference -DisableRealtimeMonitoring"
+        - "Add-MpPreference -ExclusionPath"
+        - "Add-MpPreference -ExclusionProcess"
+  condition: reg_disable or ps_disable
+tags:
+  - attack.t1562.001
+  - attack.defense_evasion
+falsepositives:
+  - IT administrators legitimately configuring exclusions - correlate with change tickets.

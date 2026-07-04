@@ -1,0 +1,32 @@
+title: NTDS.dit / SAM+SYSTEM Hive Extraction
+id: lo-sysmon-ntds-sam-extraction
+description: A command line that extracts the Active Directory database (NTDS.dit) or the local SAM/SYSTEM/SECURITY registry hives - ntdsutil "create full", esentutl against ntds.dit, or reg save of the credential hives - i.e. offline credential theft from a domain controller or host.
+level: critical
+fidelity: high
+data_source: [process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1003/003/
+  - https://attack.mitre.org/techniques/T1003/002/
+detection:
+  ntdsutil:
+    - CommandLine|contains|all: [ntdsutil, "create full"]
+    - message|contains|all: [ntdsutil, "create full"]
+  ntds_ifm:
+    - CommandLine|contains|all: [ntdsutil, "ifm"]
+    - message|contains|all: [ntdsutil, "ifm"]
+  esentutl_ntds:
+    - CommandLine|contains|all: [esentutl, ntds]
+    - message|contains|all: [esentutl, ntds]
+  reg_save_hive:
+    - CommandLine|contains|all: ["reg", save, "hklm\\sam"]
+    - CommandLine|contains|all: ["reg", save, "hklm\\system"]
+    - CommandLine|contains|all: ["reg", save, "hklm\\security"]
+    - message|contains|all: ["reg", save, "hklm\\sam"]
+    - message|contains|all: ["reg", save, "hklm\\system"]
+  condition: ntdsutil or ntds_ifm or esentutl_ntds or reg_save_hive
+tags:
+  - attack.t1003.003
+  - attack.t1003.002
+  - attack.credential_access
+falsepositives:
+  - Sanctioned domain-controller backup / recovery workflows using ntdsutil IFM.

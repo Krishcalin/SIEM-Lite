@@ -1,0 +1,33 @@
+title: Remote Thread Created in a Sensitive System Process
+id: lo-sysmon-remote-thread-injection
+description: A process created a thread inside another sensitive process (Sysmon EID 8 CreateRemoteThread) targeting lsass.exe, winlogon.exe, csrss.exe or services.exe - the cross-process code-injection primitive behind process hollowing, credential access and privilege escalation.
+level: high
+fidelity: high
+data_source: [create_remote_thread, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1055/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  inject:
+    log_type: create-remote-thread
+    TargetImage|endswith:
+      - \lsass.exe
+      - \winlogon.exe
+      - \csrss.exe
+      - \services.exe
+      - \wininit.exe
+  benign_source:
+    SourceImage|endswith:
+      - \MsMpEng.exe
+      - \Sysmon.exe
+      - \Sysmon64.exe
+  condition: inject and not benign_source
+tags:
+  - attack.t1055.001
+  - attack.t1055
+  - attack.defense_evasion
+  - attack.privilege_escalation
+falsepositives:
+  - Some EDR / anti-cheat products legitimately inject; keep their source images on the exclusion list.

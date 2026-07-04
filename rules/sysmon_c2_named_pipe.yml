@@ -1,0 +1,29 @@
+title: Adversary-Framework Default Named Pipe
+id: lo-sysmon-c2-named-pipe
+description: A named pipe was created / connected whose name matches a Cobalt Strike default pattern (msagent_, MSSE-*-server, postex_, status_). These are the out-of-the-box beacon pipe values operators frequently forget to randomize.
+level: high
+fidelity: medium
+data_source: [pipe_created, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1055/
+logsource:
+  vendor: microsoft
+  product: sysmon
+detection:
+  pipe:
+    log_type:
+      - pipe-create
+      - pipe-connect
+    PipeName|contains:
+      - \msagent_
+      - \MSSE-
+      - \postex_
+      - \postex_ssh_
+      - \status_
+  condition: pipe
+tags:
+  - attack.t1055.001
+  - attack.defense_evasion
+  - attack.privilege_escalation
+falsepositives:
+  - Rare collisions with legitimate software; the exact default patterns are strong indicators but customizable, hence medium fidelity.

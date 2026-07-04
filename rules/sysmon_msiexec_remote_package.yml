@@ -1,0 +1,35 @@
+title: msiexec Installing a Remote Package (Proxy Execution)
+id: lo-sysmon-msiexec-remote-package
+description: msiexec.exe was invoked to install a package from a remote HTTP(S) or UNC location, quietly - a signed-binary proxy-execution technique used to download and run attacker MSI payloads while bypassing application control.
+level: high
+fidelity: medium
+data_source: [process_creation, sysmon]
+references:
+  - https://attack.mitre.org/techniques/T1218/007/
+detection:
+  tool:
+    Image|endswith: \msiexec.exe
+  remote:
+    - CommandLine|contains:
+        - http://
+        - https://
+        - "\\\\"
+    - message|contains:
+        - http://
+        - https://
+  install:
+    - CommandLine|contains:
+        - /i
+        - /package
+        - /q
+        - /quiet
+    - message|contains:
+        - /i
+        - /package
+        - /quiet
+  condition: tool and remote and install
+tags:
+  - attack.t1218.007
+  - attack.defense_evasion
+falsepositives:
+  - Enterprise software distribution that installs MSIs from an internal HTTP / UNC repository.
