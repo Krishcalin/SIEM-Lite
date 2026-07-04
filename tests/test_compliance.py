@@ -34,6 +34,32 @@ def test_build_report_coverage_and_alert_counts():
     assert report["NIST 800-53"]["covered"] >= 1
 
 
+def test_iso27001_and_soc2_present_and_populated():
+    assert "ISO 27001" in FRAMEWORKS and "SOC 2" in FRAMEWORKS
+    report = build_report(set(), {})
+    assert report["ISO 27001"]["total"] > 0 and report["SOC 2"]["total"] > 0
+
+
+def test_enterprise_technique_maps_to_iso_and_soc2():
+    m = controls_for_technique("T1486")                  # ransomware
+    assert ("A.8.13", "Information Backup") in m["ISO 27001"]
+    assert ("A1.2", "Availability - Backup and Recovery") in m["SOC 2"]
+    # brute force lights up the authentication/logical-access controls
+    bf = controls_for_technique("T1110")
+    assert ("A.8.5", "Secure Authentication") in bf["ISO 27001"]
+    assert ("CC6.1", "Logical Access Security") in bf["SOC 2"]
+
+
+def test_enterprise_rule_coverage_lights_up_iso_soc2_controls():
+    report = build_report({"T1110", "T1486"}, {"T1110": 3, "T1486": 4})
+    iso = {c["id"]: c for c in report["ISO 27001"]["controls"]}
+    assert iso["A.8.5"]["covered"] is True and iso["A.8.5"]["alerts"] == 3
+    soc = {c["id"]: c for c in report["SOC 2"]["controls"]}
+    assert soc["A1.2"]["covered"] is True and soc["A1.2"]["alerts"] == 4
+    # a control mapped only to un-enabled techniques stays an uncovered gap
+    assert any(not c["covered"] for c in report["ISO 27001"]["controls"])
+
+
 def test_ics_frameworks_present_and_populated():
     assert "IEC 62443-3-3" in FRAMEWORKS and "NERC CIP" in FRAMEWORKS
     report = build_report(set(), {})

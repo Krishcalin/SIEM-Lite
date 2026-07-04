@@ -21,8 +21,8 @@ notification channels and can trigger response playbooks (audited at `/responses
 and scheduled collectors pull vendor logs (Okta/GitHub/GitLab, AWS CloudTrail,
 Entra ID, Microsoft 365, GCP Cloud Audit Logs) while other tools push findings via the ingest API. Phase 5 adds **built-in auth + RBAC**
 (`AUTH_ENABLED`; roles admin/analyst/viewer, server-side sessions), an **audit
-log**, and **compliance coverage** (`/compliance`: MITRE→PCI/NIST/CIS/HIPAA +
-IEC 62443 / NERC CIP for OT).
+log**, and **compliance coverage** (`/compliance`: MITRE→NIST/CIS/ISO 27001/SOC 2/
+PCI/HIPAA + IEC 62443 / NERC CIP for OT).
 **Threat-intel enrichment** (`THREATINTEL_ENABLED`) matches events against IOC
 feeds and raises alerts on hits. **Triage & tuning** adds alert assignment, notes,
 suppression/allowlist rules, and **cases** (`/cases`) that group related alerts
@@ -284,7 +284,7 @@ app/
   models.py      NormalizedEvent dataclass (the common schema)
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   compliance.py  MITRE technique -> framework control mapping + coverage report
-                 (NIST/CIS/PCI/HIPAA + IEC 62443-3-3 / NERC CIP for ICS techniques)
+                 (NIST/CIS/ISO 27001/SOC 2/PCI/HIPAA + IEC 62443-3-3 / NERC CIP for ICS)
   util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key;
                  iter_json_records (+ _exceeds_json_depth deep-nesting guard);
                  gunzip_capped (bounded gzip decompression for ingest)

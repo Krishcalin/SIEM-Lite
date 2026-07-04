@@ -87,7 +87,7 @@ monitoring** (`/ot`) ingests passive Zeek + ICSNPP telemetry (Modbus / DNP3 /
 S7comm / CIP …) with an ATT&CK-for-ICS rule pack, asset inventory, and
 master→controller baselining. **Dashboards + `/reports`** visualize it all
 (charts, top-N, ATT&CK-Navigator / CSV export), and **auth / RBAC**, an audit log,
-and a `/compliance` view (MITRE → PCI / NIST / CIS / HIPAA + IEC 62443 / NERC CIP)
+and a `/compliance` view (MITRE → NIST / CIS / ISO 27001 / SOC 2 / PCI / HIPAA + IEC 62443 / NERC CIP)
 round it out — all tested unit + integration against real PostgreSQL in CI.
 
 ## Key features
