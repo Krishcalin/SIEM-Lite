@@ -21,7 +21,8 @@ import pytest
 # separately so partition-creation assertions start from a clean slate).
 _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_notes",
            "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
-           "response_actions", "collectors", "sessions", "users", "audit_log", "iocs")
+           "response_actions", "collectors", "sessions", "users", "audit_log", "iocs",
+           "saved_searches")
 
 
 @pytest.fixture(scope="session")

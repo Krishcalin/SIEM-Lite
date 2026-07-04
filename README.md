@@ -42,6 +42,7 @@ an AI copilot, and passive OT/ICS monitoring on top.
   - [Rules](#rules)
   - [Triage & tuning](#triage--tuning)
   - [Cases / incidents](#cases--incidents)
+  - [Saved searches](#saved-searches)
 - [Detection coverage](#detection-coverage)
   - [Coverage scoreboard](#coverage-scoreboard)
   - [Import community SigmaHQ rules](#import-community-sigmahq-rules)
@@ -102,7 +103,9 @@ round it out — all tested unit + integration against real PostgreSQL in CI.
 - **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
   **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
 - **Threat-intelligence** IOC enrichment, **notifications** (webhook / email), and
-  **agentless response** playbooks.
+  **agentless response** playbooks (with time-boxed **auto-revert**).
+- **Triage workflow** — assignment, notes, suppression/allowlists, case grouping,
+  and **per-user saved searches** on the event + alert views.
 - **Investigation & analytics** — UEBA entity risk, kill-chain reconstruction, a
   detection-engineering workbench, and an optional **AI SOC copilot** (Claude).
 - **Passive OT / ICS monitoring** (Zeek + ICSNPP) with an ATT&CK-for-ICS rule pack,
@@ -373,6 +376,14 @@ alert (or add it to an open one), give it a status (`open` / `investigating` /
 of its member alerts. The case page suggests **related alerts** — open, un-cased
 alerts sharing a source IP, user or host with the case — so a burst of activity
 folds into a single timeline with one click.
+
+### Saved searches
+
+Name and re-run your common queries. On both **`/search`** and **`/alerts`**, a
+**Save current** box stores the active filter set; saved searches appear as
+one-click chips above the results (delete with the ×). They are **per-user** (when
+auth is on) and scoped to their page, so "my open high alerts" or "Fortinet denies
+this week" is always one click away.
 
 ## Detection coverage
 
@@ -733,6 +744,7 @@ SIEM-Lite/                  # repo root (product: LogOcean)
 │   ├── coverage.py         # ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard
 │   ├── sigma_import.py     # translate community SigmaHQ rules → our engine (logsource gate)
 │   ├── copilot/            # AI SOC copilot — prompts.py (pure) + client.py (Claude SDK wrapper)
+│   ├── saved.py            # saved-search path/query validation + target URL (pure)
 │   ├── severity.py         # canonical severity order + roll-up
 │   ├── detect.py           # format auto-detection
 │   ├── normalize.py        # dedup hash + full-text blob

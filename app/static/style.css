@@ -40,6 +40,17 @@ table.results tr:hover td { background: #243049; cursor: pointer; }
 .filters .wide { flex: 1 1 100%; }
 label { display: flex; flex-direction: column; gap: .25rem; font-size: .8rem; color: var(--muted); }
 label.inline { flex-direction: row; align-items: center; gap: .4rem; }
+form.inline { display: inline-flex; align-items: center; gap: .4rem; margin: 0; padding: 0; }
+
+.panel.saved { padding: .6rem 1rem; justify-content: space-between; align-items: center; }
+.saved .saved-list { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.saved .chip { display: inline-flex; align-items: center; gap: .25rem; background: #0b1220;
+               border: 1px solid var(--line); border-radius: 99px; padding: .15rem .3rem .15rem .7rem; }
+.saved .chip a { text-decoration: none; }
+.saved .chip .x { background: none; border: none; color: var(--muted); cursor: pointer;
+                  font-size: 1rem; line-height: 1; padding: 0 .2rem; }
+.saved .chip .x:hover { color: var(--err); }
+.saved .saved-save input { min-width: 12rem; }
 
 .btn { display: inline-block; background: #334155; color: var(--txt); border: none; border-radius: 6px;
        padding: .45rem .8rem; cursor: pointer; font-size: .85rem; }

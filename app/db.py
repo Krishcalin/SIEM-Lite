@@ -1114,6 +1114,38 @@ def set_collector_enabled(name: str, enabled: bool) -> None:
         conn.commit()
 
 
+def add_saved_search(owner: str, name: str, path: str, query: str) -> None:
+    """Save (or overwrite) a named query for one owner+path."""
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO saved_searches (owner, name, path, query) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (owner, name, path) DO UPDATE "
+            "SET query = EXCLUDED.query, created_at = now()",
+            (owner, name, path, query))
+        conn.commit()
+
+
+def list_saved_searches(owner: str, path: str | None = None) -> list[dict]:
+    """An owner's saved searches, optionally scoped to one page."""
+    sql = "SELECT * FROM saved_searches WHERE owner = %s"
+    args: list = [owner]
+    if path:
+        sql += " AND path = %s"
+        args.append(path)
+    sql += " ORDER BY path, name"
+    with pool().connection() as conn:
+        return conn.execute(sql, args).fetchall()
+
+
+def delete_saved_search(search_id: int, owner: str) -> None:
+    """Delete by id, scoped to owner so one user can't remove another's."""
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM saved_searches WHERE id = %s AND owner = %s",
+                     (search_id, owner))
+        conn.commit()
+
+
 def insert_response_action(rec: dict) -> None:
     with pool().connection() as conn:
         conn.execute(

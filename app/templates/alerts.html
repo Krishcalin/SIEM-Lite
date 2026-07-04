@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% import "_macros.html" as m %}
 {% block title %}Alerts — LogOcean{% endblock %}
 {% block body %}
 <h1>Alerts</h1>
@@ -18,6 +19,8 @@
   <button type="submit" class="btn primary">Filter</button>
   <a class="btn" href="/alerts">Reset</a>
 </form>
+
+{{ m.saved_searches(saved, '/alerts', base_qs) }}
 
 <div class="resultbar">
   <span><b>{{ "{:,}".format(total) }}</b> alerts</span>

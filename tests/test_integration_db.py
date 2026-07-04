@@ -272,6 +272,29 @@ def test_collectors_roundtrip(clean_db):
     assert len(db.list_collectors()) == 2
 
 
+def test_saved_searches_roundtrip(clean_db):
+    db = clean_db
+    db.add_saved_search("alice", "My open highs", "/alerts", "status=open&level=high")
+    db.add_saved_search("alice", "Firewall denies", "/search", "vendor=fortinet&action=deny")
+    db.add_saved_search("bob", "Bob only", "/search", "q=bob")
+
+    alice_all = db.list_saved_searches("alice")
+    assert {s["name"] for s in alice_all} == {"My open highs", "Firewall denies"}
+    assert [s["name"] for s in db.list_saved_searches("alice", "/alerts")] == ["My open highs"]
+
+    # same owner+name+path overwrites the query (upsert), not a duplicate
+    db.add_saved_search("alice", "My open highs", "/alerts", "status=open&level=critical")
+    highs = db.list_saved_searches("alice", "/alerts")
+    assert len(highs) == 1 and "critical" in highs[0]["query"]
+
+    # delete is scoped to owner: bob can't delete alice's row
+    bob_row = db.list_saved_searches("bob")[0]
+    db.delete_saved_search(bob_row["id"], "alice")            # wrong owner -> no-op
+    assert len(db.list_saved_searches("bob")) == 1
+    db.delete_saved_search(bob_row["id"], "bob")
+    assert db.list_saved_searches("bob") == []
+
+
 def test_response_auto_revert_roundtrip(clean_db):
     db = clean_db
     from datetime import datetime, timedelta, timezone

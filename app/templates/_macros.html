@@ -14,6 +14,32 @@
 </div>
 {% endmacro %}
 
+{# Saved-search panel: quick-run links for this page + a save-current form.
+   `saved` are saved_searches rows for `path`; `base_qs` is the current query. #}
+{% macro saved_searches(saved, path, base_qs) %}
+<div class="panel saved">
+  <div class="saved-list">
+    <b>Saved:</b>
+    {% for s in saved %}
+    <span class="chip">
+      <a href="{{ path }}{% if s.query %}?{{ s.query }}{% endif %}">{{ s.name }}</a>
+      <form method="post" action="/searches/{{ s.id }}/delete" class="inline"
+            onsubmit="return confirm('Delete saved search &quot;{{ s.name }}&quot;?');">
+        <input type="hidden" name="path" value="{{ path }}">
+        <button type="submit" class="x" title="Delete">×</button>
+      </form>
+    </span>
+    {% else %}<span class="muted">none yet</span>{% endfor %}
+  </div>
+  <form method="post" action="/searches" class="inline saved-save">
+    <input type="hidden" name="path" value="{{ path }}">
+    <input type="hidden" name="query" value="{{ base_qs }}">
+    <input type="text" name="name" placeholder="name this search" maxlength="120" required>
+    <button type="submit" class="btn">Save current</button>
+  </form>
+</div>
+{% endmacro %}
+
 {# Vertical daily time series. `rows` are dicts with `n` and a date field. #}
 {% macro timebars(rows, date_attr='day', empty='No data in this period.') %}
 {% set maxn = (rows | map(attribute='n') | max) if rows else 0 %}

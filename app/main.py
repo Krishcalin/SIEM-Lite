@@ -21,7 +21,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, collectors, compliance, coverage, db, ingest,
-               killchain_runtime, navigator, notify, ot, streaming, workbench)
+               killchain_runtime, navigator, notify, ot, saved, streaming, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -255,6 +255,12 @@ async def auth_guard(request: Request, call_next):
 
 def _ctx(request: Request, **kw):
     return {"request": request, "user": getattr(request.state, "user", None), **kw}
+
+
+def _owner(request: Request) -> str:
+    """The saved-search owner: the logged-in username, or '' when auth is off."""
+    user = getattr(request.state, "user", None)
+    return (user.get("username") if user else "") or ""
 
 
 def _audit(request: Request, action: str, detail: Optional[str] = None,
@@ -669,6 +675,7 @@ def search(request: Request):
     return templates.TemplateResponse("search.html", _ctx(
         request, rows=rows, total=total, page=page, pages=pages,
         params=request.query_params, base_qs=base_qs,
+        saved=db.list_saved_searches(_owner(request), "/search"),
         vendors=db.distinct_values("vendor"), log_types=db.distinct_values("log_type")))
 
 
@@ -690,6 +697,24 @@ def search_csv(request: Request):
 
     return StreamingResponse(gen(), media_type="text/csv", headers={
         "Content-Disposition": "attachment; filename=logocean_export.csv"})
+
+
+@app.post("/searches")
+def save_search(request: Request, name: str = Form(...), path: str = Form("/search"),
+                query: str = Form(""), _user=Depends(require_role("viewer"))):
+    if saved.is_valid(name, path):
+        p = saved.normalize_path(path)
+        db.add_saved_search(_owner(request), saved.clean_name(name), p, saved.clean_query(query))
+        _audit(request, "saved_search.create", f"{saved.clean_name(name)} ({p})")
+    return RedirectResponse(url=saved.target_url(path, query), status_code=303)
+
+
+@app.post("/searches/{search_id}/delete")
+def delete_search(request: Request, search_id: int, path: str = Form("/search"),
+                  _user=Depends(require_role("viewer"))):
+    db.delete_saved_search(search_id, _owner(request))
+    _audit(request, "saved_search.delete", f"#{search_id}")
+    return RedirectResponse(url=saved.normalize_path(path), status_code=303)
 
 
 @app.get("/event/{event_id}", response_class=HTMLResponse)
@@ -725,6 +750,7 @@ def alerts(request: Request):
     return templates.TemplateResponse("alerts.html", _ctx(
         request, rows=rows, total=total, page=page, pages=pages,
         params=request.query_params, base_qs=base_qs,
+        saved=db.list_saved_searches(_owner(request), "/alerts"),
         counts=db.alert_severity_counts()))
 
 

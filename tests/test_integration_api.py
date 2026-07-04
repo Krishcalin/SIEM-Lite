@@ -95,6 +95,30 @@ def test_reports_dashboard_navigator_and_csv(clean_db):
         assert csvr.status_code == 200 and csvr.text.startswith("id,created_at")
 
 
+def test_saved_search_save_run_delete(clean_db):
+    db = clean_db
+    with _client(db) as c:
+        # save a search: 303 back to the runnable URL (paging stripped)
+        r = c.post("/searches", data={"name": "Fortinet denies", "path": "/search",
+                                      "query": "vendor=fortinet&action=deny&page=4"},
+                   follow_redirects=False)
+        assert r.status_code == 303
+        assert r.headers["location"] == "/search?vendor=fortinet&action=deny"
+
+        # it now renders as a chip on the search page
+        page = c.get("/search")
+        assert page.status_code == 200 and "Fortinet denies" in page.text
+
+    saved = db.list_saved_searches("")                       # owner '' when auth off
+    assert len(saved) == 1 and saved[0]["path"] == "/search"
+
+    with _client(db) as c:
+        d = c.post(f"/searches/{saved[0]['id']}/delete", data={"path": "/search"},
+                   follow_redirects=False)
+        assert d.status_code == 303 and d.headers["location"] == "/search"
+    assert db.list_saved_searches("") == []
+
+
 def test_ingest_api_rejects_empty_and_unknown_format(clean_db):
     db = clean_db
     rec = db.create_api_key("ci-key")

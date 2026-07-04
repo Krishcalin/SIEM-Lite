@@ -213,6 +213,15 @@ top-N breakdowns (`db.top_rules` / `top_alert_sources` / `top_event_sources` +
 Navigator layer-4.5 doc scored by technique alert volume) and `GET /alerts.csv`
 (streamed, `_csv_safe`d, honours the `/alerts` filters via `db.alerts_iter`).
 
+**Saved searches.** Analysts name and re-run event/alert queries. A saved search is
+a `(owner, name, path, query)` row (`saved_searches` table); `path` is `/search` or
+`/alerts`, `query` is the URL query string. `app/saved.py` is pure — it validates the
+path against an allow-list, strips paging/empties from the query, and builds the
+runnable target URL — so the `POST /searches` / `POST /searches/{id}/delete` routes
+stay thin. Both pages render a saved-list + "Save current" form via the
+`_macros.html:saved_searches` macro. Rows are per-user (`owner` = username, or `''`
+when `AUTH_ENABLED` is off); delete is owner-scoped and both actions are audited.
+
 **UEBA / entity risk** (`app/risk.py`, on by default `UEBA_ENABLED`) moves beyond
 signature rules to behaviour. `pipeline.write_stream` maintains per-event
 **baselines** incrementally — `entities` (user/host/ip first/last-seen + count) and
@@ -306,6 +315,7 @@ app/
   ot.py          OT/ICS analytics: OT_PROTOCOLS + asset/conversation classification (pure)
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
   coverage.py    ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard (pure)
+  saved.py       saved-search path/query validation + target-URL building (pure)
   sigma_import.py  translate community SigmaHQ rules -> our engine (logsource gate; pure)
   copilot/       AI SOC copilot: prompts.py (pure) + client.py (Claude SDK wrapper)
   collectors/    base.py + sources.py (Okta/GitHub/GitLab) + cloud.py (AWS SigV4 /
@@ -327,8 +337,8 @@ clients/         logocean_push.py — copy-into-your-tool helper to push to the 
                  logocean_import.py — bulk-import a large [.gz] file in size-bounded chunks
 schema.sql       events, ingest_batches, api_keys, alerts (+assignee +case_id),
                  alert_notes, suppressions, cases, case_notes, entities, entity_links,
-                 detection_rules, response_actions, collectors, users, sessions,
-                 audit_log, iocs
+                 detection_rules, response_actions (+reverted_at), collectors, users,
+                 sessions, audit_log, iocs, saved_searches
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
@@ -673,6 +683,8 @@ Unit:
   guard) and `SuppressionIndex` first-match.
 - `test_severity.py` — severity ranking + `max_severity` (case roll-up helper).
 - `test_navigator.py` — ATT&CK Navigator layer scoring / sorting / gradient.
+- `test_saved.py` — saved-search path/query normalization, target-URL building,
+  and validation (the pure helpers behind `/searches`).
 - `test_risk.py` — UEBA entity/link extraction, severity weights, half-life decay,
   decayed scoring, and the SQL weight-CASE builder.
 - `test_compression.py` — gzip ingest decompression (`gunzip_capped`: round-trip /
@@ -735,7 +747,7 @@ parser/detector/pipeline/rule/`db.py` change.
 - **Last-admin guard:** `db.is_last_admin` prevents demoting/disabling the final
   enabled admin (self-lockout) on the `/admin/users/*` routes.
 - Security-relevant actions (login/logout, purge, key/rule/collector/user changes,
-  alert triage, upload) are recorded in `audit_log` via `main._audit(...)` and
-  shown on the Admin page.
+  alert triage, upload, saved-search create/delete) are recorded in `audit_log` via
+  `main._audit(...)` and shown on the Admin page.
 - The Postgres volume IS the 3-year archive — back it up.
 - Don't commit `.env`, uploads, or `pgdata/` (already in `.gitignore`).

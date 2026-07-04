@@ -273,6 +273,20 @@ CREATE INDEX IF NOT EXISTS response_alert_idx   ON response_actions (alert_id);
 CREATE INDEX IF NOT EXISTS response_revert_idx  ON response_actions (revert_at)
     WHERE reverted_at IS NULL AND revert_at IS NOT NULL;
 
+-- Named, re-runnable event/alert queries. `path` is the page the query targets
+-- (/search or /alerts) and `query` is its URL query string. `owner` is the
+-- username who saved it ('' when auth is disabled) so searches stay per-user.
+CREATE TABLE IF NOT EXISTS saved_searches (
+    id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    owner      text        NOT NULL DEFAULT '',
+    name       text        NOT NULL,
+    path       text        NOT NULL DEFAULT '/search',
+    query      text        NOT NULL DEFAULT '',
+    UNIQUE (owner, name, path)
+);
+CREATE INDEX IF NOT EXISTS saved_owner_idx ON saved_searches (owner, path, name);
+
 -- ============================================================================
 --  Agentless collectors (Phase 4): per-source pull state / checkpoint.
 -- ============================================================================
