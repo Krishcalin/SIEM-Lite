@@ -1,0 +1,27 @@
+title: Linux Cron Job Persistence
+id: lo-linux-cron-persistence
+description: An auditd record shows a crontab edit or a write into a cron directory (/etc/cron.d, /etc/cron.daily, /var/spool/cron, /etc/crontab). Scheduling a job is a common Linux persistence and privilege-execution mechanism.
+level: medium
+fidelity: medium
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1053/003/
+logsource:
+  vendor: linux
+detection:
+  cron:
+    - message|contains:
+        - "crontab -"
+        - "/etc/cron.d/"
+        - "/etc/cron.daily/"
+        - "/etc/cron.hourly/"
+        - "/var/spool/cron/"
+        - "/etc/crontab"
+    - "/var/spool/cron/crontabs"
+  condition: cron
+tags:
+  - attack.t1053.003
+  - attack.persistence
+  - attack.execution
+falsepositives:
+  - Administrators and package installers creating legitimate scheduled jobs.

@@ -1,0 +1,31 @@
+title: Linux Reverse Shell / Interactive Shell Spawn
+id: lo-linux-reverse-shell
+description: An auditd EXECVE recorded a classic reverse-shell one-liner - an interactive shell redirected to a TCP socket (bash -i with /dev/tcp, nc -e, mkfifo+sh, or a Python/Perl socket shell). Strong indicator of remote code execution / hands-on-keyboard access on a Linux host.
+level: high
+fidelity: high
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1059/004/
+logsource:
+  vendor: linux
+detection:
+  revshell:
+    - message|contains:
+        - "/dev/tcp/"
+        - "/dev/udp/"
+        - "nc -e"
+        - "ncat -e"
+        - "mkfifo"
+        - "socket.socket"
+        - "socket(socket.af_inet"
+        - "sh -i"
+        - "bash -i"
+        - "pty.spawn"
+        - "os.dup2"
+    - message|re: "(?i)(perl|python[23]?|ruby|php)\\b.{0,60}(socket|/dev/tcp|sh -i|exec)"
+  condition: revshell
+tags:
+  - attack.t1059.004
+  - attack.execution
+falsepositives:
+  - Administrators using interactive shells or legitimate socket tooling; the /dev/tcp + interactive-shell combination is rarely benign.

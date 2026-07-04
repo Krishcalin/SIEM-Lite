@@ -1,0 +1,31 @@
+title: Web Cross-Site Scripting (XSS) Attempt
+id: lo-web-xss
+description: An HTTP request contained a script-injection payload (a script tag, a javascript URI, or an inline event handler such as onerror/onload) in the URL - a reflected/stored XSS probe against a public-facing web application.
+level: medium
+fidelity: medium
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1190/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  xss:
+    message|contains:
+      - "<script"
+      - "%3cscript"
+      - "javascript:"
+      - "onerror="
+      - "onload="
+      - "onmouseover="
+      - "<img src=x"
+      - "%3cimg"
+      - "document.cookie"
+      - "<svg/onload"
+  condition: http and xss
+tags:
+  - attack.t1190
+  - attack.initial_access
+falsepositives:
+  - WYSIWYG / rich-text editors and analytics parameters can carry HTML fragments; tune per application.

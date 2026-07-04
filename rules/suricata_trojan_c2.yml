@@ -1,0 +1,24 @@
+title: Suricata IDS - Trojan / Command-and-Control Activity
+id: lo-suricata-trojan-c2
+description: Suricata raised an alert classified as trojan / malware command-and-control activity (e.g. "A Network Trojan was Detected", "Malware Command and Control Activity Detected"). This indicates an already-compromised host communicating with attacker infrastructure.
+level: high
+fidelity: high
+data_source: [suricata]
+references:
+  - https://attack.mitre.org/techniques/T1071/
+logsource:
+  vendor: suricata
+detection:
+  alert:
+    log_type: alert
+  category:
+    alert.category|contains:
+      - "A Network Trojan was Detected"
+      - "Malware Command and Control Activity Detected"
+      - "Domain Observed Used for C2"
+  condition: alert and category
+tags:
+  - attack.t1071
+  - attack.command_and_control
+falsepositives:
+  - Signature false positives - validate against the destination reputation before actioning.

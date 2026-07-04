@@ -1,0 +1,25 @@
+title: Linux /etc/shadow Credential Access
+id: lo-linux-shadow-access
+description: An auditd EXECVE read or copied /etc/shadow (or ran unshadow) - direct access to the local password-hash store for offline cracking (OS credential dumping on Linux).
+level: high
+fidelity: high
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1003/008/
+logsource:
+  vendor: linux
+detection:
+  read_shadow:
+    - message|contains|all: [cat, /etc/shadow]
+    - message|contains|all: [cp, /etc/shadow]
+    - message|contains|all: [less, /etc/shadow]
+    - message|contains|all: [tail, /etc/shadow]
+    - message|contains|all: [head, /etc/shadow]
+    - message|contains: unshadow
+    - message|contains: /etc/gshadow
+  condition: read_shadow
+tags:
+  - attack.t1003.008
+  - attack.credential_access
+falsepositives:
+  - Backup jobs or auth-troubleshooting reading the shadow file (rare and worth reviewing).

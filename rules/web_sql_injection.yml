@@ -1,0 +1,35 @@
+title: Web SQL Injection Attempt
+id: lo-web-sql-injection
+description: An HTTP request contained SQL-injection syntax (UNION SELECT, boolean auth-bypass, stacked queries, time-based blind functions, or information_schema access) in the URL or request line - exploitation of a public-facing web application.
+level: high
+fidelity: high
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1190/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  sqli:
+    - message|contains:
+        - "union select"
+        - "union all select"
+        - "information_schema"
+        - "sleep("
+        - "benchmark("
+        - "waitfor delay"
+        - "pg_sleep("
+        - "xp_cmdshell"
+        - "'; drop table"
+        - "concat(0x"
+        - "union%20select"
+        - "%27%20or%20"
+        - "or%201=1"
+    - message|re: "(?i)('|%27|\")\\s*(or|and)\\s*('|%27|\")?\\d+\\s*=\\s*\\d+"
+  condition: http and sqli
+tags:
+  - attack.t1190
+  - attack.initial_access
+falsepositives:
+  - Security scanners run with authorization; a search box that legitimately passes SQL keywords (rare).

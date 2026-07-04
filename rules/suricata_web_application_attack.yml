@@ -1,0 +1,26 @@
+title: Suricata IDS - Web Application Attack
+id: lo-suricata-web-attack
+description: Suricata raised an alert classified as a web-application attack or a server-side exploit attempt (e.g. "Web Application Attack", "Attempted Administrator Privilege Gain"). The IDS has already matched a signature - surface it as an exploitation attempt against a public-facing service.
+level: high
+fidelity: high
+data_source: [suricata]
+references:
+  - https://attack.mitre.org/techniques/T1190/
+logsource:
+  vendor: suricata
+detection:
+  alert:
+    log_type: alert
+  category:
+    alert.category|contains:
+      - "Web Application Attack"
+      - "Attempted Administrator Privilege Gain"
+      - "Attempted User Privilege Gain"
+      - "Successful Administrator Privilege Gain"
+      - "Exploit Kit Activity"
+  condition: alert and category
+tags:
+  - attack.t1190
+  - attack.initial_access
+falsepositives:
+  - Signature false positives / benign traffic matching a broad rule - tune the offending SID.

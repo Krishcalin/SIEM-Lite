@@ -1,0 +1,27 @@
+title: Linux Setuid/Setgid Bit Set on a Binary
+id: lo-linux-setuid-backdoor
+description: An auditd EXECVE set the setuid/setgid bit on a file (chmod +s / u+s / g+s / a numeric mode like 4755 or 6755). Attackers set setuid-root on a shell or copied binary to create a privilege-escalation backdoor.
+level: high
+fidelity: high
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1548/001/
+logsource:
+  vendor: linux
+detection:
+  setuid:
+    message|contains:
+      - "chmod +s"
+      - "chmod u+s"
+      - "chmod g+s"
+      - "chmod a+s"
+      - "chmod 4755"
+      - "chmod 4711"
+      - "chmod 6755"
+      - "chmod 2755"
+  condition: setuid
+tags:
+  - attack.t1548.001
+  - attack.privilege_escalation
+falsepositives:
+  - Package installers / configuration management legitimately setting setuid on system binaries (verify the target path).

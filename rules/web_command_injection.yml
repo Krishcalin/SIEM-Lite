@@ -1,0 +1,37 @@
+title: Web OS Command Injection Attempt
+id: lo-web-command-injection
+description: An HTTP request contained shell metacharacters chaining an OS command (;/|/backtick/$() followed by id, whoami, uname, cat /etc, nc, curl|wget to a host, or a /bin/bash invocation) - attempted remote code execution against a public-facing web application.
+level: high
+fidelity: high
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1190/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  cmdi:
+    - message|contains:
+        - "$(id)"
+        - "`id`"
+        - "${ifs}"
+        - ";cat /etc"
+        - "|cat /etc"
+        - "; nc "
+        - "|nc "
+        - "nc -e"
+        - "/bin/bash"
+        - "/bin/sh"
+        - "bash -c"
+        - "%0acat"
+        - "%0aid"
+        - ";wget http"
+        - ";curl http"
+    - message|re: "(?i)[;|`]\\s*(id|whoami|uname|ifconfig|cat|nc|ncat|bash|sh|curl|wget|ping)\\b"
+  condition: http and cmdi
+tags:
+  - attack.t1190
+  - attack.initial_access
+falsepositives:
+  - Documentation or API endpoints that legitimately carry shell snippets in parameters (rare).

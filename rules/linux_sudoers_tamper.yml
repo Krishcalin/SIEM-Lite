@@ -1,0 +1,22 @@
+title: Linux Sudoers Modification
+id: lo-linux-sudoers-tamper
+description: An auditd record shows a write to the sudoers configuration (/etc/sudoers or /etc/sudoers.d/*). Adding a NOPASSWD or ALL rule for a controlled account is a common privilege-escalation / persistence step on Linux.
+level: high
+fidelity: high
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1548/003/
+logsource:
+  vendor: linux
+detection:
+  sudoers:
+    - "/etc/sudoers"
+    - "nopasswd:"
+    - "nopasswd :"
+  condition: sudoers
+tags:
+  - attack.t1548.003
+  - attack.privilege_escalation
+  - attack.defense_evasion
+falsepositives:
+  - Sanctioned sudo policy changes via configuration management (correlate with a change ticket).

@@ -98,7 +98,7 @@ round it out — all tested unit + integration against real PostgreSQL in CI.
   severity, rule, bytes, message) with the **full original record kept** in `jsonb`.
 - **Three ingest paths** — web upload, HTTP API (API-key auth, gzip-aware), and a
   syslog receiver (UDP/TCP/TLS) fronted by a bounded async queue.
-- **Sigma-based detection & correlation** (74 detection + 6 correlation rules shipped)
+- **Sigma-based detection & correlation** (90 detection + 6 correlation rules shipped)
   with the common Sigma modifiers, plus a **community SigmaHQ importer**.
 - **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
   **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
@@ -327,7 +327,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-LogOcean ships a starter pack of **74 detection + 6 correlation rules** covering
+LogOcean ships a starter pack of **90 detection + 6 correlation rules** covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
@@ -356,6 +356,14 @@ public), and these purpose-built packs:
   public), Okta (admin impersonation), Microsoft 365 (org transport rule, mailbox
   delegate), GitHub (org 2FA disabled, branch-protection removed) — every API
   event/operation name adversarially verified against provider docs.
+- **Linux & network / web-exploitation** (Phase 4) — request-line detections for
+  **web attacks (T1190)**: SQL injection, path traversal / LFI, OS command injection,
+  XSS, web-shell access, and scanner user-agents (each fires across Apache/Nginx,
+  Zeek HTTP **and** Suricata HTTP); **Suricata IDS passthrough** (web-app-attack,
+  trojan/C2, crypto-mining categories); and **Linux auditd** TTPs — reverse shells,
+  setuid backdoors, sudoers / SSH-authorized_keys / cron persistence, `/etc/shadow`
+  access, and security-control disabling — with every payload pattern and IDS
+  category string adversarially verified.
 - **OT / ICS** — Modbus write / diagnostic, S7comm program download / PLC stop,
   DNP3 device restart / disable-unsolicited, CIP set-attribute write, an **IT→OT
   write conduit-violation** (Purdue / IEC 62443 zone) rule, and an OT-protocol

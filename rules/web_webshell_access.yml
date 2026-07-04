@@ -1,0 +1,36 @@
+title: Web Shell Access
+id: lo-web-webshell-access
+description: An HTTP request targeted a known web-shell filename or passed a command/eval parameter (?cmd=, ?exec=, eval(, system()) - interaction with a planted web shell for remote command execution on a web server.
+level: high
+fidelity: high
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1505/003/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  webshell:
+    message|contains:
+      - "c99.php"
+      - "r57.php"
+      - "wso.php"
+      - "b374k"
+      - "/shell.php"
+      - "/cmd.php"
+      - "alfa.php"
+      - "/backdoor.php"
+      - "/up.php"
+      - "?cmd="
+      - "?c=cmd"
+      - "?exec="
+      - "eval("
+      - "system("
+      - "assert("
+  condition: http and webshell
+tags:
+  - attack.t1505.003
+  - attack.persistence
+falsepositives:
+  - A legitimate admin script named cmd/shell, or an app that uses an eval/exec parameter name (rare; verify the file).

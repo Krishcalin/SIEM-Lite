@@ -119,7 +119,7 @@ Surfaces:
 | **1 — Sigma importer (breadth)** | Map SigmaHQ logsource/fields → our schema; import + loaded-vs-skipped coverage report | ✅ **DONE** |
 | **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested (15 rules; adversarially IOC-verified) | ✅ **DONE** |
 | **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 / GitHub / GitLab (16 rules; API-names adversarially verified) | ✅ **DONE** |
-| **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) | ▫ planned |
+| **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) — 16 rules, patterns adversarially verified | ✅ **DONE** |
 | **5 — Behavioural upgrade** | temporal-sequence + distinct-count + GeoIP → impossible-travel, beaconing, spray-then-success, cross-source kill-chains | ▫ planned |
 | **6 — OT/ICS + SaaS/VCS** | extend ATT&CK-for-ICS; GitHub/GitLab supply-chain pack | ▫ planned |
 | **7 — ATLAS track** | LLM/AI-gateway parser + adversarial-AI rule pack | ▫ planned |
@@ -208,3 +208,27 @@ operation name without inspecting the payload (Terraform-style full-policy re-ap
 rule; transport-rule body isn't inspected). Delta: **ATT&CK Enterprise 64 → 68 techniques** (cloud
 techniques overlap heavily, so the win is provider breadth, not raw technique count); rules **64 → 80**
 (74 event + 6 correlation).
+
+### Phase 4 — Linux + network + web-exploitation pack
+
+Phase 4 fills the previously near-empty Linux / network / web ground with 16 rules, led by
+**web-exploitation (`T1190`)**. The web rules key on the normalized request line (`message`) and gate
+on `log_type: [access, http]`, so a single rule fires across **Apache/Nginx access logs, Zeek HTTP,
+and Suricata HTTP** at once:
+
+- **Web (`T1190`)** — SQL injection, path traversal / LFI, OS command injection, XSS, web-shell access
+  (`T1505.003`), and scanner user-agents (`T1595.002`).
+- **Suricata IDS passthrough** — surface what the IDS already classified, mapped to ATT&CK by
+  `alert.category`: web-application-attack (`T1190`), trojan / C2 (`T1071`), crypto-mining (`T1496`).
+- **Linux auditd** — reverse shells (`T1059.004`), setuid backdoors (`T1548.001`), sudoers
+  (`T1548.003`), SSH `authorized_keys` (`T1098.004`) and cron (`T1053.003`) persistence, `/etc/shadow`
+  access (`T1003.008`), and security-control disabling (`T1562.001`/`.004`). These key on the auditd
+  EXECVE command line the parser reassembles (mirroring the Sysmon command-line idiom).
+
+Every payload token, IDS category string, and Linux command pattern was **adversarially verified**
+against OWASP / PayloadsAllTheThings, the Suricata/ET classtype list, and GTFOBins / Atomic Red Team,
+with an explicit ReDoS check on each `|re`. The pass was clean (13/16 CONFIRMED first time) and its two
+tag corrections became coverage: a mis-tagged "Crypto Currency Mining" category was **split into its own
+`T1496` rule**, and `T1548.003`'s tactic was fixed to Defense Evasion. Delta: **ATT&CK Enterprise
+68 → 79 techniques** (the biggest single-phase jump — Linux/web/IDS were genuinely uncovered);
+high-fidelity 26 → 35; rules **80 → 96** (90 event + 6 correlation).

@@ -1,0 +1,32 @@
+title: Linux Security Controls Disabled
+id: lo-linux-disable-security
+description: An auditd EXECVE disabled a Linux security control - SELinux/AppArmor enforcement, the host firewall (ufw/firewalld/iptables flush), or the audit/logging daemons (auditd/rsyslog). Turning off defenses is a common evasion step before further activity.
+level: high
+fidelity: high
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1562/001/
+logsource:
+  vendor: linux
+detection:
+  disable:
+    - message|contains:
+        - "setenforce 0"
+        - "ufw disable"
+        - "iptables -f"
+        - "iptables --flush"
+        - "aa-complain"
+        - "aa-teardown"
+        - "auditctl -e 0"
+        - "service auditd stop"
+    - message|contains|all: [systemctl, stop, auditd]
+    - message|contains|all: [systemctl, stop, firewalld]
+    - message|contains|all: [systemctl, disable, auditd]
+    - message|contains|all: [systemctl, stop, rsyslog]
+  condition: disable
+tags:
+  - attack.t1562.001
+  - attack.t1562.004
+  - attack.defense_evasion
+falsepositives:
+  - Sanctioned maintenance that temporarily stops a firewall or logging daemon (correlate with a change ticket).

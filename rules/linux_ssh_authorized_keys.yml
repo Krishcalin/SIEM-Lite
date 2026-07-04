@@ -1,0 +1,20 @@
+title: Linux SSH authorized_keys Modified
+id: lo-linux-ssh-authorized-keys
+description: An auditd record references an SSH authorized_keys file. Appending an attacker-controlled public key to authorized_keys grants password-less SSH access - a very common Linux persistence and remote-access technique.
+level: high
+fidelity: medium
+data_source: [linux_auditd]
+references:
+  - https://attack.mitre.org/techniques/T1098/004/
+logsource:
+  vendor: linux
+detection:
+  authkeys:
+    - "authorized_keys"
+    - ".ssh/authorized_keys"
+  condition: authkeys
+tags:
+  - attack.t1098.004
+  - attack.persistence
+falsepositives:
+  - Configuration-management tools (Ansible/Puppet) that manage authorized_keys; legitimate key rotation.

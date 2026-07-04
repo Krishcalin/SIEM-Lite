@@ -1,0 +1,22 @@
+title: Suricata IDS - Cryptocurrency Mining Activity
+id: lo-suricata-crypto-mining
+description: Suricata raised an alert classified as cryptocurrency-mining activity (e.g. "Crypto Currency Mining Activity" - Stratum protocol / mining-pool traffic). A host mining coins for an attacker is resource hijacking and usually indicates prior compromise.
+level: medium
+fidelity: high
+data_source: [suricata]
+references:
+  - https://attack.mitre.org/techniques/T1496/
+logsource:
+  vendor: suricata
+detection:
+  alert:
+    log_type: alert
+  category:
+    alert.category|contains:
+      - "Crypto Currency Mining Activity"
+  condition: alert and category
+tags:
+  - attack.t1496
+  - attack.impact
+falsepositives:
+  - Sanctioned mining / blockchain-benchmarking hosts (rare in enterprise; allowlist them).

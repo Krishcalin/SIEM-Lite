@@ -1,0 +1,35 @@
+title: Web Path Traversal / Local File Inclusion
+id: lo-web-path-traversal
+description: An HTTP request tried to escape the web root or read a sensitive file (dot-dot-slash sequences, encoded traversal, /etc/passwd, /etc/shadow, php://filter, or win.ini) - directory traversal / LFI against a public-facing web application.
+level: high
+fidelity: high
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1190/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  traversal:
+    message|contains:
+      - "../../"
+      - "..%2f"
+      - "..%5c"
+      - "%2e%2e%2f"
+      - "%2e%2e/"
+      - "....//"
+      - "..\\..\\"
+      - "/etc/passwd"
+      - "/etc/shadow"
+      - "php://filter"
+      - "php://input"
+      - "/windows/win.ini"
+      - "\\windows\\win.ini"
+      - "file:///"
+  condition: http and traversal
+tags:
+  - attack.t1190
+  - attack.initial_access
+falsepositives:
+  - Applications that legitimately pass relative paths in parameters (verify the target file).

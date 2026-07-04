@@ -1,0 +1,33 @@
+title: Web Vulnerability Scanner / Recon Tool
+id: lo-web-scanner-ua
+description: An HTTP request carried the user-agent or fingerprint of an automated web vulnerability scanner or recon tool (sqlmap, nikto, Nmap NSE, masscan, dirbuster/gobuster/feroxbuster, wpscan, acunetix, nuclei, nessus) - active reconnaissance / vulnerability scanning of a public-facing application.
+level: medium
+fidelity: medium
+data_source: [web, zeek, suricata]
+references:
+  - https://attack.mitre.org/techniques/T1595/002/
+detection:
+  http:
+    log_type:
+      - access
+      - http
+  scanner:
+    - sqlmap
+    - nikto
+    - "nmap scripting engine"
+    - masscan
+    - dirbuster
+    - gobuster
+    - feroxbuster
+    - wpscan
+    - acunetix
+    - " nuclei"
+    - nessus
+    - zgrab
+    - "wfuzz"
+  condition: http and scanner
+tags:
+  - attack.t1595.002
+  - attack.reconnaissance
+falsepositives:
+  - Sanctioned vulnerability scans and penetration tests (correlate with an approved engagement).
