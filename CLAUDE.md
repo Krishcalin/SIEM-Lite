@@ -78,9 +78,9 @@ Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
 `startswith` / `endswith` / `re` (`i`/`m`/`s` flags) / `cased`, `|all`, `cidr`,
 numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
 `base64offset` / `windash` — so most community rules load unmodified (gated only
-by whether our parsers populate the referenced field). The shipped IT/enterprise
-pack is 30 detection + 3 correlation rules across Windows, network, AWS, Entra, Okta, M365,
-GitHub, **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
+by whether our parsers populate the referenced field). The shipped rule pack is
+43 detection + 6 correlation rules across Windows, network, AWS, GCP, Entra, Okta,
+M365, GitHub, GitLab, Nutanix, OT/ICS, **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
 disabled / object-removed per-event rules gated on `vendor|contains: tripwire` and
 matching the changed path via `message` + LEEF `attributes.resource`, plus a
 mass-change-burst correlation rule grouped by `host_name`), and a **Sysmon /
@@ -140,7 +140,11 @@ the CIDRs are operator-tuned placeholders (sample lab range 10.60.0.0/16).
 Requirements) and **NERC CIP** frameworks, with `MAP` entries for the ICS techniques
 (T0855/T0836/T0843/T0889/T0858/T0813/T0816/T0814/T0878/T0846) → IEC SRs + CIP
 standards (+ NIST 800-53). The `/compliance` view iterates `FRAMEWORKS` generically,
-so enabling the OT rule pack lights up the mapped OT controls automatically.
+so enabling the OT rule pack lights up the mapped OT controls automatically. The 10
+enterprise techniques additionally carry **NIST 800-53 / CIS v8 / ISO 27001 (2022
+Annex A) / SOC 2 (Trust Services Criteria) / PCI DSS v4 / HIPAA** control mappings;
+add a new framework by giving each technique a `MAP[tech][framework]` list and adding
+it to `FRAMEWORKS` — the report + page pick it up with no other change.
 
 **Alert actions** (`app/alert_actions.py`) fan each *newly-raised* alert (gathered
 post-commit via `insert_alerts(return_inserted=True)`) to two background workers:
@@ -344,7 +348,9 @@ tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, te
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
                  test_collectors, test_auth, test_audit, test_compliance, test_threatintel,
                  test_triage, test_severity, test_navigator, test_risk, test_compression,
-                 test_killchain, test_workbench, test_copilot, test_hardening, test_ot
+                 test_killchain, test_workbench, test_copilot, test_hardening, test_ot,
+                 test_saved, test_coverage, test_sigma_import, test_rule_quality,
+                 test_medium_hardening
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker
