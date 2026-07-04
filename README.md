@@ -327,6 +327,25 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
+Correlation rules can also count **distinct** values of a second column instead of
+raw events (`distinct_count:`), which expresses behaviours defined by *breadth* — e.g.
+password spraying (one source failing against many **distinct** accounts) rather than
+a simple failed-logon burst:
+
+```yaml
+# cardinality rule — one src_ip → 10+ distinct accounts = password spray
+title: Password Spray - One Source, Many Accounts
+id: lo-corr-password-spray
+level: high
+correlation:
+  match: { action: failed-logon }
+  group_by: [src_ip]
+  distinct_count: user_name      # count DISTINCT users, not raw failures
+  window: 10m
+  threshold: 10
+tags: [attack.t1110.003, attack.credential_access]
+```
+
 LogOcean ships a starter pack of **90 detection + 10 correlation rules** covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
@@ -364,6 +383,11 @@ public), and these purpose-built packs:
   setuid backdoors, sudoers / SSH-authorized_keys / cron persistence, `/etc/shadow`
   access, and security-control disabling — with every payload pattern and IDS
   category string adversarially verified.
+- **Behavioural correlation** (Phase 5) — beyond simple event-count bursts, **cardinality**
+  (distinct-count) rules catch behaviours defined by breadth: **password spray** (one source
+  → many distinct accounts), **distributed brute force** (one account ← many distinct source
+  IPs), **port scan** (one host → many distinct ports), and **network sweep** (one source
+  denied to many distinct hosts).
 - **OT / ICS** — Modbus write / diagnostic, S7comm program download / PLC stop,
   DNP3 device restart / disable-unsolicited, CIP set-attribute write, an **IT→OT
   write conduit-violation** (Purdue / IEC 62443 zone) rule, and an OT-protocol

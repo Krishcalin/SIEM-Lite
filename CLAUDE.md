@@ -79,7 +79,7 @@ Rules live in `rules/*.yml`; the `detection_rules` table tracks enablement. The
 numeric `lt`/`lte`/`gt`/`gte`, `exists`, `fieldref`, and `base64` /
 `base64offset` / `windash` — so most community rules load unmodified (gated only
 by whether our parsers populate the referenced field). The shipped rule pack is
-43 detection + 6 correlation rules across Windows, network, AWS, GCP, Entra, Okta,
+90 detection + 10 correlation rules across Windows, network, AWS, GCP, Azure, Entra, Okta,
 M365, GitHub, GitLab, Nutanix, OT/ICS, **Tripwire FIM** (critical-file / web-shell / persistence / monitoring-
 disabled / object-removed per-event rules gated on `vendor|contains: tripwire` and
 matching the changed path via `message` + LEEF `attributes.resource`, plus a
@@ -98,8 +98,13 @@ unregister/detach and user/role/auth change matched on the audit `message`, plus
 Flow microseg drop-burst correlation grouped by `src_ip`), and a **Nutanix Files /
 Data Lens** group (ransomware-extension / ransom-note write gated on `action` in
 create/write/rename + `rule_name|endswith` a known crypto extension, share ACL
-`security-change`, plus a mass-file-deletion-per-`user_name` correlation). Shipped
-total: **43 detection + 6 correlation rules**.
+`security-change`, plus a mass-file-deletion-per-`user_name` correlation). On top of
+that base, the **detection-coverage programme** (phases 2–5, see below) added a
+high-fidelity **Windows/Sysmon endpoint** pack, a **cloud + identity** pack
+(GCP/Azure/GitLab/Okta/M365/GitHub), a **Linux + web-exploitation** pack (auditd TTPs +
+`T1190` SQLi/traversal/cmd-injection/XSS/web-shell + Suricata IDS passthrough), and
+**cardinality (distinct-count) correlation** (password spray / distributed brute force /
+port scan / host sweep). Shipped total: **90 detection + 10 correlation rules**.
 
 **OT / ICS monitoring** (`app/parsers/zeek_ics.py`). LogOcean is passive/agentless
 for OT — it never touches a device, only ingests sensor telemetry. **Zeek + ICSNPP**
@@ -623,6 +628,37 @@ from the mapped category, DRL attribution (original id/author + SigmaHQ referenc
 `sigma-<uuid>`. `engine._rule_files` loads `rules/` **and** `rules/imported/` (the CLI
 `scripts/import_sigma.py --src <sigma>/rules --write` target; gitignored, generated per-deployment).
 Sample Sigma-format fixtures live in `samples/sigma/`; tests in `tests/test_sigma_import.py`.
+
+**Content + engine phases 2–5 of the detection-coverage programme.** Each hand-authored pack
+ships with a positive **and** a benign-negative test and had every hardcoded indicator
+adversarially verified against public sources before merge.
+- **Phase 2 — Windows/Sysmon high-fidelity endpoint pack** (`rules/sysmon_*.yml`,
+  `rules/windows_local_account_created.yml`): LSASS memory access, credential-dumper tools,
+  NTDS/SAM extraction, remote-thread injection, BYOVD driver load, UAC registry hijack,
+  LSA/AppInit persistence, WDigest, Defender-disable, AMSI/ETW tamper, PsExec/msiexec/BITS,
+  Cobalt Strike pipes. Grounding required extending `sysmon.py` `_LIFT` with the EID 6/7/8/10
+  fields (`SourceImage`/`TargetImage`/`GrantedAccess`/`ImageLoaded`/…) so rules match the
+  rendered-`Message` `Get-WinEvent` export, not only shipper `EventData`.
+- **Phase 3 — cloud + identity pack** (`rules/aws_*`, `gcp_*`, `azure_*`, `gitlab_*`, `okta_*`,
+  `m365_*`, `github_*`): first-time GCP/Azure/GitLab coverage. Cloud rules key on `action`
+  (= eventName/methodName/operationName/Operation/eventType) + bare-keyword search over the
+  flattened `raw` (so a value in `requestParameters` / IAM policy bindings matches). **GitLab
+  rules must key on the literal underscore `event_name` or discrete `details.*` fields, NOT
+  human-readable prose** — a lesson from two rules that matched zero real events until fixed.
+- **Phase 4 — Linux + network + web-exploitation pack** (`rules/web_*`, `suricata_*`, `linux_*`):
+  web rules gate via a **detection selection** `log_type: [access, http]` (a list in `logsource`
+  fails — the matcher is scalar-only), so one rule fires across Apache/Nginx + Zeek + Suricata
+  HTTP. Linux rules key on the auditd EXECVE command `sysmon.py`-style. `|contains`/`|re` are
+  case-insensitive by default.
+- **Phase 5 — behavioural (engine growth, in progress).** `db.correlate` gained an optional
+  whitelisted `distinct_col` → `count(distinct <col>)` (see `CorrelationRule.distinct_field`,
+  loader key `distinct_count`); a load-time warning fires if the named column isn't in
+  `_CORR_COLS`. Enables spray / distributed-brute-force / port-scan / host-sweep. Next:
+  temporal-sequence correlation + GeoIP/ASN enrichment → impossible-travel.
+
+Current scoreboard (`scripts/coverage_report.py`): **ATT&CK Enterprise ~82 techniques, ICS 11,
+ATLAS 0/31; high-fidelity 36**. When adding a rule, keep IOC lists to indicators you can
+corroborate, set `fidelity` + `data_source`, and ship a fire-test.
 
 ## Adding a response playbook
 
