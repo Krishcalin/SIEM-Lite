@@ -419,13 +419,18 @@ action: a structured webhook POST to your automation/SOAR/firewall/IAM endpoint
 LogOcean stays agentless and lets your platform enforce. Every action is audited
 at **`/responses`** and on the alert's page.
 
+A `revert_after` makes the action **time-boxed**: a background scheduler
+(`RESPONSE_AUTO_REVERT`, on by default) fires the **inverse** intent
+(`block_ip`→`unblock_ip`, `disable_user`→`enable_user`, …) once it expires, so
+temporary containment lifts itself — the revert appears as its own `/responses` row.
+
 ```yaml
 # playbooks/block_bruteforce_source.yml
 title: Block brute-force source IP
 id: pb-block-bruteforce
 match: { rule_id: [lo-corr-bruteforce-logon], min_level: high }
 action: { type: block_ip, target: src_ip }   # POSTs {action, target, alert} to your SOAR
-revert_after: 600
+revert_after: 600                             # auto-POST unblock_ip after 10 min
 ```
 
 ## UEBA & entity risk
@@ -671,6 +676,7 @@ All settings are environment variables (see `.env.example`).
 | `WEBHOOK_URL` / `WEBHOOK_STYLE` | — / `slack` | Notification webhook (Slack-text or full JSON) |
 | `SMTP_HOST` … `SMTP_TO` | — | Email notification channel (host + from + to to activate) |
 | `RESPONSE_ENABLED` / `RESPONSE_WEBHOOK_URL` | `false` / — | Run response playbooks; automation endpoint |
+| `RESPONSE_AUTO_REVERT` / `RESPONSE_REVERT_INTERVAL` | `true` / `60` | Auto-undo time-boxed actions; sweep period (s) |
 | `COLLECTORS_ENABLED` / `COLLECTOR_INTERVAL` | `false` / `300` | Scheduled pull collectors; poll period (s) |
 | `OKTA_*` / `GITHUB_*` / `GITLAB_*` / `AWS_*` / `AZURE_*` / `GCP_*` | — | Per-collector credentials (a collector activates when set) |
 | `THREATINTEL_ENABLED` / `THREATINTEL_FEEDS` | `false` / — | Match events against IOC feeds (paths or URLs) |
@@ -714,7 +720,7 @@ SIEM-Lite/                  # repo root (product: LogOcean)
 │   ├── detection/          # engine.py (per-event Sigma-subset), correlation.py, runtime.py
 │   ├── alert_actions.py    # fan new alerts to notifications + response
 │   ├── notify/             # webhook + email channels, background dispatcher
-│   ├── response/           # agentless response playbooks + audit log
+│   ├── response/           # agentless playbooks + audit log + stateful auto-revert
 │   ├── collectors/         # pull connectors (Okta/GitHub/GitLab/AWS/Entra/M365/GCP) + scheduler
 │   ├── threatintel/        # IOC matcher + feed loader + index runtime
 │   ├── triage/             # suppression/allowlist matcher + index runtime

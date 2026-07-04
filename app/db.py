@@ -1138,6 +1138,24 @@ def responses_for_alert(alert_id: int) -> list[dict]:
             (alert_id,)).fetchall()
 
 
+def due_reverts(now: dt.datetime, limit: int = 200) -> list[dict]:
+    """Successful, time-boxed response actions whose revert_at has passed and
+    that have not been reverted yet — the ones the revert scheduler must undo."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM response_actions "
+            "WHERE reverted_at IS NULL AND revert_at IS NOT NULL "
+            "AND revert_at <= %s AND status = 'success' "
+            "ORDER BY revert_at LIMIT %s", (now, limit)).fetchall()
+
+
+def mark_reverted(action_id: int, when: dt.datetime) -> None:
+    with pool().connection() as conn:
+        conn.execute("UPDATE response_actions SET reverted_at = %s WHERE id = %s",
+                     (when, action_id))
+        conn.commit()
+
+
 def correlate(match: dict, group_by: list[str], window_seconds: int,
               threshold: int) -> list[dict]:
     """Aggregate events in the last `window_seconds`, grouped by `group_by`,

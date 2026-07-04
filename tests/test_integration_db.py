@@ -272,6 +272,39 @@ def test_collectors_roundtrip(clean_db):
     assert len(db.list_collectors()) == 2
 
 
+def test_response_auto_revert_roundtrip(clean_db):
+    db = clean_db
+    from datetime import datetime, timedelta, timezone
+
+    from app.response import revert
+
+    now = datetime.now(timezone.utc)
+    # A time-boxed block that came due a minute ago, plus one still in the future.
+    db.insert_response_action({"alert_id": 1, "playbook_id": "pb-block",
+                               "action_type": "block_ip", "target": "45.83.122.7",
+                               "status": "success", "detail": "posted",
+                               "revert_at": now - timedelta(minutes=1)})
+    db.insert_response_action({"alert_id": 2, "playbook_id": "pb-block",
+                               "action_type": "block_ip", "target": "10.0.0.9",
+                               "status": "success", "detail": "posted",
+                               "revert_at": now + timedelta(hours=1)})
+
+    due = db.due_reverts(now)
+    assert [r["target"] for r in due] == ["45.83.122.7"]      # only the past-due one
+
+    # With no RESPONSE_WEBHOOK_URL the revert is a skip, but is still audited and
+    # the original stamped so it is never reverted twice.
+    n = revert.process_due_reverts(now)
+    assert n == 1
+    assert db.due_reverts(now) == []                          # nothing left due (stamped)
+
+    rows = db.recent_responses(50)
+    kinds = {r["action_type"] for r in rows}
+    assert "unblock_ip" in kinds                              # inverse action was audited
+    original = [r for r in rows if r["action_type"] == "block_ip" and r["target"] == "45.83.122.7"][0]
+    assert original["reverted_at"] is not None
+
+
 def test_iocs_roundtrip_and_pipeline_alert(clean_db):
     db = clean_db
     from app import pipeline

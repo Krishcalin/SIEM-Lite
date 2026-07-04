@@ -147,7 +147,13 @@ post-commit via `insert_alerts(return_inserted=True)`) to two background workers
 `notify` (webhook/email channels, filtered by `NOTIFY_MIN_LEVEL`) and `response`
 (agentless playbooks in `playbooks/*.yml` — a webhook POST to your automation/SOAR
 endpoint or a `log` action, audited in `response_actions`). Both run on their own
-threads so slow network I/O never blocks ingest.
+threads so slow network I/O never blocks ingest. A playbook `revert_after` makes
+the action **time-boxed**: `engine.execute` stamps `revert_at`, and `response/revert.py`
+(a `RevertScheduler` polling every `RESPONSE_REVERT_INTERVAL`s) fires the inverse
+intent — `block_ip`→`unblock_ip`, `disable_user`→`enable_user`, … (`_REVERT_MAP`,
+generic `revert_<x>` fallback) — once it passes, then sets `reverted_at` so each
+action is undone exactly once (stamped even on webhook failure so a bad endpoint
+can't wedge the loop). The revert is itself audited as a `response_actions` row.
 
 **Collectors** (`app/collectors/`) are agentless pull connectors: a scheduler runs
 each enabled, credential-configured collector every `COLLECTOR_INTERVAL`, fetching
@@ -288,6 +294,7 @@ app/
   alert_actions.py  fan newly-raised alerts to notifications + response
   notify/        channels.py (webhook/email) + dispatcher.py (background thread)
   response/      engine.py — agentless playbooks + audit log (background thread)
+                 revert.py — stateful auto-revert of time-boxed actions (scheduler)
   threatintel/   matcher.py (IocIndex + classify + ti_alert) + feeds.py (parse/load) +
                  runtime.py (index singleton + feed sync + scheduler)
   triage/        suppression.py (Suppression + SuppressionIndex) + runtime.py (index)
@@ -607,8 +614,11 @@ Drop a YAML file in `playbooks/` with a `match` (any of `rule_id` / `min_level` 
 `techniques`) and an `action` (`type: log`, or a webhook intent like `block_ip`
 with a `target` alert field). Webhook actions POST `{playbook_id, action, target,
 alert}` to `RESPONSE_WEBHOOK_URL` (your automation/SOAR endpoint) — LogOcean stays
-agentless and lets that platform enforce. Every run is audited in `response_actions`
-and shown at `/responses`. Matching/execution is tested in `tests/test_response.py`.
+agentless and lets that platform enforce. Add `revert_after: <seconds>` to make the
+action time-boxed — LogOcean auto-fires the inverse intent when it expires (see
+`response/revert.py`; extend `_REVERT_MAP` for a new action's inverse). Every run is
+audited in `response_actions` and shown at `/responses`. Matching/execution/revert is
+tested in `tests/test_response.py`.
 
 ## Adding a collector
 
@@ -651,7 +661,8 @@ Unit:
 - `test_pipeline.py` — inline detection in `write_stream` (DB inserts mocked).
 - `test_correlation.py` — correlation rule loading, window parsing, alert dedup.
 - `test_notify.py` — severity routing, payload builders, the dispatcher thread.
-- `test_response.py` — playbook loading/matching, action execution, the worker.
+- `test_response.py` — playbook loading/matching, action execution, the worker,
+  and stateful auto-revert (inverse-intent mapping, revert execution, sweep glue).
 - `test_collectors.py` — URL building, cursor advancement, the run→ingest glue.
 - `test_auth.py` — password hashing/verify, role ranking, the RBAC dependency.
 - `test_audit.py` — the `_audit` helper's actor/IP resolution (DB write mocked).

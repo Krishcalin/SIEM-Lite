@@ -252,7 +252,9 @@ CREATE INDEX IF NOT EXISTS alerts_user_idx    ON alerts (user_name);
 CREATE INDEX IF NOT EXISTS alerts_srcip_idx   ON alerts (src_ip);
 
 -- Audit trail of agentless response actions taken when an alert matched a
--- playbook. revert_at is reserved for future stateful auto-revert.
+-- playbook. A time-boxed action (playbook `revert_after`) stores when it is due
+-- to be undone in revert_at; the revert scheduler fires the inverse action then
+-- and stamps reverted_at so it is undone exactly once.
 CREATE TABLE IF NOT EXISTS response_actions (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     created_at  timestamptz NOT NULL DEFAULT now(),
@@ -264,8 +266,12 @@ CREATE TABLE IF NOT EXISTS response_actions (
     detail      text,
     revert_at   timestamptz
 );
+ALTER TABLE response_actions ADD COLUMN IF NOT EXISTS reverted_at timestamptz;
 CREATE INDEX IF NOT EXISTS response_created_idx ON response_actions (created_at DESC);
 CREATE INDEX IF NOT EXISTS response_alert_idx   ON response_actions (alert_id);
+-- Successful, time-boxed actions still awaiting auto-revert.
+CREATE INDEX IF NOT EXISTS response_revert_idx  ON response_actions (revert_at)
+    WHERE reverted_at IS NULL AND revert_at IS NOT NULL;
 
 -- ============================================================================
 --  Agentless collectors (Phase 4): per-source pull state / checkpoint.

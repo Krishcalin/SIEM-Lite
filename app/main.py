@@ -30,6 +30,7 @@ from .detection import correlation, runtime as detection_runtime
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .response import engine as response_engine
+from .response import revert as response_revert
 from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
 from .triage import runtime as triage_runtime
 from .util import gunzip_capped, parse_ts
@@ -109,6 +110,11 @@ async def lifespan(app: FastAPI):
             log.warning("RESPONSE_ENABLED is set but no playbooks were found")
             responder = None
 
+    revert_sched = None
+    if settings.response_enabled and settings.response_auto_revert:
+        revert_sched = response_revert.RevertScheduler(settings.response_revert_interval)
+        response_revert.set_scheduler(revert_sched)
+
     collector_sched = None
     if settings.collectors_enabled:
         built = collectors.build_collectors()
@@ -146,6 +152,8 @@ async def lifespan(app: FastAPI):
         await receiver.start()
     if correlator is not None:
         await correlator.start()
+    if revert_sched is not None:
+        await revert_sched.start()
     if collector_sched is not None:
         await collector_sched.start()
     if ti_scheduler is not None:
@@ -165,6 +173,9 @@ async def lifespan(app: FastAPI):
             collectors.set_scheduler(None)
         if correlator is not None:
             await correlator.stop()
+        if revert_sched is not None:
+            await revert_sched.stop()
+            response_revert.set_scheduler(None)
         if receiver is not None:
             await receiver.stop()
         await queue.stop()
@@ -301,11 +312,13 @@ def health():
     q = streaming.get_queue()
     d = notify.get_dispatcher()
     r = response_engine.get_engine()
+    rv = response_revert.get_scheduler()
     cs = collectors.get_scheduler()
     return {"status": "ok",
             "ingest_queue": q.stats.as_dict() if q else None,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
+            "reverts": rv.stats() if rv else None,
             "collectors": len(cs.collectors) if cs else None,
             "threatintel_indicators": len(ti_runtime.get_index()),
             "copilot": {"enabled": settings.copilot_enabled,

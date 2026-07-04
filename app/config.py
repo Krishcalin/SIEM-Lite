@@ -45,6 +45,10 @@ class Settings:
     response_enabled: bool = _bool("RESPONSE_ENABLED", False)
     response_webhook_url: str = os.getenv("RESPONSE_WEBHOOK_URL", "")
     response_queue_max: int = int(os.getenv("RESPONSE_QUEUE_MAX", "1000"))
+    # Stateful auto-revert: undo time-boxed actions (playbook `revert_after`) by
+    # firing the inverse intent once their revert_at passes. Poll period seconds.
+    response_auto_revert: bool = _bool("RESPONSE_AUTO_REVERT", True)
+    response_revert_interval: int = int(os.getenv("RESPONSE_REVERT_INTERVAL", "60"))
 
     # Agentless collectors: scheduled pull of logs from vendor APIs into the
     # ingest pipeline. A collector activates only when its credentials are set.
