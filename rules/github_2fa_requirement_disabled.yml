@@ -1,0 +1,19 @@
+title: GitHub Organization 2FA Requirement Disabled
+id: lo-github-2fa-disabled
+description: An organization's two-factor-authentication requirement was turned off (org.disable_two_factor_requirement). Removing the org-wide MFA mandate weakens every member account and is a strong account-takeover / persistence precursor.
+level: high
+fidelity: high
+data_source: [github_audit]
+logsource:
+  vendor: github
+  product: audit
+detection:
+  selection:
+    action: org.disable_two_factor_requirement
+  condition: selection
+tags:
+  - attack.t1556
+  - attack.defense_evasion
+  - attack.persistence
+falsepositives:
+  - Deliberate policy change during an SSO / IdP migration (should be rare and reviewed).

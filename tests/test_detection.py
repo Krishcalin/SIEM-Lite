@@ -528,3 +528,126 @@ def test_sysmon_parser_surfaces_eid_fields_for_phase2_rules():
                    "Signed: true\r\nSignature: MICRO-STAR INTERNATIONAL\r\n"
                    "SignatureStatus: Valid\r\n"})
     assert "lo-sysmon-byovd-driver-load" in fired(eid6)
+
+
+# ── Phase 3: Cloud + Identity high-value pack ────────────────────────────────
+_PHASE3_IDS = {
+    "lo-aws-guardduty-disabled", "lo-aws-iam-admin-policy-attached",
+    "lo-aws-s3-public-access", "lo-gcp-iam-privileged-grant", "lo-gcp-sa-key-created",
+    "lo-gcp-logging-sink-deleted", "lo-azure-rbac-role-assignment",
+    "lo-azure-diagnostic-settings-deleted", "lo-azure-keyvault-tamper",
+    "lo-gitlab-2fa-disabled", "lo-gitlab-project-made-public",
+    "lo-okta-admin-impersonation", "lo-m365-transport-rule",
+    "lo-m365-mailbox-delegate", "lo-github-2fa-disabled",
+    "lo-github-branch-protection-removed",
+}
+
+
+def test_engine_fires_phase3_cloud_identity_rules():
+    """Each Phase 3 cloud/identity rule fires on its positive indicator, built as
+    the AWS / GCP / Azure / GitLab / Okta / M365 / GitHub parsers surface it."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def aws(rule_name=None, action="success", raw=None):
+        return dict(vendor="aws", product="cloudtrail", rule_name=rule_name,
+                    action=action, raw=raw or {})
+
+    def gcp(action=None, raw=None):
+        return dict(vendor="gcp", product="cloud-audit", action=action, raw=raw or {})
+
+    def azure(action=None):
+        return dict(vendor="microsoft", product="azure", action=action, raw={})
+
+    # AWS ----------------------------------------------------------------------
+    assert "lo-aws-guardduty-disabled" in hits(**aws(rule_name="DeleteDetector"))
+    assert "lo-aws-iam-admin-policy-attached" in hits(**aws(
+        rule_name="AttachUserPolicy",
+        raw={"requestParameters": {"policyArn": "arn:aws:iam::aws:policy/AdministratorAccess"}}))
+    assert "lo-aws-s3-public-access" in hits(**aws(
+        rule_name="PutBucketAcl",
+        raw={"requestParameters": {"AccessControlPolicy": {"grantee":
+             "http://acs.amazonaws.com/groups/global/AllUsers"}}}))
+    assert "lo-aws-s3-public-access" in hits(**aws(rule_name="DeletePublicAccessBlock"))
+    # GCP ----------------------------------------------------------------------
+    assert "lo-gcp-iam-privileged-grant" in hits(**gcp(
+        action="google.cloud.resourcemanager.v3.Projects.SetIamPolicy",
+        raw={"protoPayload": {"request": {"policy": {"bindings":
+             [{"role": "roles/owner", "members": ["user:evil@corp.test"]}]}}}}))
+    assert "lo-gcp-sa-key-created" in hits(**gcp(
+        action="google.iam.admin.v1.CreateServiceAccountKey"))
+    assert "lo-gcp-logging-sink-deleted" in hits(**gcp(
+        action="google.logging.v2.ConfigServiceV2.DeleteSink"))
+    # Azure --------------------------------------------------------------------
+    assert "lo-azure-rbac-role-assignment" in hits(**azure(
+        action="Microsoft.Authorization/roleAssignments/write"))
+    assert "lo-azure-diagnostic-settings-deleted" in hits(**azure(
+        action="microsoft.insights/diagnosticSettings/delete"))
+    assert "lo-azure-keyvault-tamper" in hits(**azure(
+        action="Microsoft.KeyVault/vaults/delete"))
+    # GitLab (real audit shape: underscore event_name / discrete details fields)
+    assert "lo-gitlab-2fa-disabled" in hits(
+        vendor="gitlab", product="audit", action="user_disable_two_factor",
+        message="user_disable_two_factor", raw={"event_name": "user_disable_two_factor"})
+    assert "lo-gitlab-project-made-public" in hits(
+        vendor="gitlab", product="audit", action="change visibility",
+        message="change visibility",
+        raw={"details": {"change": "visibility", "from": "Private", "to": "Public"}})
+    # Okta ---------------------------------------------------------------------
+    assert "lo-okta-admin-impersonation" in hits(
+        vendor="okta", product="system-log", log_type="user.session.impersonation.grant")
+    # M365 ---------------------------------------------------------------------
+    assert "lo-m365-transport-rule" in hits(
+        vendor="microsoft", product="o365", action="New-TransportRule")
+    assert "lo-m365-mailbox-delegate" in hits(
+        vendor="microsoft", product="o365", action="Add-MailboxPermission")
+    # GitHub -------------------------------------------------------------------
+    assert "lo-github-2fa-disabled" in hits(
+        vendor="github", product="audit", action="org.disable_two_factor_requirement")
+    assert "lo-github-branch-protection-removed" in hits(
+        vendor="github", product="audit", action="protected_branch.destroy")
+
+
+def test_phase3_benign_cloud_activity_stays_quiet():
+    """Benign / opposite-direction cloud activity must not trip the Phase 3 rules."""
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    def p3(ids):
+        return {i for i in ids if i in _PHASE3_IDS}
+
+    # non-admin IAM policy attach is not the admin-policy rule
+    assert not p3(hits(vendor="aws", product="cloudtrail", rule_name="AttachUserPolicy",
+                       action="success",
+                       raw={"requestParameters": {"policyArn": "arn:aws:iam::aws:policy/ReadOnlyAccess"}}))
+    # a private S3 ACL put is not public exposure
+    assert not p3(hits(vendor="aws", product="cloudtrail", rule_name="PutBucketAcl",
+                       action="success",
+                       raw={"requestParameters": {"AccessControlPolicy": {"grantee": "CanonicalUser:owner"}}}))
+    # GCP SetIamPolicy granting only a viewer role is not a privileged grant
+    assert not p3(hits(vendor="gcp", product="cloud-audit",
+                       action="google.cloud.resourcemanager.v3.Projects.SetIamPolicy",
+                       raw={"protoPayload": {"request": {"policy": {"bindings":
+                            [{"role": "roles/viewer", "members": ["user:dev@corp.test"]}]}}}}))
+    # creating (not deleting) a log sink is fine
+    assert not p3(hits(vendor="gcp", product="cloud-audit",
+                       action="google.logging.v2.ConfigServiceV2.CreateSink"))
+    # writing (not deleting) a diagnostic setting is fine
+    assert not p3(hits(vendor="microsoft", product="azure",
+                       action="microsoft.insights/diagnosticSettings/write"))
+    # ENABLING 2FA / making a repo private are the opposite of the alerts
+    assert not p3(hits(vendor="gitlab", product="audit", action="user_enable_two_factor",
+                       message="user_enable_two_factor",
+                       raw={"event_name": "user_enable_two_factor"}))
+    assert not p3(hits(vendor="gitlab", product="audit", action="change visibility",
+                       message="change visibility",
+                       raw={"details": {"change": "visibility", "from": "Public", "to": "Private"}}))
+    assert not p3(hits(vendor="github", product="audit",
+                       action="org.enable_two_factor_requirement"))
+    # a normal Okta session start / a mailbox read are not impersonation / delegation
+    assert not p3(hits(vendor="okta", product="system-log", log_type="user.session.start"))
+    assert not p3(hits(vendor="microsoft", product="o365", action="Get-MailboxPermission"))

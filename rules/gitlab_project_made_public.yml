@@ -1,0 +1,22 @@
+title: GitLab Project or Group Made Public
+id: lo-gitlab-project-made-public
+description: A GitLab audit event changed a project or group visibility to public. GitLab records this as a visibility change with a to=Public value; flipping a private repository public can leak source code, secrets and CI configuration.
+level: high
+fidelity: medium
+data_source: [gitlab_audit]
+logsource:
+  vendor: gitlab
+  product: audit
+detection:
+  field_change:
+    action|contains: visibility
+    details.to|contains: public
+  custom_msg:
+    - action|contains: to public
+    - message|contains: to public
+  condition: field_change or custom_msg
+tags:
+  - attack.t1567
+  - attack.exfiltration
+falsepositives:
+  - Intentional open-sourcing of a project.

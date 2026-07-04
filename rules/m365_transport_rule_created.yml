@@ -1,0 +1,23 @@
+title: Microsoft 365 Exchange Transport Rule Created or Changed
+id: lo-m365-transport-rule
+description: An Exchange Online organization-wide transport (mail-flow) rule was created or modified. Attackers use transport rules to auto-forward / BCC all mail externally, or to silently delete security / warning mail - org-wide email collection and defense evasion beyond a single mailbox.
+level: high
+fidelity: medium
+data_source: [m365_audit]
+logsource:
+  vendor: microsoft
+  product: o365
+detection:
+  selection:
+    action:
+      - New-TransportRule
+      - Set-TransportRule
+      - Enable-TransportRule
+  condition: selection
+tags:
+  - attack.t1114.003
+  - attack.t1564.008
+  - attack.collection
+  - attack.defense_evasion
+falsepositives:
+  - Legitimate mail-flow administration (disclaimers, journaling) - review the rule's actions.

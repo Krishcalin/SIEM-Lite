@@ -1,0 +1,19 @@
+title: Azure RBAC Role Assignment Created
+id: lo-azure-rbac-role-assignment
+description: An Azure role assignment was written (Microsoft.Authorization/roleAssignments/write). Granting a role - especially Owner, Contributor or User Access Administrator at subscription / resource-group scope - is a cloud privilege-escalation and persistence step.
+level: medium
+fidelity: medium
+data_source: [azure_activity]
+logsource:
+  vendor: microsoft
+  product: azure
+detection:
+  selection:
+    action|contains: roleAssignments/write
+  condition: selection
+tags:
+  - attack.t1098.003
+  - attack.privilege_escalation
+  - attack.persistence
+falsepositives:
+  - Routine access management / IaC-driven role assignments - correlate scope and principal with a change request.

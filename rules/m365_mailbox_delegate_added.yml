@@ -1,0 +1,20 @@
+title: Microsoft 365 Mailbox Delegate / Send-As Permission Granted
+id: lo-m365-mailbox-delegate
+description: A mailbox delegate permission was granted (Add-MailboxPermission FullAccess, or Add-RecipientPermission SendAs). Granting oneself access to another user's mailbox is a common post-compromise collection and business-email-compromise step.
+level: medium
+fidelity: medium
+data_source: [m365_audit]
+logsource:
+  vendor: microsoft
+  product: o365
+detection:
+  selection:
+    action:
+      - Add-MailboxPermission
+      - Add-RecipientPermission
+  condition: selection
+tags:
+  - attack.t1098.002
+  - attack.persistence
+falsepositives:
+  - Admin-configured shared-mailbox / delegate access as part of normal onboarding.

@@ -1,0 +1,18 @@
+title: Azure Diagnostic Settings Deleted
+id: lo-azure-diagnostic-settings-deleted
+description: An Azure Monitor diagnostic setting was deleted (microsoft.insights/diagnosticSettings/delete). Diagnostic settings route resource / activity logs to a workspace or storage; deleting them stops that telemetry - a defense-evasion step to blind detection.
+level: high
+fidelity: high
+data_source: [azure_activity]
+logsource:
+  vendor: microsoft
+  product: azure
+detection:
+  selection:
+    action|contains: diagnosticSettings/delete
+  condition: selection
+tags:
+  - attack.t1562.008
+  - attack.defense_evasion
+falsepositives:
+  - Decommissioning a resource or re-provisioning its logging pipeline (correlate with a change ticket).

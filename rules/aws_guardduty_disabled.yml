@@ -1,0 +1,27 @@
+title: AWS Threat-Detection or Config Recording Disabled
+id: lo-aws-guardduty-disabled
+description: A CloudTrail event disabled or deleted a security-monitoring service - GuardDuty detector, Security Hub, or an AWS Config recorder / delivery channel. Blinding cloud threat detection is a common defense-evasion step before further activity.
+level: high
+fidelity: high
+data_source: [cloudtrail]
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  selection:
+    rule_name:
+      - DeleteDetector
+      - StopMonitoringMembers
+      - DisassociateMembers
+      - DisableSecurityHub
+      - BatchDisableStandards
+      - DeleteConfigurationRecorder
+      - StopConfigurationRecorder
+      - DeleteDeliveryChannel
+  condition: selection
+tags:
+  - attack.t1562.001
+  - attack.t1562.008
+  - attack.defense_evasion
+falsepositives:
+  - Planned decommissioning of a monitoring account or region (correlate with a change ticket).

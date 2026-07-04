@@ -1,0 +1,26 @@
+title: AWS Administrator Policy Attached to Principal
+id: lo-aws-iam-admin-policy-attached
+description: An IAM Attach*Policy call attached the AWS-managed AdministratorAccess policy (or an equivalent full-admin policy) to a user, role or group - a direct privilege-escalation / persistence step after compromising a lower-privileged principal.
+level: high
+fidelity: high
+data_source: [cloudtrail]
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  attach:
+    rule_name:
+      - AttachUserPolicy
+      - AttachRolePolicy
+      - AttachGroupPolicy
+  admin_policy:
+    - AdministratorAccess
+    - "arn:aws:iam::aws:policy/AdministratorAccess"
+    - IAMFullAccess
+  condition: attach and admin_policy
+tags:
+  - attack.t1098.003
+  - attack.privilege_escalation
+  - attack.persistence
+falsepositives:
+  - Sanctioned admin onboarding / break-glass role setup (correlate with a change request).

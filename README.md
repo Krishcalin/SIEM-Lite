@@ -98,7 +98,7 @@ round it out — all tested unit + integration against real PostgreSQL in CI.
   severity, rule, bytes, message) with the **full original record kept** in `jsonb`.
 - **Three ingest paths** — web upload, HTTP API (API-key auth, gzip-aware), and a
   syslog receiver (UDP/TCP/TLS) fronted by a bounded async queue.
-- **Sigma-based detection & correlation** (58 detection + 6 correlation rules shipped)
+- **Sigma-based detection & correlation** (74 detection + 6 correlation rules shipped)
   with the common Sigma modifiers, plus a **community SigmaHQ importer**.
 - **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
   **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
@@ -327,7 +327,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-LogOcean ships a starter pack of **58 detection + 6 correlation rules** covering
+LogOcean ships a starter pack of **74 detection + 6 correlation rules** covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail
@@ -348,6 +348,14 @@ public), and these purpose-built packs:
   Defender-disable & AMSI/ETW tampering, UAC registry hijack, LSA/AppInit persistence,
   remote-thread injection, PsExec / `msiexec` / BITS execution, Cobalt Strike named
   pipes, and local-account creation — each `fidelity`-tagged and IOC-verified.
+- **Cloud & identity** (Phase 3) — a high-value pack across every cloud/identity
+  source, adding first-time coverage for **GCP, Azure and GitLab**: AWS (threat-detection
+  / Config disabled, admin-policy attach, public-S3 exposure), GCP (privileged IAM grant,
+  service-account key created, logging-sink deleted), Azure (RBAC role assignment,
+  diagnostic-settings deleted, Key Vault tamper), GitLab (2FA disabled, project made
+  public), Okta (admin impersonation), Microsoft 365 (org transport rule, mailbox
+  delegate), GitHub (org 2FA disabled, branch-protection removed) — every API
+  event/operation name adversarially verified against provider docs.
 - **OT / ICS** — Modbus write / diagnostic, S7comm program download / PLC stop,
   DNP3 device restart / disable-unsolicited, CIP set-attribute write, an **IT→OT
   write conduit-violation** (Purdue / IEC 62443 zone) rule, and an OT-protocol

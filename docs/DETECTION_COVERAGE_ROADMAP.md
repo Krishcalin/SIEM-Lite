@@ -118,7 +118,7 @@ Surfaces:
 | **0 — Framework & measurement** | Rule-metadata schema (`fidelity`/`data_source`/`references`/`atlas.*`), CI rule-linter, `app/coverage.py`, `/coverage` scoreboard + Navigator layers + CLI, baseline coverage | ✅ **DONE** |
 | **1 — Sigma importer (breadth)** | Map SigmaHQ logsource/fields → our schema; import + loaded-vs-skipped coverage report | ✅ **DONE** |
 | **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested (15 rules; adversarially IOC-verified) | ✅ **DONE** |
-| **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 | ▫ planned |
+| **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 / GitHub / GitLab (16 rules; API-names adversarially verified) | ✅ **DONE** |
 | **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) | ▫ planned |
 | **5 — Behavioural upgrade** | temporal-sequence + distinct-count + GeoIP → impossible-travel, beaconing, spray-then-success, cross-source kill-chains | ▫ planned |
 | **6 — OT/ICS + SaaS/VCS** | extend ATT&CK-for-ICS; GitHub/GitLab supply-chain pack | ▫ planned |
@@ -180,3 +180,31 @@ against public sources** (SigmaHQ / MITRE / loldrivers / vendor research) before
 caught and fixed a dead sdclt `runas`-vs-`open` verb, a mislabeled ETW-injection token, and two
 technique-tag errors. Delta on the `/coverage` scoreboard: **ATT&CK Enterprise 46 → 64 techniques;
 high-fidelity coverage 7 → 23**.
+
+### Phase 3 — cloud + identity pack
+
+Phase 3 adds 16 curated rules across **every** cloud / identity source, closing the biggest
+provider gaps: **GCP, Azure and GitLab went from zero rules to covered**. Each rule keys only on
+fields the cloud parsers surface (`action` = eventName / methodName / operationName / Operation /
+eventType, plus keyword search over the flattened `raw` record for values buried in
+`requestParameters` / IAM policy bindings), and ships a positive + benign-negative test:
+
+- **AWS** — threat-detection / Config disabled (GuardDuty·Security Hub·Config), AdministratorAccess
+  policy attached, S3 bucket exposed publicly.
+- **GCP** — SetIamPolicy granting a privileged role, service-account key created, logging sink deleted.
+- **Azure** — RBAC role assignment, diagnostic settings deleted, Key Vault delete / access-policy change.
+- **GitLab** — 2FA disabled, project/group made public.
+- **Okta / M365 / GitHub** — admin impersonation; org transport rule + mailbox delegate; org 2FA
+  disabled + branch-protection removed.
+
+Because a cloud rule lives or dies by the exact API identifier, **every event / operation / method /
+eventType name was adversarially verified against provider docs** (AWS / GCP / Azure / Microsoft /
+Okta / GitHub / GitLab) in a 16-agent pass. It paid off: it caught **two dead GitLab rules** (they
+assumed human-readable prose — `to public`, `2fa` — but GitLab emits discrete `change`/`to` fields and
+an underscore `event_name` `user_disable_two_factor`, so the originals matched *zero* real events) and
+**four mis-mapped ATT&CK sub-techniques** (S3 → T1530, transport-rule → T1114.003, Key Vault →
+T1555.006, branch-protection → T1562.001). Fidelity labels were tuned down where a rule keys on an
+operation name without inspecting the payload (Terraform-style full-policy re-applies fire the GCP IAM
+rule; transport-rule body isn't inspected). Delta: **ATT&CK Enterprise 64 → 68 techniques** (cloud
+techniques overlap heavily, so the win is provider breadth, not raw technique count); rules **64 → 80**
+(74 event + 6 correlation).

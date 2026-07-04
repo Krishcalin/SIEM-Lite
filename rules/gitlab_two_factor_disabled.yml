@@ -1,0 +1,25 @@
+title: GitLab Two-Factor Authentication Disabled
+id: lo-gitlab-2fa-disabled
+description: A GitLab audit event indicates two-factor authentication was disabled for a user (event_name user_disable_two_factor) or a group's two-factor requirement was turned off (require_two_factor_authentication changed to false). Removing MFA weakens account security and is a common takeover / persistence step.
+level: high
+fidelity: medium
+data_source: [gitlab_audit]
+logsource:
+  vendor: gitlab
+  product: audit
+detection:
+  user_disable:
+    - action|contains: user_disable_two_factor
+    - message|contains: user_disable_two_factor
+    - action|contains|all: [two-factor, disabl]
+    - message|contains|all: [two-factor, disabl]
+  group_requirement_off:
+    details.change|contains: require_two_factor
+    details.to: false
+  condition: user_disable or group_requirement_off
+tags:
+  - attack.t1556.006
+  - attack.persistence
+  - attack.defense_evasion
+falsepositives:
+  - Help-desk assisted 2FA reset for a locked-out user (correlate the actor and target).

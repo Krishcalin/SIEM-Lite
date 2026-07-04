@@ -1,0 +1,17 @@
+title: Okta Admin Impersonation Session
+id: lo-okta-admin-impersonation
+description: An Okta administrator started an impersonation ("act as") session for another user (user.session.impersonation.grant / .initiate). Impersonation lets an admin act fully as the target user; abused, it grants silent access to a victim's applications and data.
+level: high
+fidelity: high
+data_source: [okta_system_log]
+logsource:
+  vendor: okta
+detection:
+  selection:
+    log_type|contains: impersonation
+  condition: selection
+tags:
+  - attack.t1078.004
+  - attack.defense_evasion
+falsepositives:
+  - Sanctioned support / troubleshooting impersonation with a matching help-desk ticket.

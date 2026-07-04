@@ -1,0 +1,20 @@
+title: GCP Logging Sink Deleted or Diverted
+id: lo-gcp-logging-sink-deleted
+description: A Cloud Logging sink was deleted or updated (DeleteSink / UpdateSink). Removing or re-pointing a log sink stops audit logs from reaching their destination - a defense-evasion step to blind detection.
+level: high
+fidelity: high
+data_source: [cloud_audit]
+logsource:
+  vendor: gcp
+  product: cloud-audit
+detection:
+  selection:
+    action|contains:
+      - DeleteSink
+      - UpdateSink
+  condition: selection
+tags:
+  - attack.t1562.008
+  - attack.defense_evasion
+falsepositives:
+  - Sanctioned logging-pipeline changes (correlate with a change ticket).

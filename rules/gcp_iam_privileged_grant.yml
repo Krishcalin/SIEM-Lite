@@ -1,0 +1,27 @@
+title: GCP IAM Policy Granting Privileged Role
+id: lo-gcp-iam-privileged-grant
+description: A SetIamPolicy call bound a highly privileged role (Owner, Editor, Security Admin, or a service-account token/impersonation role) to a principal - a cloud privilege-escalation / persistence step. The granted role appears in the audit log's policy bindings.
+level: high
+fidelity: medium
+data_source: [cloud_audit]
+logsource:
+  vendor: gcp
+  product: cloud-audit
+detection:
+  setiam:
+    action|contains: SetIamPolicy
+  privileged_role:
+    - roles/owner
+    - roles/editor
+    - roles/resourcemanager.organizationAdmin
+    - roles/iam.securityAdmin
+    - roles/iam.serviceAccountTokenCreator
+    - roles/iam.serviceAccountUser
+    - roles/iam.serviceAccountKeyAdmin
+  condition: setiam and privileged_role
+tags:
+  - attack.t1098.003
+  - attack.privilege_escalation
+  - attack.persistence
+falsepositives:
+  - Terraform / IaC provisioning that assigns roles as part of a reviewed change.

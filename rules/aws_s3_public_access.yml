@@ -1,0 +1,30 @@
+title: AWS S3 Bucket Exposed Publicly
+id: lo-aws-s3-public-access
+description: An S3 bucket ACL / policy was changed to grant access to everyone (the AllUsers / AuthenticatedUsers group or a 0.0.0.0/0 policy), or the bucket's Public Access Block was removed - exposing stored objects to the internet (data exposure / exfiltration precursor).
+level: high
+fidelity: medium
+data_source: [cloudtrail]
+logsource:
+  vendor: aws
+  product: cloudtrail
+detection:
+  acl_change:
+    rule_name:
+      - PutBucketAcl
+      - PutBucketPolicy
+      - PutObjectAcl
+  public_grant:
+    - AllUsers
+    - AuthenticatedUsers
+    - "0.0.0.0/0"
+  block_removed:
+    rule_name:
+      - DeletePublicAccessBlock
+      - DeleteAccountPublicAccessBlock
+  condition: (acl_change and public_grant) or block_removed
+tags:
+  - attack.t1530
+  - attack.collection
+falsepositives:
+  - Intentionally public buckets (static-site hosting, public datasets) - allowlist those bucket names.
+  - Detection covers ACL AllUsers/AuthenticatedUsers grants and Public-Access-Block removal; a wildcard-principal bucket *policy* is not matched by the ACL keyword path.

@@ -1,0 +1,22 @@
+title: GitHub Branch Protection Removed or Overridden
+id: lo-github-branch-protection-removed
+description: A protected-branch rule was destroyed, or a protected-branch policy was overridden on a push (protected_branch.destroy / policy_override / update_admin_enforced). Removing branch protection lets an attacker push unreviewed code - a source-tampering / supply-chain step.
+level: medium
+fidelity: medium
+data_source: [github_audit]
+logsource:
+  vendor: github
+  product: audit
+detection:
+  selection:
+    action:
+      - protected_branch.destroy
+      - protected_branch.policy_override
+      - protected_branch.update_admin_enforced
+      - protected_branch.dismiss_stale_reviews
+  condition: selection
+tags:
+  - attack.t1562.001
+  - attack.defense_evasion
+falsepositives:
+  - Maintainers legitimately restructuring branch-protection policy.

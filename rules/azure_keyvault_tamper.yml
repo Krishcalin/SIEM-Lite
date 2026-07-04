@@ -1,0 +1,21 @@
+title: Azure Key Vault Deleted or Access Policy Changed
+id: lo-azure-keyvault-tamper
+description: An Azure Key Vault was deleted, or its access policy was rewritten (Microsoft.KeyVault/vaults/delete or vaults/accessPolicies/write). Granting oneself access to a vault's secrets / keys is a credential-access step; deleting a vault is destructive tampering.
+level: high
+fidelity: medium
+data_source: [azure_activity]
+logsource:
+  vendor: microsoft
+  product: azure
+detection:
+  selection:
+    action|contains:
+      - KeyVault/vaults/delete
+      - vaults/accessPolicies/write
+  condition: selection
+tags:
+  - attack.t1555.006
+  - attack.t1078.004
+  - attack.credential_access
+falsepositives:
+  - Legitimate vault administration / onboarding a new application identity (correlate with a change request).
