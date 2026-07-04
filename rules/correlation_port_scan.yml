@@ -1,0 +1,18 @@
+title: Port Scan - One Source Sweeping Many Ports on a Host
+id: lo-corr-port-scan
+level: medium
+fidelity: medium
+data_source: [network]
+description: A single source IP contacted 20 or more distinct destination ports on the same destination host within five minutes - vertical port scanning / service enumeration. Counting distinct ports (not raw events) distinguishes a scan from ordinary repeated traffic to one service.
+correlation:
+  group_by:
+    - src_ip
+    - dst_ip
+  distinct_count: dst_port
+  window: 5m
+  threshold: 20
+tags:
+  - attack.t1046
+  - attack.discovery
+falsepositives:
+  - Health-checkers / monitoring probing many service ports on a host, and legitimate multi-port applications - allowlist their source IPs.

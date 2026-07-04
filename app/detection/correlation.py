@@ -61,6 +61,7 @@ class CorrelationRule:
     group_by: list[str]
     window: int           # seconds
     threshold: int
+    distinct_field: Optional[str] = None   # count DISTINCT values of this column
     tactics: list[str] = field(default_factory=list)
     techniques: list[str] = field(default_factory=list)
     atlas_techniques: list[str] = field(default_factory=list)
@@ -80,7 +81,7 @@ def load_correlation_rules(rules_dir) -> list[CorrelationRule]:
             if not isinstance(corr, dict):
                 continue
             tactics, techniques = _parse_tags(doc.get("tags"))
-            rules.append(CorrelationRule(
+            rule = CorrelationRule(
                 id=str(doc.get("id") or doc.get("title") or path.name),
                 title=str(doc.get("title") or "untitled"),
                 level=str(doc.get("level") or "medium").lower(),
@@ -89,12 +90,19 @@ def load_correlation_rules(rules_dir) -> list[CorrelationRule]:
                 group_by=list(corr.get("group_by") or []),
                 window=window_seconds(corr.get("window") or corr.get("timespan")),
                 threshold=int(corr.get("threshold") or 1),
+                distinct_field=(str(df).strip() if (df := (corr.get("distinct_count")
+                               or corr.get("distinct") or corr.get("count_distinct"))) else None),
                 tactics=tactics, techniques=techniques,
                 atlas_techniques=parse_atlas_tags(doc.get("tags")),
                 fidelity=norm_fidelity(doc.get("fidelity")),
                 data_source=as_str_list(doc.get("data_source") or doc.get("data_sources")),
                 references=as_str_list(doc.get("references")),
-                source=path.name))
+                source=path.name)
+            if rule.distinct_field and rule.distinct_field not in db._CORR_COLS:
+                log.warning("correlation rule %s: distinct_count %r is not an aggregatable "
+                            "column; it will fall back to a plain event count",
+                            rule.id, rule.distinct_field)
+            rules.append(rule)
     return rules
 
 
@@ -106,20 +114,25 @@ def correlation_alert(rule: CorrelationRule, row: dict, bucket: int) -> dict:
     ident = "|".join(f"{k}={gv[k]}" for k in sorted(gv))
     dedup = hashlib.sha256(f"corr|{rule.id}|{ident}|{bucket}".encode("utf-8")).hexdigest()
     parts = ", ".join(f"{k}={v}" for k, v in gv.items() if v is not None) or "—"
+    if rule.distinct_field:
+        summary = f"{row.get('n')} distinct {rule.distinct_field} for {parts} within {rule.window}s"
+    else:
+        summary = f"{row.get('n')} matching events ({parts}) within {rule.window}s"
     return {
         "event_time": row.get("last_seen"),
         "rule_id": rule.id, "rule_title": rule.title, "level": rule.level,
         "tactics": rule.tactics, "techniques": rule.techniques, "vendor": None,
         "src_ip": gv.get("src_ip"), "dst_ip": gv.get("dst_ip"),
         "user_name": gv.get("user_name"), "host_name": gv.get("host_name"),
-        "message": f"{row.get('n')} matching events ({parts}) within {rule.window}s",
+        "message": summary,
         "dedup_hash": dedup, "batch_id": None, "status": "open",
     }
 
 
 def run_rule(rule: CorrelationRule, now: Optional[float] = None) -> int:
     """Evaluate one correlation rule; insert+return the number of alerts raised."""
-    rows = db.correlate(rule.match, rule.group_by, rule.window, rule.threshold)
+    rows = db.correlate(rule.match, rule.group_by, rule.window, rule.threshold,
+                        rule.distinct_field)
     if not rows:
         return 0
     bucket = int((now if now is not None else time.time()) // rule.window)

@@ -1,0 +1,27 @@
+title: Network Sweep - One Source Contacting Many Hosts
+id: lo-corr-host-sweep
+level: medium
+fidelity: medium
+data_source: [network]
+description: A single source IP was denied/blocked while contacting 25 or more distinct destination hosts within five minutes - horizontal network sweeping / remote-system discovery, often the reconnaissance step before lateral movement. Gating on denied connections separates a real sweep from ordinary browsing fan-out (a workstation legitimately reaches many CDN / tracker hosts, but is not denied to them).
+correlation:
+  match:
+    action:
+      - deny
+      - denied
+      - drop
+      - dropped
+      - blocked
+      - block
+      - reset
+  group_by:
+    - src_ip
+  distinct_count: dst_ip
+  window: 5m
+  threshold: 25
+tags:
+  - attack.t1018
+  - attack.t1046
+  - attack.discovery
+falsepositives:
+  - Vulnerability scanners and monitoring pollers hitting blocked segments - allowlist their source IPs.

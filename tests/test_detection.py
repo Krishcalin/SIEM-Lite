@@ -753,3 +753,38 @@ def test_phase4_benign_network_web_activity_stays_quiet():
     assert not p4(hits(**lx("cat /etc/passwd")))
     assert not p4(hits(**lx("ls -la /etc/cron.d")))
     assert not p4(hits(**lx("bash -c 'systemctl status nginx'")))
+
+
+# ── Phase 5: cardinality / distinct-count correlation ────────────────────────
+def test_cardinality_correlation_rules_load_and_build_alerts():
+    """The distinct-count correlation rules parse their distinct_field and the
+    alert message names the counted dimension (behavioural upgrade, Phase 5)."""
+    from app.detection.correlation import correlation_alert, load_correlation_rules
+
+    rules = {r.id: r for r in load_correlation_rules(RULES_DIR)}
+
+    spray = rules["lo-corr-password-spray"]
+    assert spray.group_by == ["src_ip"] and spray.distinct_field == "user_name"
+    assert spray.threshold == 10 and spray.window == 600 and "T1110.003" in spray.techniques
+
+    dbf = rules["lo-corr-distributed-bruteforce"]
+    assert dbf.group_by == ["user_name"] and dbf.distinct_field == "src_ip"
+    assert "T1110.004" in dbf.techniques
+
+    ps = rules["lo-corr-port-scan"]
+    assert ps.group_by == ["src_ip", "dst_ip"] and ps.distinct_field == "dst_port"
+
+    hs = rules["lo-corr-host-sweep"]
+    assert hs.group_by == ["src_ip"] and hs.distinct_field == "dst_ip"
+    assert "T1018" in hs.techniques
+
+    # distinct-count alert names the dimension; the group value flows onto the alert
+    a = correlation_alert(spray, {"src_ip": "45.1.2.3", "n": 14, "last_seen": None}, bucket=1)
+    assert "distinct user_name" in a["message"] and a["src_ip"] == "45.1.2.3"
+    assert a["level"] == "high" and "T1110.003" in a["techniques"]
+
+    # an ordinary (non-distinct) correlation rule keeps the classic wording
+    bf = rules["lo-corr-bruteforce-logon"]
+    assert bf.distinct_field is None
+    a2 = correlation_alert(bf, {"src_ip": "1.2.3.4", "n": 6, "last_seen": None}, bucket=1)
+    assert "matching events" in a2["message"]

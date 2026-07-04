@@ -165,6 +165,37 @@ def test_correlation_threshold(clean_db):
     assert db.correlate({"action": "failed-logon"}, ["src_ip"], 1, 5) == []      # outside window
 
 
+def test_correlation_distinct_count(clean_db):
+    """distinct_col counts DISTINCT values of a column (password spray: one src_ip
+    failing against many distinct users), not raw events."""
+    db = clean_db
+    base = datetime.now(timezone.utc) - timedelta(minutes=1)
+    # one source failing against 12 DISTINCT users ...
+    evts = [_evt(event_time=base + timedelta(seconds=i), vendor="fw", action="failed-logon",
+                 src_ip="45.9.9.9", user_name=f"user{i}") for i in range(12)]
+    # ... plus 20 more failures all against the SAME user (inflates count(*), NOT distinct)
+    evts += [_evt(event_time=base + timedelta(seconds=100 + i), vendor="fw", action="failed-logon",
+                  src_ip="45.9.9.9", user_name="user0") for i in range(20)]
+    _store(db, evts)
+
+    # distinct user_name >= 10 -> fires; n is the DISTINCT count (12), not 32 events
+    groups = db.correlate({"action": "failed-logon"}, ["src_ip"], 3600, 10, "user_name")
+    assert groups and groups[0]["src_ip"] == "45.9.9.9" and groups[0]["n"] == 12
+    # threshold above the distinct count -> nothing
+    assert db.correlate({"action": "failed-logon"}, ["src_ip"], 3600, 13, "user_name") == []
+
+    # a second source hitting only 3 distinct users is NOT a spray
+    _store(db, [_evt(event_time=base + timedelta(seconds=i), vendor="fw", action="failed-logon",
+                     src_ip="10.0.0.5", user_name=f"acct{i % 3}") for i in range(9)], batch_id=2)
+    sprayers = {g["src_ip"] for g in
+                db.correlate({"action": "failed-logon"}, ["src_ip"], 3600, 10, "user_name")}
+    assert "45.9.9.9" in sprayers and "10.0.0.5" not in sprayers
+
+    # a distinct_col that is also a group_by column falls back to count(*) (32 events)
+    fallback = db.correlate({"action": "failed-logon"}, ["src_ip"], 3600, 10, "src_ip")
+    assert any(g["src_ip"] == "45.9.9.9" and g["n"] == 32 for g in fallback)
+
+
 # --------------------------------------------------------------------------- #
 #  Pipeline write path + alerts                                               #
 # --------------------------------------------------------------------------- #

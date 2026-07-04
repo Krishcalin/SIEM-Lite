@@ -120,7 +120,7 @@ Surfaces:
 | **2 — Endpoint high-fidelity pack** | Windows / Sysmon curated, tuned, tested (15 rules; adversarially IOC-verified) | ✅ **DONE** |
 | **3 — Cloud + Identity pack** | CloudTrail / GCP / Azure / Entra / Okta / M365 / GitHub / GitLab (16 rules; API-names adversarially verified) | ✅ **DONE** |
 | **4 — Linux + Network pack** | auditd / web / Zeek / Suricata (incl. web-exploitation `T1190`) — 16 rules, patterns adversarially verified | ✅ **DONE** |
-| **5 — Behavioural upgrade** | temporal-sequence + distinct-count + GeoIP → impossible-travel, beaconing, spray-then-success, cross-source kill-chains | ▫ planned |
+| **5 — Behavioural upgrade** | **distinct-count / cardinality ✅** (spray / distributed-brute-force / port-scan / host-sweep); temporal-sequence + GeoIP → impossible-travel next | ◐ **in progress** |
 | **6 — OT/ICS + SaaS/VCS** | extend ATT&CK-for-ICS; GitHub/GitLab supply-chain pack | ▫ planned |
 | **7 — ATLAS track** | LLM/AI-gateway parser + adversarial-AI rule pack | ▫ planned |
 
@@ -232,3 +232,31 @@ tag corrections became coverage: a mis-tagged "Crypto Currency Mining" category 
 `T1496` rule**, and `T1548.003`'s tactic was fixed to Defense Evasion. Delta: **ATT&CK Enterprise
 68 → 79 techniques** (the biggest single-phase jump — Linux/web/IDS were genuinely uncovered);
 high-fidelity 26 → 35; rules **80 → 96** (90 event + 6 correlation).
+
+### Phase 5 — behavioural upgrade (in progress)
+
+Phase 5 is the first phase that grows the **engine**, not just content. Its first increment is
+**distinct-count / cardinality correlation**: `db.correlate` gained an optional whitelisted
+`distinct_col`, so a correlation rule can count *distinct values* of a second column
+(`count(distinct …)`) instead of raw events. That expresses detections the event-counting engine
+could not — behaviours defined by *breadth*:
+
+- **Password spray** — one `src_ip` → 10+ distinct `user_name` failed logons (`T1110.003`); immune to a
+  single user's repeated mistypes, and invisible to a per-user failed-count rule.
+- **Distributed brute force / credential stuffing** — one `user_name` ← 10+ distinct `src_ip`
+  (`T1110.004`); defeats per-source throttling.
+- **Port scan** — one `(src_ip, dst_ip)` → 20+ distinct `dst_port` (`T1046`), the vertical-scan shape.
+- **Host sweep** — one `src_ip` *denied* to 25+ distinct `dst_ip` (`T1018`/`T1046`); gating on blocked
+  connections separates a real sweep from ordinary CDN/tracker browsing fan-out.
+
+The SQL change is whitelist-gated (the `distinct_col` identifier must be in `_CORR_COLS` and not already
+a group column) and fully parameterized; a load-time warning fires if a rule names an unaggregatable
+column. It was **adversarially reviewed for SQL injection and `count(distinct)`/`HAVING` correctness
+(both CONFIRMED clean)**, unit-tested (rule/loader/alert wording) and integration-tested against real
+Postgres in CI (distinct vs event count, threshold, per-group isolation, fallback). Delta:
+ATT&CK Enterprise 79 → **82 techniques**; rules 96 → **100** (90 event + 10 correlation).
+
+**Remaining Phase 5 work:** **temporal-sequence** correlation (ordered A→B per entity — spray→success,
+recon→exploit; needs a self-join or a two-step Python orchestration) and **GeoIP / ASN enrichment on
+ingest → impossible-travel** (needs an offline geo dataset — an optional-MaxMind, degrade-gracefully
+design is the likely approach).

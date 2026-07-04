@@ -98,7 +98,7 @@ round it out — all tested unit + integration against real PostgreSQL in CI.
   severity, rule, bytes, message) with the **full original record kept** in `jsonb`.
 - **Three ingest paths** — web upload, HTTP API (API-key auth, gzip-aware), and a
   syslog receiver (UDP/TCP/TLS) fronted by a bounded async queue.
-- **Sigma-based detection & correlation** (90 detection + 6 correlation rules shipped)
+- **Sigma-based detection & correlation** (90 detection + 10 correlation rules shipped)
   with the common Sigma modifiers, plus a **community SigmaHQ importer**.
 - **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
   **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
@@ -327,7 +327,7 @@ correlation:
 tags: [attack.t1110, attack.credential_access]
 ```
 
-LogOcean ships a starter pack of **90 detection + 6 correlation rules** covering
+LogOcean ships a starter pack of **90 detection + 10 correlation rules** covering
 failed-logon brute force, denied-connection floods, RDP exposure (incl. external
 RDP via `cidr`), ingress-tool transfer, event-log clearing, security-tool
 tampering, encoded/download PowerShell (`base64offset`/`windash`), AWS CloudTrail

@@ -1189,13 +1189,19 @@ def mark_reverted(action_id: int, when: dt.datetime) -> None:
 
 
 def correlate(match: dict, group_by: list[str], window_seconds: int,
-              threshold: int) -> list[dict]:
+              threshold: int, distinct_col: Optional[str] = None) -> list[dict]:
     """Aggregate events in the last `window_seconds`, grouped by `group_by`,
-    returning groups with at least `threshold` events. Column names are
-    whitelisted; all values are parameterized."""
+    returning groups whose count reaches `threshold`. By default the count is of
+    events; if `distinct_col` (a whitelisted column not already grouped on) is
+    given, it is instead the number of *distinct* values of that column — so a
+    rule can fire on "one src_ip → N distinct user_name failed logons" (password
+    spray) or "N distinct dst_port" (port scan). Column names are whitelisted;
+    all values are parameterized."""
     cols = [c for c in group_by if c in _CORR_COLS]
     if not cols:
         return []
+    dc = distinct_col if (distinct_col in _CORR_COLS and distinct_col not in cols) else None
+    count_expr = f"count(distinct {dc})" if dc else "count(*)"
     select = [f"host({c}) AS {c}" if c in _CORR_IP_COLS else c for c in cols]
     where = ["event_time >= now() - make_interval(secs => %(_win)s)"]
     p: dict[str, Any] = {"_win": int(window_seconds), "_th": int(threshold)}
@@ -1210,10 +1216,12 @@ def correlate(match: dict, group_by: list[str], window_seconds: int,
             where.append(f"lower({col}::text) = lower(%({key})s)")
             p[key] = str(val)
     where += [f"{c} IS NOT NULL" for c in cols]
-    q = (f"SELECT {', '.join(select)}, count(*) AS n, "
+    if dc:
+        where.append(f"{dc} IS NOT NULL")
+    q = (f"SELECT {', '.join(select)}, {count_expr} AS n, "
          f"min(event_time) AS first_seen, max(event_time) AS last_seen "
          f"FROM events WHERE {' AND '.join(where)} "
-         f"GROUP BY {', '.join(cols)} HAVING count(*) >= %(_th)s")
+         f"GROUP BY {', '.join(cols)} HAVING {count_expr} >= %(_th)s")
     with pool().connection() as conn:
         return conn.execute(q, p).fetchall()
 
