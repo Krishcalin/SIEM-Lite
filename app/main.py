@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import (api, auth, collectors, compliance, coverage, db, ingest,
+from . import (api, auth, collectors, compliance, coverage, custom_parser, db, ingest,
                killchain_runtime, navigator, notify, ot, saved, streaming, workbench)
 from .copilot import client as copilot
 from .auth import require_role
@@ -81,6 +81,7 @@ async def lifespan(app: FastAPI):
                         settings.admin_user, pw)
     if settings.auto_purge:
         db.purge_older_than(settings.retention_years)
+    custom_parser.reload()                     # console-authored field maps
     triage_runtime.reload_index()              # load suppression/allowlist rules
     correlator = None
     if settings.detection_enabled:
@@ -1181,3 +1182,182 @@ def admin_toggle_user(request: Request, user_id: int, enabled: str = Form(...),
         db.set_user_enabled(user_id, on)
         _audit(request, "user.toggle", f"user {user_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Custom parsers (console-authored field maps)                                #
+# --------------------------------------------------------------------------- #
+
+def _parse_field_map(text: str) -> dict:
+    """Parse the textarea form of a field map: one `raw_key -> column` per line."""
+    out: dict[str, str] = {}
+    for line in (text or "").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        for sep in ("->", "=>", "="):
+            if sep in line:
+                k, _, v = line.partition(sep)
+                k, v = k.strip(), v.strip()
+                if k and v:
+                    out[k] = v
+                break
+    return out
+
+
+def _field_map_text(fm: dict) -> str:
+    return "\n".join(f"{k} -> {v}" for k, v in (fm or {}).items())
+
+
+@app.get("/parsers", response_class=HTMLResponse)
+def parsers_page(request: Request, _user=Depends(require_role("admin"))):
+    rows = db.list_custom_parsers()
+    for r in rows:
+        r["field_map_text"] = _field_map_text(r.get("field_map"))
+    return templates.TemplateResponse("parsers.html", _ctx(
+        request, parsers=rows, columns=sorted(custom_parser._ALLOWED)))
+
+
+@app.post("/parsers/save")
+def parsers_save(request: Request,
+                 parser_id: str = Form(...), title: str = Form(...),
+                 match_key: str = Form(...), match_value: str = Form(...),
+                 field_map: str = Form(""), vendor: str = Form(""),
+                 product: str = Form(""), kv_source: str = Form(""),
+                 kv_sep: str = Form(""), enabled: str = Form("on"),
+                 _user=Depends(require_role("admin"))):
+    db.upsert_custom_parser(
+        parser_id.strip(), title.strip(), match_key.strip(), match_value.strip(),
+        _parse_field_map(field_map), vendor.strip() or None, product.strip() or None,
+        enabled == "on", kv_source.strip() or None, kv_sep.strip() or None)
+    custom_parser.reload()          # hot reload -- no restart needed
+    _audit(request, "parser.save", parser_id)
+    return RedirectResponse(url="/parsers", status_code=303)
+
+
+@app.post("/parsers/delete")
+def parsers_delete(request: Request, parser_id: str = Form(...),
+                   _user=Depends(require_role("admin"))):
+    db.delete_custom_parser(parser_id)
+    custom_parser.reload()
+    _audit(request, "parser.delete", parser_id)
+    return RedirectResponse(url="/parsers", status_code=303)
+
+
+@app.post("/parsers/test")
+def parsers_test(request: Request, sample: str = Form(...),
+                 match_key: str = Form(...), match_value: str = Form(...),
+                 field_map: str = Form(""), vendor: str = Form(""),
+                 product: str = Form(""), kv_source: str = Form(""),
+                 kv_sep: str = Form(""), _user=Depends(require_role("admin"))):
+    """Dry-run a definition against a pasted raw record. Nothing is stored."""
+    import json as _json
+    defn = {"parser_id": "(test)", "match_key": match_key.strip(),
+            "match_value": match_value.strip(),
+            "field_map": _parse_field_map(field_map),
+            "vendor": vendor.strip() or None, "product": product.strip() or None,
+            "kv_source": kv_source.strip() or None, "kv_sep": kv_sep.strip() or None}
+    result: dict = {}
+    try:
+        rec = _json.loads(sample)
+        if not isinstance(rec, dict):
+            raise ValueError("sample must be a JSON object")
+        matched = custom_parser.matches(defn, rec)
+        result = {"matched": matched,
+                  "mapped": custom_parser.map_fields(
+                      defn, custom_parser.extract_kv(defn, rec)) if matched else {}}
+    except Exception as exc:  # noqa: BLE001 -- surface the error to the author
+        result = {"error": str(exc)}
+    rows = db.list_custom_parsers()
+    for r in rows:
+        r["field_map_text"] = _field_map_text(r.get("field_map"))
+    return templates.TemplateResponse("parsers.html", _ctx(
+        request, parsers=rows, columns=sorted(custom_parser._ALLOWED),
+        test=result, draft=defn, sample=sample,
+        draft_map_text=_field_map_text(defn.get("field_map"))))
+
+
+# --------------------------------------------------------------------------- #
+#  Rule builder (console-authored detection rules)                             #
+# --------------------------------------------------------------------------- #
+
+@app.get("/rules", response_class=HTMLResponse)
+def rules_page(request: Request, _user=Depends(require_role("admin"))):
+    return templates.TemplateResponse("rules.html", _ctx(
+        request, rules=db.list_custom_rules()))
+
+
+@app.post("/rules/save")
+def rules_save(request: Request, rule_id: str = Form(...), title: str = Form(...),
+               yaml_text: str = Form(...), enabled: str = Form("on"),
+               _user=Depends(require_role("admin"))):
+    import yaml as _yaml
+    err = None
+    try:
+        docs = [d for d in _yaml.safe_load_all(yaml_text) if isinstance(d, dict)]
+        if not docs or not any(d.get("detection") for d in docs):
+            err = "Rule must contain a `detection:` block."
+    except Exception as exc:  # noqa: BLE001
+        err = f"YAML error: {exc}"
+    if err:
+        return templates.TemplateResponse("rules.html", _ctx(
+            request, rules=db.list_custom_rules(), error=err,
+            draft={"rule_id": rule_id, "title": title, "yaml_text": yaml_text}))
+    db.upsert_custom_rule(rule_id.strip(), title.strip(), yaml_text,
+                          enabled == "on")
+    detection_runtime.load_and_sync(BASE.parent / "rules")   # hot reload
+    _audit(request, "rule.save", rule_id)
+    return RedirectResponse(url="/rules", status_code=303)
+
+
+@app.post("/rules/delete")
+def rules_delete(request: Request, rule_id: str = Form(...),
+                 _user=Depends(require_role("admin"))):
+    db.delete_custom_rule(rule_id)
+    detection_runtime.load_and_sync(BASE.parent / "rules")
+    _audit(request, "rule.delete", rule_id)
+    return RedirectResponse(url="/rules", status_code=303)
+
+
+@app.post("/rules/test")
+def rules_test(request: Request, yaml_text: str = Form(...),
+               rule_id: str = Form(""), title: str = Form(""),
+               limit: int = Form(200), _user=Depends(require_role("admin"))):
+    """Dry-run a rule against the most recent events. Nothing is stored and no
+    alerts are raised -- this is how an author checks blast radius before enabling."""
+    import yaml as _yaml
+    from .detection.engine import flatten_event, match_rule, rule_from_dict
+    from .models import NormalizedEvent
+    result: dict = {}
+    try:
+        docs = [d for d in _yaml.safe_load_all(yaml_text)
+                if isinstance(d, dict) and d.get("detection")]
+        if not docs:
+            raise ValueError("no document with a `detection:` block")
+        rule = rule_from_dict(docs[0], "test")
+        rows = db.recent_events_for_test(min(max(int(limit), 1), 1000))
+        hits = []
+        for r in rows:
+            evt = NormalizedEvent(
+                event_time=r.get("event_time"), vendor=r.get("vendor") or "",
+                product=r.get("product"), log_type=r.get("log_type"),
+                severity=r.get("severity"), action=r.get("action"),
+                src_ip=r.get("src_ip"), dst_ip=r.get("dst_ip"),
+                src_port=r.get("src_port"), dst_port=r.get("dst_port"),
+                protocol=r.get("protocol"), app=r.get("app"),
+                user_name=r.get("user_name"), host_name=r.get("host_name"),
+                rule_name=r.get("rule_name"), message=r.get("message"),
+                raw=r.get("raw") or {})
+            if match_rule(rule, flatten_event(evt)):
+                hits.append({"event_time": r.get("event_time"),
+                             "vendor": r.get("vendor"),
+                             "user_name": r.get("user_name"),
+                             "host_name": r.get("host_name"),
+                             "message": (r.get("message") or "")[:160]})
+        result = {"scanned": len(rows), "hits": hits[:25], "total_hits": len(hits),
+                  "rule_title": rule.title, "level": rule.level}
+    except Exception as exc:  # noqa: BLE001
+        result = {"error": str(exc)}
+    return templates.TemplateResponse("rules.html", _ctx(
+        request, rules=db.list_custom_rules(), test=result,
+        draft={"rule_id": rule_id, "title": title, "yaml_text": yaml_text}))

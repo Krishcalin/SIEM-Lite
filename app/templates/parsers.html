@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Parsers — LogOcean{% endblock %}
+{% block body %}
+<h1>Custom parsers</h1>
+<p>Field maps authored here are stored as data and applied after the built-in
+   parser, filling only columns the built-in parser left empty. Changes take
+   effect immediately — no restart.</p>
+
+<section>
+  <h2>Test a definition</h2>
+  {% if test %}
+    {% if test.error %}<div class="alert err">{{ test.error }}</div>
+    {% elif test.matched %}
+      <div class="alert ok">Matched. Mapped fields:
+        <ul>{% for k, v in test.mapped.items() %}<li><b>{{ k }}</b> = {{ v }}</li>{% endfor %}</ul>
+      </div>
+    {% else %}<div class="alert err">Signature did not match this sample.</div>{% endif %}
+  {% endif %}
+  <form method="post" action="/parsers/test" class="panel">
+    <label>Raw sample (JSON object)<br>
+      <textarea name="sample" rows="5" cols="90" required>{{ sample or '' }}</textarea></label><br>
+    <label>Match key <input name="match_key" value="{{ draft.match_key if draft else '' }}" required></label>
+    <label>Match value <input name="match_value" value="{{ draft.match_value if draft else '' }}" required></label>
+    <label>kv source <input name="kv_source" value="{{ draft.kv_source if draft else '' }}" placeholder="message"></label>
+    <label>kv separator <input name="kv_sep" value="{{ draft.kv_sep if draft else '' }}" placeholder="||"></label><br>
+    <label>Field map (one <code>raw_key -&gt; column</code> per line)<br>
+      <textarea name="field_map" rows="4" cols="60">{{ draft_map_text | default('', true) }}</textarea></label><br>
+    <label>vendor <input name="vendor" value="{{ draft.vendor if draft else '' }}"></label>
+    <label>product <input name="product" value="{{ draft.product if draft else '' }}"></label>
+    <button type="submit" class="btn">Test</button>
+  </form>
+  <p><small>Allowed columns: {{ columns|join(', ') }}</small></p>
+</section>
+
+<section>
+  <h2>Add / update</h2>
+  <form method="post" action="/parsers/save" class="panel">
+    <label>ID <input name="parser_id" required placeholder="ntnx-audit"></label>
+    <label>Title <input name="title" required></label><br>
+    <label>Match key <input name="match_key" required placeholder="message"></label>
+    <label>Match value <input name="match_value" required placeholder="api_audit"></label><br>
+    <label>kv source <input name="kv_source" placeholder="message"></label>
+    <label>kv separator <input name="kv_sep" placeholder="||"></label><br>
+    <label>Field map<br><textarea name="field_map" rows="4" cols="60"
+      placeholder="userName -> user_name&#10;httpMethod -> action"></textarea></label><br>
+    <label>vendor <input name="vendor"></label>
+    <label>product <input name="product"></label>
+    <label>enabled <input type="checkbox" name="enabled" checked></label>
+    <button type="submit" class="btn">Save</button>
+  </form>
+</section>
+
+<section>
+  <h2>Defined parsers</h2>
+  <table>
+    <tr><th>ID</th><th>Title</th><th>Signature</th><th>kv</th><th>Map</th><th>Enabled</th><th></th></tr>
+    {% for p in parsers %}
+    <tr>
+      <td>{{ p.parser_id }}</td><td>{{ p.title }}</td>
+      <td><code>{{ p.match_key }}</code> ~ {{ p.match_value }}</td>
+      <td>{{ p.kv_source or '—' }}{% if p.kv_sep %} <code>{{ p.kv_sep }}</code>{% endif %}</td>
+      <td><pre style="margin:0">{{ p.field_map_text }}</pre></td>
+      <td>{{ 'yes' if p.enabled else 'no' }}</td>
+      <td><form method="post" action="/parsers/delete"
+                onsubmit="return confirm('Delete this parser?');">
+            <input type="hidden" name="parser_id" value="{{ p.parser_id }}">
+            <button class="btn danger" type="submit">Delete</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="7">None yet.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

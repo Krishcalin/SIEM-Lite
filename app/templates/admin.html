@@ -3,6 +3,16 @@
 {% block body %}
 <h1>Admin</h1>
 
+<section>
+  <h2>Detection engineering</h2>
+  <p>Author log parsers and detection rules from the console. Both are stored in
+     the database, take effect immediately, and can be tested before enabling.</p>
+  <p class="panel">
+    <a class="btn" href="/parsers">Parsers</a>
+    <a class="btn" href="/rules">Rules</a>
+  </p>
+</section>
+
 {% if purged is not none %}
 <div class="alert ok">
   {% if purged %}Dropped {{ purged|length }} partition(s): {{ purged|join(', ') }}.

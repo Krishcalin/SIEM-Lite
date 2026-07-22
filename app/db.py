@@ -1391,3 +1391,85 @@ def purge_older_than(years: int) -> list[str]:
                 dropped.append(name)
         conn.commit()
     return dropped
+
+
+# ------------------------------------------------------------- custom parsers
+def list_custom_parsers() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM custom_parsers ORDER BY title").fetchall()
+
+
+def enabled_custom_parsers() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT parser_id, match_key, match_value, field_map, vendor, product, "
+            "kv_source, kv_sep FROM custom_parsers WHERE enabled").fetchall()
+
+
+def upsert_custom_parser(parser_id: str, title: str, match_key: str,
+                         match_value: str, field_map: dict,
+                         vendor=None, product=None, enabled: bool = True,
+                         kv_source=None, kv_sep=None) -> None:
+    import json as _json
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO custom_parsers "
+            "(parser_id, title, match_key, match_value, field_map, vendor, product, enabled, "
+            "kv_source, kv_sep) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (parser_id) DO UPDATE SET title = EXCLUDED.title, "
+            "match_key = EXCLUDED.match_key, match_value = EXCLUDED.match_value, "
+            "field_map = EXCLUDED.field_map, vendor = EXCLUDED.vendor, "
+            "product = EXCLUDED.product, enabled = EXCLUDED.enabled, "
+            "kv_source = EXCLUDED.kv_source, kv_sep = EXCLUDED.kv_sep",
+            (parser_id, title, match_key, match_value, _json.dumps(field_map),
+             vendor, product, enabled, kv_source, kv_sep))
+        conn.commit()
+
+
+def delete_custom_parser(parser_id: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM custom_parsers WHERE parser_id = %s", (parser_id,))
+        conn.commit()
+
+
+# ------------------------------------------------------------- custom rules
+def list_custom_rules() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT * FROM custom_rules ORDER BY title").fetchall()
+
+
+def all_custom_rule_yaml() -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT rule_id, yaml_text FROM custom_rules").fetchall()
+
+
+def upsert_custom_rule(rule_id: str, title: str, yaml_text: str,
+                       enabled: bool = True) -> None:
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO custom_rules (rule_id, title, yaml_text, enabled) "
+            "VALUES (%s, %s, %s, %s) "
+            "ON CONFLICT (rule_id) DO UPDATE SET title = EXCLUDED.title, "
+            "yaml_text = EXCLUDED.yaml_text, enabled = EXCLUDED.enabled",
+            (rule_id, title, yaml_text, enabled))
+        conn.commit()
+
+
+def delete_custom_rule(rule_id: str) -> None:
+    with pool().connection() as conn:
+        conn.execute("DELETE FROM custom_rules WHERE rule_id = %s", (rule_id,))
+        conn.execute("DELETE FROM detection_rules WHERE rule_id = %s", (rule_id,))
+        conn.commit()
+
+
+def recent_events_for_test(limit: int = 200) -> list[dict]:
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT event_time, vendor, product, log_type, severity, action, "
+            "host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, src_port, dst_port, "
+            "protocol, app, user_name, host_name, rule_name, message, raw "
+            "FROM events ORDER BY event_time DESC LIMIT %s", (limit,)).fetchall()

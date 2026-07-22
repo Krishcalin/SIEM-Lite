@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Iterable, Iterator, NamedTuple, Optional
 
 from . import alert_actions, db, risk
+from . import custom_parser
 from .config import settings
 from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
@@ -128,6 +129,7 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         # Detection / threat-intel must never abort the batch: on any unexpected
         # error the event is still stored (already in `chunk`), just un-alerted.
         try:
+            custom_parser.apply(evt)   # console-authored field maps fill empty columns
             if engine is not None:
                 matched = engine.evaluate_event(evt)
                 if matched:
