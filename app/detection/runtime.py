@@ -12,7 +12,7 @@ from typing import Optional
 
 from .. import db
 from .correlation import CorrelationRule, load_correlation_rules
-from .engine import DetectionEngine, load_rules
+from .engine import DetectionEngine, load_rules, rule_from_dict
 
 _engine: Optional[DetectionEngine] = None
 _correlation_rules: list[CorrelationRule] = []
@@ -31,11 +31,31 @@ def get_correlation_rules() -> list[CorrelationRule]:
     return _correlation_rules
 
 
+def load_db_rules() -> list:
+    """Load console-authored rules from the DB through the same path as file
+    rules. A malformed rule is skipped, never fatal to the engine."""
+    import yaml
+    out = []
+    try:
+        rows = db.all_custom_rule_yaml()
+    except Exception:  # noqa: BLE001 -- table may not exist yet
+        return out
+    for row in rows:
+        try:
+            for doc in yaml.safe_load_all(row["yaml_text"]):
+                if isinstance(doc, dict) and doc.get("detection"):
+                    doc.setdefault("id", row["rule_id"])
+                    out.append(rule_from_dict(doc, "console"))
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
 def load_and_sync(rules_dir) -> DetectionEngine:
     """Load per-event + correlation rules, upsert their metadata into one registry,
     and apply the stored enabled flags."""
     global _correlation_rules
-    rules = load_rules(rules_dir)
+    rules = load_rules(rules_dir) + load_db_rules()
     corr = load_correlation_rules(rules_dir)
     db.sync_rules(rules + corr)
     enabled = db.enabled_rule_ids()

@@ -1,0 +1,70 @@
+{% extends "base.html" %}
+{% block title %}Rule builder — LogOcean{% endblock %}
+{% block body %}
+<h1>Rule builder</h1>
+<p>Sigma-style rules authored here are stored in the database (so they survive
+   image rebuilds) and loaded through the same path as the built-in rule files.
+   Saving reloads the engine immediately, with no restart.</p>
+
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+{% if test %}
+<section>
+  <h2>Test result</h2>
+  {% if test.error %}
+    <div class="alert err">{{ test.error }}</div>
+  {% else %}
+    <div class="alert {{ 'err' if test.total_hits > 20 else 'ok' }}">
+      <b>{{ test.rule_title }}</b> ({{ test.level }}) matched
+      <b>{{ test.total_hits }}</b> of the last {{ test.scanned }} events.
+      {% if test.total_hits > 20 %} High hit rate, check for noise before enabling.{% endif %}
+    </div>
+    {% if test.hits %}
+    <table>
+      <tr><th>Time</th><th>Vendor</th><th>User</th><th>Host</th><th>Message</th></tr>
+      {% for h in test.hits %}
+      <tr><td>{{ h.event_time }}</td><td>{{ h.vendor }}</td><td>{{ h.user_name or '-' }}</td>
+          <td>{{ h.host_name or '-' }}</td><td>{{ h.message }}</td></tr>
+      {% endfor %}
+    </table>
+    <p><small>Showing up to 25 sample matches.</small></p>
+    {% endif %}
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Author a rule</h2>
+  <form method="post" action="/rules/save" class="panel">
+    <label>Rule ID <input name="rule_id" required placeholder="lo-ntnx-vm-deleted"
+           value="{{ draft.rule_id if draft else '' }}"></label>
+    <label>Title <input name="title" required placeholder="Nutanix VM Deleted"
+           value="{{ draft.title if draft else '' }}"></label>
+    <label>enabled <input type="checkbox" name="enabled" checked></label><br>
+    <label>Rule YAML<br>
+      <textarea name="yaml_text" rows="18" cols="90" required>{{ draft.yaml_text if draft else '' }}</textarea></label><br>
+    <button type="submit" class="btn">Save and enable</button>
+    <button type="submit" class="btn" formaction="/rules/test">Test against recent events</button>
+  </form>
+  <p><small>Test scans the most recent 200 events and reports what the rule would
+     have matched. Nothing is stored and no alerts are raised.</small></p>
+</section>
+
+<section>
+  <h2>Console rules</h2>
+  <table>
+    <tr><th>ID</th><th>Title</th><th>Enabled</th><th>Created</th><th></th></tr>
+    {% for r in rules %}
+    <tr>
+      <td>{{ r.rule_id }}</td><td>{{ r.title }}</td>
+      <td>{{ 'yes' if r.enabled else 'no' }}</td>
+      <td>{{ r.created_at.strftime('%Y-%m-%d') if r.created_at else '-' }}</td>
+      <td><form method="post" action="/rules/delete"
+                onsubmit="return confirm('Delete this rule?');">
+            <input type="hidden" name="rule_id" value="{{ r.rule_id }}">
+            <button class="btn danger" type="submit">Delete</button></form></td>
+    </tr>
+    {% else %}<tr><td colspan="5">None yet.</td></tr>{% endfor %}
+  </table>
+</section>
+{% endblock %}

@@ -355,3 +355,33 @@ CREATE TABLE IF NOT EXISTS iocs (
 );
 CREATE INDEX IF NOT EXISTS iocs_type_idx   ON iocs (ioc_type);
 CREATE INDEX IF NOT EXISTS iocs_source_idx ON iocs (source);
+
+-- Custom field-mapper parsers authored from the console. Definitions are DATA,
+-- never code: a signature (which raw key/value identifies the source) plus a
+-- field map (raw key -> normalized column). Applied after the built-in parser
+-- to fill columns the generic parsers could not map.
+CREATE TABLE IF NOT EXISTS custom_parsers (
+    parser_id   text PRIMARY KEY,
+    title       text NOT NULL,
+    match_key   text NOT NULL,
+    match_value text NOT NULL,
+    field_map   jsonb NOT NULL DEFAULT '{}',
+    vendor      text,
+    product     text,
+    enabled     boolean NOT NULL DEFAULT true,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS custom_parsers_enabled_idx ON custom_parsers (enabled);
+ALTER TABLE custom_parsers ADD COLUMN IF NOT EXISTS kv_source text;
+ALTER TABLE custom_parsers ADD COLUMN IF NOT EXISTS kv_sep    text;
+
+-- Console-authored detection rules. Stored as Sigma-style YAML text so they load
+-- through the same rule_from_dict path as file rules, and kept in the DB so they
+-- survive image rebuilds (the rules directory is baked into the image).
+CREATE TABLE IF NOT EXISTS custom_rules (
+    rule_id    text PRIMARY KEY,
+    title      text NOT NULL,
+    yaml_text  text NOT NULL,
+    enabled    boolean NOT NULL DEFAULT true,
+    created_at timestamptz NOT NULL DEFAULT now()
+);
