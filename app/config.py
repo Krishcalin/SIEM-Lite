@@ -118,6 +118,20 @@ class Settings:
     workbench_window_days: int = int(os.getenv("WORKBENCH_WINDOW_DAYS", "30"))
     workbench_noisy_threshold: int = int(os.getenv("WORKBENCH_NOISY_THRESHOLD", "50"))
 
+    # Log-source health: alert when a source (vendor/log_type) that was sending
+    # regularly goes SILENT — a collector/forwarder outage, a broken device, or an
+    # attacker disabling logging (MITRE T1562). A source counts as "expected" once
+    # it has >= MIN_EVENTS in the learning window; it is "silent" when its newest
+    # event is older than SILENCE_MINUTES; an ongoing outage re-alerts at most once
+    # per REPEAT_HOURS. Stateless (derived from events); on by default. /sources.
+    source_health_enabled: bool = _bool("SOURCE_HEALTH_ENABLED", True)
+    source_health_interval: int = int(os.getenv("SOURCE_HEALTH_INTERVAL", "300"))      # seconds
+    source_health_silence_minutes: int = int(os.getenv("SOURCE_HEALTH_SILENCE_MINUTES", "60"))
+    source_health_learn_days: int = int(os.getenv("SOURCE_HEALTH_LEARN_DAYS", "7"))
+    source_health_min_events: int = int(os.getenv("SOURCE_HEALTH_MIN_EVENTS", "5"))
+    source_health_level: str = os.getenv("SOURCE_HEALTH_LEVEL", "medium").lower()
+    source_health_repeat_hours: int = int(os.getenv("SOURCE_HEALTH_REPEAT_HOURS", "24"))
+
     # AI SOC copilot (Claude): alert/case explainers + Sigma-rule-from-NL. Off by
     # default; needs the `anthropic` package and an API key (COPILOT_API_KEY, or
     # ANTHROPIC_API_KEY in the environment). Model is configurable so operators can

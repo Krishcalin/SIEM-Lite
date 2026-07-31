@@ -21,7 +21,8 @@ from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, collectors, compliance, coverage, custom_parser, db, ingest,
-               killchain_runtime, navigator, notify, ot, saved, streaming, workbench)
+               killchain_runtime, navigator, notify, ot, saved, sourcehealth, streaming,
+               workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -144,6 +145,11 @@ async def lifespan(app: FastAPI):
         killchain_sched = killchain_runtime.KillChainScheduler(
             settings.killchain_interval, settings.killchain_min_severity)
 
+    source_health_sched = None
+    if settings.source_health_enabled:
+        source_health_sched = sourcehealth.SourceHealthScheduler(settings.source_health_interval)
+        sourcehealth.set_scheduler(source_health_sched)
+
     queue = streaming.IngestQueue(settings.ingest_queue_max, settings.ingest_workers,
                                   settings.ingest_flush_max, settings.ingest_flush_ms)
     await queue.start()
@@ -161,9 +167,14 @@ async def lifespan(app: FastAPI):
         await ti_scheduler.start()
     if killchain_sched is not None:
         await killchain_sched.start()
+    if source_health_sched is not None:
+        await source_health_sched.start()
     try:
         yield
     finally:
+        if source_health_sched is not None:
+            await source_health_sched.stop()
+            sourcehealth.set_scheduler(None)
         if killchain_sched is not None:
             await killchain_sched.stop()
         if ti_scheduler is not None:
@@ -321,12 +332,14 @@ def health():
     r = response_engine.get_engine()
     rv = response_revert.get_scheduler()
     cs = collectors.get_scheduler()
+    sh = sourcehealth.get_scheduler()
     return {"status": "ok",
             "ingest_queue": q.stats.as_dict() if q else None,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
             "reverts": rv.stats() if rv else None,
             "collectors": len(cs.collectors) if cs else None,
+            "source_health": sh.stats() if sh else None,
             "threatintel_indicators": len(ti_runtime.get_index()),
             "copilot": {"enabled": settings.copilot_enabled,
                         "configured": copilot.is_configured(),
@@ -453,6 +466,27 @@ def risk_page(request: Request):
         hosts=db.top_risk_entities("host", days, hl),
         ips=db.top_risk_entities("ip", days, hl),
         new_entities=db.new_entities(24), new_associations=db.new_associations(24)))
+
+
+@app.get("/sources", response_class=HTMLResponse)
+def sources_page(request: Request):
+    """Log-source health: every established source with its last-seen age and a
+    healthy / silent status (a source that stopped sending is a visibility gap)."""
+    now = datetime.now(timezone.utc)
+    rows = db.source_activity(settings.source_health_learn_days)
+    assessed = sourcehealth.assess(
+        rows, now, silence_seconds=settings.source_health_silence_minutes * 60,
+        min_events=settings.source_health_min_events)
+    sources = [{"key": s.key, "vendor": s.vendor, "log_type": s.log_type,
+                "last_seen": s.last_seen, "event_count": s.event_count,
+                "age": sourcehealth.human_age(s.age_seconds), "status": s.status}
+               for s in assessed]
+    return templates.TemplateResponse("sources.html", _ctx(
+        request, enabled=settings.source_health_enabled, sources=sources,
+        silent=sum(1 for s in sources if s["status"] == "silent"),
+        silence_minutes=settings.source_health_silence_minutes,
+        learn_days=settings.source_health_learn_days,
+        min_events=settings.source_health_min_events))
 
 
 # --------------------------------------------------------------------------- #

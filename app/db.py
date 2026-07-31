@@ -810,6 +810,19 @@ def top_event_sources(days: int = 7, limit: int = 8) -> list[dict]:
             "GROUP BY 1 ORDER BY n DESC LIMIT %s", (days, limit)).fetchall()
 
 
+def source_activity(learn_days: int = 7) -> list[dict]:
+    """Per-source ``(vendor, log_type)`` activity over the learning window: the
+    newest event time and event count. Feeds the log-source health / silent-source
+    check. A source last seen longer ago than ``learn_days`` drops out (it is no
+    longer an *expected* feed), so a decommissioned source is not flagged forever."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT vendor, log_type, max(event_time) AS last_seen, count(*) AS n "
+            "FROM events WHERE event_time >= now() - make_interval(days => %s) "
+            "AND vendor IS NOT NULL AND vendor <> '' "
+            "GROUP BY vendor, log_type ORDER BY last_seen ASC", (learn_days,)).fetchall()
+
+
 def alert_technique_counts(days: int = 30) -> dict:
     """Recent alert counts per MITRE technique (techniques is a text[]), for the
     compliance view."""

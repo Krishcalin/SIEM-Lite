@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+{% block title %}Log sources — LogOcean{% endblock %}
+{% block body %}
+<h1>Log source health</h1>
+{% if not enabled %}
+<div class="alert err">Source-health monitoring is disabled (<code>SOURCE_HEALTH_ENABLED=false</code>) — silent sources will not raise alerts.</div>
+{% endif %}
+<p class="muted">A SIEM is blind to what it stops receiving. Each source
+   (<code>vendor/log_type</code>) that produced at least {{ min_events }} events in the
+   last {{ learn_days }} day(s) is tracked; a source whose newest event is older than
+   {{ silence_minutes }} minute(s) is flagged <b>silent</b> — a collector outage, a broken
+   device, or an attacker disabling logging (MITRE&nbsp;T1562). Silent sources raise an alert.</p>
+
+<div class="cards">
+  <div class="card"><div class="num">{{ sources|length }}</div><div class="lbl">tracked sources</div></div>
+  <div class="card"><div class="num">{{ silent }}</div><div class="lbl">silent</div></div>
+</div>
+
+<table class="results">
+  <tr><th>Source</th><th>Status</th><th>Last event (UTC)</th><th class="r">Silent for</th><th class="r">Events ({{ learn_days }}d)</th></tr>
+  {% for s in sources %}
+  <tr>
+    <td><b>{{ s.key }}</b></td>
+    <td><span class="badge {{ 'high' if s.status == 'silent' else 'low' }}">{{ s.status }}</span></td>
+    <td class="nowrap muted">{{ s.last_seen.strftime('%Y-%m-%d %H:%M') if s.last_seen else '—' }}</td>
+    <td class="r {{ 'nowrap' }}">{% if s.status == 'silent' %}{{ s.age }}{% else %}<span class="muted">—</span>{% endif %}</td>
+    <td class="r">{{ s.event_count }}</td>
+  </tr>
+  {% else %}
+  <tr><td colspan="5" class="muted">No established sources yet — a source appears here once it has sent at least {{ min_events }} events.</td></tr>
+  {% endfor %}
+</table>
+{% endblock %}

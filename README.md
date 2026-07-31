@@ -48,6 +48,7 @@ an AI copilot, and passive OT/ICS monitoring on top.
   - [Import community SigmaHQ rules](#import-community-sigmahq-rules)
 - [Notifications & response](#notifications--response)
 - [UEBA & entity risk](#ueba--entity-risk)
+- [Log-source health](#log-source-health)
 - [Kill-chain reconstruction](#kill-chain-reconstruction)
 - [Detection-engineering workbench](#detection-engineering-workbench)
 - [AI SOC copilot](#ai-soc-copilot)
@@ -507,6 +508,24 @@ between them (user↔IP, user↔host, host↔IP). The **`/risk`** page then show
 
 It's pure PostgreSQL (no ML dependency); the baselines are maintained incrementally
 in the ingest path.
+
+## Log-source health
+
+A SIEM is blind to what it **stops** receiving. `SOURCE_HEALTH_ENABLED` (on by
+default) watches every log source — identified by `vendor/log_type` — and raises an
+alert when one that was sending regularly goes **silent**. That covers a broken
+collector or forwarder, a device that fell over or was reconfigured, and the case
+that matters most for security: an **attacker disabling logging** to hide their
+tracks (MITRE ATT&CK **T1562 — Impair Defenses**).
+
+The **`/sources`** page lists each source with its last-seen age and a healthy /
+silent status. A source becomes "expected" once it has sent at least
+`SOURCE_HEALTH_MIN_EVENTS` in the last `SOURCE_HEALTH_LEARN_DAYS`; it is flagged
+silent when its newest event is older than `SOURCE_HEALTH_SILENCE_MINUTES`. A
+background check runs every `SOURCE_HEALTH_INTERVAL` seconds, and an ongoing outage
+re-alerts at most once per `SOURCE_HEALTH_REPEAT_HOURS` — the alert flows to
+notifications and response playbooks like any other. It's **stateless** (derived
+from the event store each run, no extra table) and the assessment logic is pure.
 
 ## Kill-chain reconstruction
 

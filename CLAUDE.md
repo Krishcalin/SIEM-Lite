@@ -35,6 +35,9 @@ ATT&CK tactics into attack stories and promotes them to cases. A **detection-eng
 workbench** (`/workbench`) maps ATT&CK coverage, flags noisy/never-fired rules, and tests
 Sigma rules against sample events. An optional **AI SOC copilot** (`COPILOT_ENABLED`,
 Claude) explains alerts, summarizes cases, and drafts Sigma rules from natural language.
+**Log-source health** (`SOURCE_HEALTH_ENABLED`, `/sources`) watches what *stops*
+arriving — a source (`vendor/log_type`) that was sending regularly but goes silent raises
+an alert (collector outage, broken device, or an attacker disabling logging — MITRE T1562).
 **OT / ICS monitoring** (`/ot`) ingests **Zeek + ICSNPP** telemetry (Modbus / DNP3 /
 S7comm / CIP / EtherNet-IP …), enriching it into a normalized control-plane `action`
 + `ot.*` fields, with an **ATT&CK-for-ICS** rule pack, kill-chain, Navigator layer,
@@ -282,6 +285,16 @@ unit-testable with a fake, no network). Model is `COPILOT_MODEL` (default
 analyst-gated + audited, degrade gracefully when unconfigured (`is_configured()`), and
 never leak a raw traceback (`CopilotError`). `/health` reports copilot status.
 
+**Log-source health** (`app/sourcehealth.py`, pure core; `/sources`; `SOURCE_HEALTH_ENABLED`,
+on by default) detects **silent sources**. A source is `(vendor, log_type)`; `db.source_activity`
+aggregates per-source last-seen + count over `SOURCE_HEALTH_LEARN_DAYS`; `assess()` keeps sources
+with `>= MIN_EVENTS` and marks one *silent* when its newest event is older than
+`SILENCE_MINUTES`; `silent_alert()` builds a `T1562` alert deduped per `REPEAT_HOURS` bucket.
+A `SourceHealthScheduler` (mirrors `response/revert`) runs `run_check` every
+`SOURCE_HEALTH_INTERVAL`s → `insert_alerts` → `alert_actions.dispatch` (so silent-source alerts
+notify/respond like any other). Stateless — no new table; the assessment + alert + formatting are
+DB-free and unit-tested; `/health` reports the scheduler.
+
 ## Repository layout
 
 ```
@@ -323,6 +336,7 @@ app/
   killchain_runtime.py  DB-backed reconstruct + auto-create scheduler
   ot.py          OT/ICS analytics: OT_PROTOCOLS + asset/conversation classification (pure)
   workbench.py   detection workbench: rule tester + coverage map + rule health (pure)
+  sourcehealth.py  silent-source detection (assess/silent_alert pure) + scheduler
   coverage.py    ATT&CK (enterprise+ICS) + ATLAS detection-coverage scoreboard (pure)
   saved.py       saved-search path/query validation + target-URL building (pure)
   sigma_import.py  translate community SigmaHQ rules -> our engine (logsource gate; pure)
