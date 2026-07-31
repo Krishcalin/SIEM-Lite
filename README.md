@@ -884,6 +884,10 @@ dashboard / report / Navigator / CSV endpoints). CI runs the unit tier on Python
   `AUTO_PURGE=true` only when you want to *stop* keeping data beyond the floor.
 - **Idempotent ingest** — every record has a dedup hash, so re-uploading the same
   file (or overlapping exports) does not create duplicates.
+- **Timezone** — events are **stored in UTC** (partitioning, dedup, retention and
+  cross-source correlation all depend on it) and **displayed in IST** (UTC+05:30) in
+  the UI and CSV exports. The conversion is render-time only — a fixed offset with no
+  daylight saving, so it needs no system time-zone database.
 - **Scale** — tuned for manual-upload volumes (tens of millions of rows). For very
   high ingest, batch larger files, add a read replica, or move hot search to
   OpenSearch.

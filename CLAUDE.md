@@ -447,6 +447,11 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
   floor on startup.
 - **Dedup:** `normalize.dedup_hash` = sha256 over (vendor + event_time + canonical raw).
   Re-uploading the same/overlapping export inserts via `ON CONFLICT DO NOTHING`.
+- **Timezone:** times are **stored in UTC** — partitioning, dedup, retention and
+  cross-source correlation all depend on it — and **displayed in IST** (UTC+05:30) in
+  the UI (`util.fmt_ist` via the `ist` Jinja filter) and CSV exports. The conversion is
+  render-time only (a fixed offset, no DST → no `tzdata` dependency). Signing / API-cursor
+  timestamps (SigV4 `amz_date`, collector cursors) and the fallback event-time stay UTC.
 
 ## Parser-accuracy gotchas
 
