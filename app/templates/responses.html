@@ -9,19 +9,19 @@
 
 <table class="results">
   <tr>
-    <th>Time (UTC)</th><th>Playbook</th><th>Action</th><th>Target</th>
+    <th>Time (IST)</th><th>Playbook</th><th>Action</th><th>Target</th>
     <th>Status</th><th>Revert</th><th>Detail</th><th>Alert</th>
   </tr>
   {% for r in rows %}
   <tr>
-    <td class="nowrap">{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td class="nowrap">{{ r.created_at | ist('%Y-%m-%d %H:%M:%S') }}</td>
     <td>{{ r.playbook_id }}</td>
     <td>{{ r.action_type }}</td>
     <td class="nowrap">{{ r.target or '—' }}</td>
     <td><span class="badge {{ 'done' if r.status == 'success' else 'error' if r.status == 'failed' else 'pending' }}">{{ r.status }}</span></td>
     <td class="nowrap">
-      {%- if r.reverted_at %}<span class="badge done">reverted {{ r.reverted_at.strftime('%m-%d %H:%M') }}</span>
-      {%- elif r.revert_at %}<span class="badge pending">due {{ r.revert_at.strftime('%m-%d %H:%M') }}</span>
+      {%- if r.reverted_at %}<span class="badge done">reverted {{ r.reverted_at | ist('%m-%d %H:%M') }}</span>
+      {%- elif r.revert_at %}<span class="badge pending">due {{ r.revert_at | ist('%m-%d %H:%M') }}</span>
       {%- else %}—{% endif %}
     </td>
     <td class="msg">{{ r.detail or '' }}</td>

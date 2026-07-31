@@ -37,7 +37,7 @@
         <td class="r">{{ a.masters }}</td>
         <td class="r">{{ a.events }}</td>
         <td class="r">{% if a.control_ops %}<span class="badge high">{{ a.control_ops }}</span>{% else %}0{% endif %}</td>
-        <td class="nowrap muted">{{ a.first_seen.strftime('%Y-%m-%d') if a.first_seen else '—' }}</td>
+        <td class="nowrap muted">{{ a.first_seen | ist('%Y-%m-%d') if a.first_seen else '—' }}</td>
       </tr>
       {% else %}<tr><td colspan="6" class="muted">No controllers observed.</td></tr>{% endfor %}
     </table>
@@ -66,7 +66,7 @@
   <table class="results">
     <tr><th></th><th>Master (client)</th><th>Controller</th><th>Protocols</th>
         <th class="r">Events</th><th class="r">Writes</th><th class="r">Control</th>
-        <th>First seen (UTC)</th></tr>
+        <th>First seen (IST)</th></tr>
     {% for c in conversations %}
     <tr>
       <td>{% if c.class == 'new-writer' %}<span class="badge high">new-writer</span>
@@ -77,7 +77,7 @@
       <td class="r">{{ c.events }}</td>
       <td class="r">{% if c.writes %}<b>{{ c.writes }}</b>{% else %}0{% endif %}</td>
       <td class="r">{% if c.controls %}<b>{{ c.controls }}</b>{% else %}0{% endif %}</td>
-      <td class="nowrap muted">{{ c.first_seen.strftime('%Y-%m-%d %H:%M') if c.first_seen else '—' }}</td>
+      <td class="nowrap muted">{{ c.first_seen | ist('%Y-%m-%d %H:%M') if c.first_seen else '—' }}</td>
     </tr>
     {% else %}<tr><td colspan="8" class="muted">No conversations observed.</td></tr>{% endfor %}
   </table>

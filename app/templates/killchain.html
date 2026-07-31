@@ -47,7 +47,7 @@
 
   <!-- Kill-chain stage timeline -->
   <table class="results">
-    <tr><th>#</th><th>Tactic</th><th class="r">Alerts</th><th>Techniques</th><th>Window (UTC)</th></tr>
+    <tr><th>#</th><th>Tactic</th><th class="r">Alerts</th><th>Techniques</th><th>Window (IST)</th></tr>
     {% for st in s.stages %}
     <tr>
       <td class="muted">{{ loop.index }}</td>
@@ -55,8 +55,8 @@
       <td class="r">{{ st.count }}</td>
       <td class="nowrap">{{ st.techniques|join(', ') or '—' }}</td>
       <td class="nowrap muted">
-        {{ st.alerts[0].event_time.strftime('%m-%d %H:%M') if st.alerts[0].event_time
-           else st.alerts[0].created_at.strftime('%m-%d %H:%M') }}</td>
+        {{ st.alerts[0].event_time | ist('%m-%d %H:%M') if st.alerts[0].event_time
+           else st.alerts[0].created_at | ist('%m-%d %H:%M') }}</td>
     </tr>
     {% endfor %}
   </table>
@@ -64,10 +64,10 @@
   <details style="margin-top:.5rem">
     <summary class="muted">{{ s.alert_count }} member alert(s)</summary>
     <table class="results">
-      <tr><th>Time (UTC)</th><th>Sev</th><th>Tactic</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th></tr>
+      <tr><th>Time (IST)</th><th>Sev</th><th>Tactic</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th></tr>
       {% for r in s.alerts %}
       <tr>
-        <td class="nowrap"><a href="/alert/{{ r.id }}">{{ (r.event_time or r.created_at).strftime('%Y-%m-%d %H:%M') }}</a></td>
+        <td class="nowrap"><a href="/alert/{{ r.id }}">{{ (r.event_time or r.created_at) | ist('%Y-%m-%d %H:%M') }}</a></td>
         <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
         <td class="nowrap muted">{{ r.tactics|join(', ') }}</td>
         <td>{{ r.rule_title }}</td>

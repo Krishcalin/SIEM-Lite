@@ -13,8 +13,8 @@
   <tr><th>MITRE ATT&CK</th>
       <td>{{ (a.techniques or [])|join(', ') or '—' }}
           {% if a.tactics %}<span class="muted">· {{ a.tactics|join(', ') }}</span>{% endif %}</td></tr>
-  <tr><th>Raised (UTC)</th><td>{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td></tr>
-  <tr><th>Event time (UTC)</th><td>{{ a.event_time.strftime('%Y-%m-%d %H:%M:%S') if a.event_time else '—' }}</td></tr>
+  <tr><th>Raised (IST)</th><td>{{ a.created_at | ist('%Y-%m-%d %H:%M:%S') }}</td></tr>
+  <tr><th>Event time (IST)</th><td>{{ a.event_time | ist('%Y-%m-%d %H:%M:%S') if a.event_time else '—' }}</td></tr>
   <tr><th>Vendor</th><td>{{ a.vendor or '—' }}</td></tr>
   <tr><th>Source / dest IP</th><td>{{ a.src_ip or '—' }} → {{ a.dst_ip or '—' }}</td></tr>
   <tr><th>User</th><td>{{ a.user_name or '—' }}</td></tr>
@@ -84,7 +84,7 @@
 <h2>Notes</h2>
 {% for n in notes %}
 <div class="panel">
-  <div class="muted">{{ n.author or 'system' }} · {{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+  <div class="muted">{{ n.author or 'system' }} · {{ n.created_at | ist('%Y-%m-%d %H:%M') }}</div>
   <div>{{ n.note }}</div>
 </div>
 {% else %}<p class="muted">No notes yet.</p>{% endfor %}
@@ -96,10 +96,10 @@
 {% if responses %}
 <h2>Response actions</h2>
 <table>
-  <tr><th>Time (UTC)</th><th>Playbook</th><th>Action</th><th>Target</th><th>Status</th><th>Detail</th></tr>
+  <tr><th>Time (IST)</th><th>Playbook</th><th>Action</th><th>Target</th><th>Status</th><th>Detail</th></tr>
   {% for r in responses %}
   <tr>
-    <td class="nowrap">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="nowrap">{{ r.created_at | ist('%Y-%m-%d %H:%M') }}</td>
     <td>{{ r.playbook_id }}</td>
     <td>{{ r.action_type }}</td>
     <td>{{ r.target or '—' }}</td>

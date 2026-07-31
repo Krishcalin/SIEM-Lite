@@ -16,7 +16,7 @@
 </div>
 
 <h1>LogOcean security report</h1>
-<p class="muted">Last {{ days }} days · generated {{ generated.strftime('%Y-%m-%d %H:%M UTC') }}
+<p class="muted">Last {{ days }} days · generated {{ generated | ist('%Y-%m-%d %H:%M') }} IST
    {% if user %}· {{ user.username }}{% endif %}</p>
 
 <div class="cards">
@@ -60,7 +60,7 @@
     <tr><td>{{ r.vendor }}</td><td class="r">{{ "{:,}".format(r.n) }}</td></tr>
     {% else %}<tr><td colspan="2" class="muted">No data.</td></tr>{% endfor %}
   </table>
-  <p class="muted">Coverage span: {{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }}
-     → {{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }} · {{ stats.size }} on disk.</p>
+  <p class="muted">Coverage span: {{ stats.first | ist('%Y-%m-%d') if stats.first else '—' }}
+     → {{ stats.last | ist('%Y-%m-%d') if stats.last else '—' }} · {{ stats.size }} on disk.</p>
 </section>
 {% endblock %}

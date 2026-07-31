@@ -37,7 +37,7 @@
   <h2>Storage</h2>
   <p>{{ "{:,}".format(stats.total) }} events · {{ stats.size }} on disk ·
      {{ stats.partitions|length }} partitions ·
-     span {{ stats.first.strftime('%Y-%m-%d') if stats.first else '—' }} → {{ stats.last.strftime('%Y-%m-%d') if stats.last else '—' }}</p>
+     span {{ stats.first | ist('%Y-%m-%d') if stats.first else '—' }} → {{ stats.last | ist('%Y-%m-%d') if stats.last else '—' }}</p>
 </section>
 
 {% if auth_enabled %}
@@ -53,7 +53,7 @@
     <button type="submit" class="btn">Create user</button>
   </form>
   <table>
-    <tr><th>User</th><th>Role</th><th>Created</th><th>Last login (UTC)</th><th>Status</th><th></th></tr>
+    <tr><th>User</th><th>Role</th><th>Created</th><th>Last login (IST)</th><th>Status</th><th></th></tr>
     {% for u in users %}
     <tr>
       <td>{{ u.username }}</td>
@@ -64,8 +64,8 @@
           </select>
         </form>
       </td>
-      <td class="nowrap">{{ u.created_at.strftime('%Y-%m-%d') }}</td>
-      <td class="nowrap">{{ u.last_login.strftime('%Y-%m-%d %H:%M') if u.last_login else '—' }}</td>
+      <td class="nowrap">{{ u.created_at | ist('%Y-%m-%d') }}</td>
+      <td class="nowrap">{{ u.last_login | ist('%Y-%m-%d %H:%M') if u.last_login else '—' }}</td>
       <td><span class="badge {{ 'done' if u.enabled else 'error' }}">{{ 'enabled' if u.enabled else 'disabled' }}</span></td>
       <td>
         <form method="post" action="/admin/users/{{ u.id }}/toggle">
@@ -100,16 +100,16 @@
   </form>
 
   <table>
-    <tr><th>#</th><th>Name</th><th>Prefix</th><th>Source</th><th>Created (UTC)</th>
-        <th>Last used (UTC)</th><th>Status</th><th></th></tr>
+    <tr><th>#</th><th>Name</th><th>Prefix</th><th>Source</th><th>Created (IST)</th>
+        <th>Last used (IST)</th><th>Status</th><th></th></tr>
     {% for k in api_keys %}
     <tr>
       <td>{{ k.id }}</td>
       <td>{{ k.name }}</td>
       <td><code>{{ k.key_prefix }}…</code></td>
       <td>{{ k.source_label or '—' }}</td>
-      <td class="nowrap">{{ k.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-      <td class="nowrap">{{ k.last_used_at.strftime('%Y-%m-%d %H:%M') if k.last_used_at else '—' }}</td>
+      <td class="nowrap">{{ k.created_at | ist('%Y-%m-%d %H:%M') }}</td>
+      <td class="nowrap">{{ k.last_used_at | ist('%Y-%m-%d %H:%M') if k.last_used_at else '—' }}</td>
       <td><span class="badge {{ 'done' if k.enabled else 'error' }}">{{ 'enabled' if k.enabled else 'disabled' }}</span></td>
       <td>
         <form method="post" action="/admin/api-keys/{{ k.id }}/toggle">
@@ -128,14 +128,14 @@
      event. Disable a noisy rule here — it takes effect immediately.</p>
   <table>
     <tr><th>Rule</th><th>Severity</th><th>MITRE</th><th class="r">Fired</th>
-        <th>Last fired (UTC)</th><th>Status</th><th></th></tr>
+        <th>Last fired (IST)</th><th>Status</th><th></th></tr>
     {% for r in rules %}
     <tr>
       <td>{{ r.title }} <span class="muted">({{ r.rule_id }})</span></td>
       <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
       <td class="muted">{{ (r.techniques or [])|join(', ') }}</td>
       <td class="r">{{ "{:,}".format(r.fired or 0) }}</td>
-      <td class="nowrap">{{ r.last_fired.strftime('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
+      <td class="nowrap">{{ r.last_fired | ist('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
       <td><span class="badge {{ 'done' if r.enabled else 'error' }}">{{ 'enabled' if r.enabled else 'disabled' }}</span></td>
       <td>
         <form method="post" action="/admin/rules/{{ r.rule_id }}/toggle">
@@ -154,7 +154,7 @@
      pipeline. A collector appears here once its credentials are configured
      (see <code>.env</code>) and <code>COLLECTORS_ENABLED=true</code>.</p>
   <table>
-    <tr><th>Collector</th><th>Status</th><th>Last run (UTC)</th><th class="r">Last count</th>
+    <tr><th>Collector</th><th>Status</th><th>Last run (IST)</th><th class="r">Last count</th>
         <th>Cursor</th><th></th></tr>
     {% for c in collectors %}
     <tr>
@@ -163,7 +163,7 @@
         <span class="badge {{ 'done' if c.last_status == 'ok' else 'error' if c.last_status == 'error' else 'pending' }}">{{ c.last_status or 'idle' }}</span>
         {% if not c.enabled %}<span class="badge error">disabled</span>{% endif %}
       </td>
-      <td class="nowrap">{{ c.last_run.strftime('%Y-%m-%d %H:%M') if c.last_run else '—' }}</td>
+      <td class="nowrap">{{ c.last_run | ist('%Y-%m-%d %H:%M') if c.last_run else '—' }}</td>
       <td class="r">{{ "{:,}".format(c.last_count or 0) }}</td>
       <td class="msg muted">{{ c.cursor or '—' }}</td>
       <td>
@@ -201,14 +201,14 @@
     <button type="submit" class="btn">Add indicator</button>
   </form>
   <table>
-    <tr><th>Indicator</th><th>Type</th><th>Severity</th><th>Source</th><th>Added (UTC)</th><th></th></tr>
+    <tr><th>Indicator</th><th>Type</th><th>Severity</th><th>Source</th><th>Added (IST)</th><th></th></tr>
     {% for i in ti_indicators %}
     <tr>
       <td class="msg">{{ i.indicator }}</td>
       <td>{{ i.ioc_type }}</td>
       <td><span class="badge {{ i.severity }}">{{ i.severity }}</span></td>
       <td class="muted">{{ i.source if i.source == 'manual' else i.source[:48] }}</td>
-      <td class="nowrap">{{ i.added_at.strftime('%Y-%m-%d %H:%M') if i.added_at else '—' }}</td>
+      <td class="nowrap">{{ i.added_at | ist('%Y-%m-%d %H:%M') if i.added_at else '—' }}</td>
       <td>
         <form method="post" action="/admin/threatintel/delete">
           <input type="hidden" name="indicator" value="{{ i.indicator }}">
@@ -238,7 +238,7 @@
     <button type="submit" class="btn">Add suppression</button>
   </form>
   <table>
-    <tr><th>Name</th><th>Conditions</th><th class="r">Hits</th><th>Last hit (UTC)</th>
+    <tr><th>Name</th><th>Conditions</th><th class="r">Hits</th><th>Last hit (IST)</th>
         <th>Status</th><th></th></tr>
     {% for s in suppressions %}
     <tr>
@@ -251,7 +251,7 @@
         {% if s.vendor %}vendor={{ s.vendor }}{% endif %}
       </td>
       <td class="r">{{ "{:,}".format(s.hit_count or 0) }}</td>
-      <td class="nowrap">{{ s.last_hit.strftime('%Y-%m-%d %H:%M') if s.last_hit else '—' }}</td>
+      <td class="nowrap">{{ s.last_hit | ist('%Y-%m-%d %H:%M') if s.last_hit else '—' }}</td>
       <td>{% if not s.enabled %}<span class="badge error">disabled</span>{% else %}<span class="badge done">enabled</span>{% endif %}</td>
       <td>
         <form method="post" action="/admin/suppressions/{{ s.id }}/toggle" style="display:inline">
@@ -270,13 +270,13 @@
 <section>
   <h2>Recent ingests</h2>
   <table>
-    <tr><th>#</th><th>Ingested (UTC)</th><th>Source</th><th>File / sender</th><th>Format</th>
+    <tr><th>#</th><th>Ingested (IST)</th><th>Source</th><th>File / sender</th><th>Format</th>
         <th class="r">Parsed</th><th class="r">Stored</th><th class="r">Dup</th>
         <th class="r">Err</th><th>Status</th></tr>
     {% for b in batches %}
     <tr>
       <td>{{ b.id }}</td>
-      <td class="nowrap">{{ b.uploaded_at.strftime('%Y-%m-%d %H:%M') }}</td>
+      <td class="nowrap">{{ b.uploaded_at | ist('%Y-%m-%d %H:%M') }}</td>
       <td>{{ b.source_type or 'upload' }}</td>
       <td>{{ b.filename or b.source_addr or '—' }}</td>
       <td>{{ format_labels.get(b.fmt, b.fmt) }}</td>
@@ -293,10 +293,10 @@
 <section>
   <h2>Audit log</h2>
   <table>
-    <tr><th>Time (UTC)</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr>
+    <tr><th>Time (IST)</th><th>User</th><th>Action</th><th>Detail</th><th>IP</th></tr>
     {% for a in audit %}
     <tr>
-      <td class="nowrap">{{ a.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+      <td class="nowrap">{{ a.created_at | ist('%Y-%m-%d %H:%M:%S') }}</td>
       <td>{{ a.username or '—' }}</td>
       <td>{{ a.action }}</td>
       <td class="msg">{{ a.detail or '' }}</td>

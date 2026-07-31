@@ -17,12 +17,12 @@
 </div>
 
 <table class="results">
-  <tr><th>Source</th><th>Status</th><th>Last event (UTC)</th><th class="r">Silent for</th><th class="r">Events ({{ learn_days }}d)</th></tr>
+  <tr><th>Source</th><th>Status</th><th>Last event (IST)</th><th class="r">Silent for</th><th class="r">Events ({{ learn_days }}d)</th></tr>
   {% for s in sources %}
   <tr>
     <td><b>{{ s.key }}</b></td>
     <td><span class="badge {{ 'high' if s.status == 'silent' else 'low' }}">{{ s.status }}</span></td>
-    <td class="nowrap muted">{{ s.last_seen.strftime('%Y-%m-%d %H:%M') if s.last_seen else '—' }}</td>
+    <td class="nowrap muted">{{ s.last_seen | ist('%Y-%m-%d %H:%M') if s.last_seen else '—' }}</td>
     <td class="r {{ 'nowrap' }}">{% if s.status == 'silent' %}{{ s.age }}{% else %}<span class="muted">—</span>{% endif %}</td>
     <td class="r">{{ s.event_count }}</td>
   </tr>

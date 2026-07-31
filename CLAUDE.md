@@ -309,7 +309,10 @@ app/
                  (NIST/CIS/ISO 27001/SOC 2/PCI/HIPAA + IEC 62443-3-3 / NERC CIP for ICS)
   util.py        tolerant parse_ts / clean_ip / to_int; hash_api_key / extract_api_key;
                  iter_json_records (+ _exceeds_json_depth deep-nesting guard);
-                 gunzip_capped (bounded gzip decompression for ingest)
+                 gunzip_capped (bounded gzip decompression for ingest);
+                 to_ist / fmt_ist — display timezone is IST (+05:30, no tzdata dep);
+                 events are STORED in UTC, converted only for the UI (`ist` Jinja
+                 filter) + CSV export. Signing / API-cursor / storage times stay UTC.
   detect.py      best-effort vendor+format auto-detection
   normalize.py   dedup_hash() + tsv_text()
   pipeline.py    source-agnostic core: parse_events / apply_fallback_time / write_stream

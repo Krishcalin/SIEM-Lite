@@ -35,12 +35,12 @@
 
 <table class="results">
   <tr>
-    <th>Time (UTC)</th><th>Vendor</th><th>Type</th><th>Sev</th><th>Action</th>
+    <th>Time (IST)</th><th>Vendor</th><th>Type</th><th>Sev</th><th>Action</th>
     <th>Src</th><th>Dst</th><th>User</th><th>Host</th><th>Message</th>
   </tr>
   {% for r in rows %}
   <tr onclick="location.href='/event/{{ r.id }}'">
-    <td class="nowrap">{{ r.event_time.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td class="nowrap">{{ r.event_time | ist('%Y-%m-%d %H:%M:%S') }}</td>
     <td>{{ r.vendor }}</td>
     <td>{{ r.log_type or '' }}</td>
     <td>{{ r.severity or '' }}</td>

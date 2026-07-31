@@ -34,6 +34,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import alert_actions, db
 from .config import settings
+from .util import fmt_ist
 
 log = logging.getLogger("logocean")
 
@@ -124,7 +125,7 @@ def silent_alert(sh: SourceHealth, now: Optional[datetime] = None, *,
     now = now or _now()
     bucket = int(now.timestamp() // max(1, repeat_seconds))
     dedup = hashlib.sha256(f"srchealth|{sh.key}|{bucket}".encode("utf-8")).hexdigest()
-    last_txt = sh.last_seen.strftime("%Y-%m-%d %H:%M UTC") if sh.last_seen else "never"
+    last_txt = (fmt_ist(sh.last_seen, "%Y-%m-%d %H:%M") + " IST") if sh.last_seen else "never"
     msg = (f"Log source '{sh.key}' has stopped sending — silent for "
            f"{human_age(sh.age_seconds)} (last event {last_txt}; "
            f"{sh.event_count} events in the learning window).")

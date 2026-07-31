@@ -34,7 +34,7 @@ from .response import engine as response_engine
 from .response import revert as response_revert
 from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
 from .triage import runtime as triage_runtime
-from .util import gunzip_capped, parse_ts
+from .util import DISPLAY_TZ_LABEL, fmt_ist, gunzip_capped, parse_ts, to_ist
 
 log = logging.getLogger("logocean")
 BASE = Path(__file__).resolve().parent
@@ -69,6 +69,14 @@ def _csv_safe(value) -> str:
     if s and s[0] in _CSV_FORMULA_LEAD:
         return "'" + s
     return s
+
+
+def _csv_cell(value) -> str:
+    """A CSV cell, with any timestamp rendered in the display timezone (IST) as an
+    unambiguous, offset-bearing string (e.g. ``2026-06-01 17:30:00+05:30``)."""
+    if isinstance(value, datetime):
+        value = to_ist(value).isoformat(sep=" ")
+    return _csv_safe(value)
 
 
 @asynccontextmanager
@@ -204,7 +212,9 @@ app = FastAPI(title="LogOcean", lifespan=lifespan)
 app.include_router(api.router)  # POST /api/v1/ingest (HTTP live ingestion)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
+templates.env.filters["ist"] = fmt_ist          # render stored-UTC datetimes in IST
 templates.env.globals["format_labels"] = FORMAT_LABELS
+templates.env.globals["tz_label"] = DISPLAY_TZ_LABEL
 templates.env.globals["retention_years"] = settings.retention_years
 templates.env.globals["auth_enabled"] = settings.auth_enabled
 templates.env.globals["copilot_enabled"] = settings.copilot_enabled
@@ -447,7 +457,7 @@ def alerts_csv(request: Request):
         w.writerow(cols)
         yield buf.getvalue(); buf.seek(0); buf.truncate(0)
         for row in db.alerts_iter(f):
-            w.writerow([_csv_safe(row.get(c, "")) for c in cols])
+            w.writerow([_csv_cell(row.get(c, "")) for c in cols])
             yield buf.getvalue(); buf.seek(0); buf.truncate(0)
 
     return StreamingResponse(gen(), media_type="text/csv", headers={
@@ -727,7 +737,7 @@ def search_csv(request: Request):
         w.writerow(cols)
         yield buf.getvalue(); buf.seek(0); buf.truncate(0)
         for row in db.search_iter(f):
-            w.writerow([_csv_safe(row.get(c, "")) for c in cols])
+            w.writerow([_csv_cell(row.get(c, "")) for c in cols])
             yield buf.getvalue(); buf.seek(0); buf.truncate(0)
 
     return StreamingResponse(gen(), media_type="text/csv", headers={

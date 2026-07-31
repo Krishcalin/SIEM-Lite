@@ -11,8 +11,8 @@
   <tr><th>Assignee</th><td>{{ c.assignee or '— unassigned —' }}</td></tr>
   <tr><th>Alerts</th><td>{{ c.alert_count }}</td></tr>
   <tr><th>Summary</th><td>{{ c.summary or '—' }}</td></tr>
-  <tr><th>Created (UTC)</th><td>{{ c.created_at.strftime('%Y-%m-%d %H:%M') }}{% if c.created_by %} · {{ c.created_by }}{% endif %}</td></tr>
-  {% if c.closed_at %}<tr><th>Closed (UTC)</th><td>{{ c.closed_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>{% endif %}
+  <tr><th>Created (IST)</th><td>{{ c.created_at | ist('%Y-%m-%d %H:%M') }}{% if c.created_by %} · {{ c.created_by }}{% endif %}</td></tr>
+  {% if c.closed_at %}<tr><th>Closed (IST)</th><td>{{ c.closed_at | ist('%Y-%m-%d %H:%M') }}</td></tr>{% endif %}
 </table>
 
 <h2>Manage</h2>
@@ -48,10 +48,10 @@
 
 <h2>Alerts in this case ({{ alerts|length }})</h2>
 <table class="results">
-  <tr><th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th><th>Status</th><th></th></tr>
+  <tr><th>Raised (IST)</th><th>Sev</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th><th>Status</th><th></th></tr>
   {% for r in alerts %}
   <tr>
-    <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</a></td>
+    <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at | ist('%Y-%m-%d %H:%M') }}</a></td>
     <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
     <td>{{ r.rule_title }}</td>
     <td class="nowrap">{{ r.src_ip or '' }}</td>
@@ -67,11 +67,11 @@
 <h2>Related alerts <span class="muted">— share a src IP / user / host with this case</span></h2>
 <form method="post" action="/case/{{ c.id }}/add-alerts">
 <table class="results">
-  <tr><th></th><th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th></tr>
+  <tr><th></th><th>Raised (IST)</th><th>Sev</th><th>Rule</th><th>Src</th><th>User</th><th>Host</th></tr>
   {% for r in related %}
   <tr>
     <td><input type="checkbox" name="alert_ids" value="{{ r.id }}"></td>
-    <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</a></td>
+    <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at | ist('%Y-%m-%d %H:%M') }}</a></td>
     <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
     <td>{{ r.rule_title }}</td>
     <td class="nowrap">{{ r.src_ip or '' }}</td>
@@ -87,7 +87,7 @@
 <h2>Notes</h2>
 {% for n in notes %}
 <div class="panel">
-  <div class="muted">{{ n.author or 'system' }} · {{ n.created_at.strftime('%Y-%m-%d %H:%M') }}</div>
+  <div class="muted">{{ n.author or 'system' }} · {{ n.created_at | ist('%Y-%m-%d %H:%M') }}</div>
   <div>{{ n.note }}</div>
 </div>
 {% else %}<p class="muted">No notes yet.</p>{% endfor %}

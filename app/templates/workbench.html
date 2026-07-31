@@ -40,7 +40,7 @@
 
 {% macro rule_rows(rows, empty) %}
 <table class="results">
-  <tr><th>Rule</th><th>Level</th><th>Source</th><th class="r">Fired ({{ days }}d)</th><th class="r">Fired (all)</th><th>Last fired (UTC)</th></tr>
+  <tr><th>Rule</th><th>Level</th><th>Source</th><th class="r">Fired ({{ days }}d)</th><th class="r">Fired (all)</th><th>Last fired (IST)</th></tr>
   {% for r in rows %}
   <tr>
     <td>{{ r.title }} <span class="muted">{{ r.rule_id }}</span></td>
@@ -48,7 +48,7 @@
     <td class="muted">{{ r.source }}</td>
     <td class="r">{{ r.fired_window }}</td>
     <td class="r">{{ r.fired_total }}</td>
-    <td class="nowrap muted">{{ r.last_fired.strftime('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
+    <td class="nowrap muted">{{ r.last_fired | ist('%Y-%m-%d %H:%M') if r.last_fired else '—' }}</td>
   </tr>
   {% else %}<tr><td colspan="6" class="muted">{{ empty }}</td></tr>{% endfor %}
 </table>

@@ -5,7 +5,7 @@
 <h1>Event #{{ ev.id }}</h1>
 
 <table class="kv">
-  <tr><th>Event time (UTC)</th><td>{{ ev.event_time }}</td></tr>
+  <tr><th>Event time (IST)</th><td>{{ ev.event_time | ist('%Y-%m-%d %H:%M:%S') }}</td></tr>
   <tr><th>Ingested</th><td>{{ ev.ingested_at }}</td></tr>
   <tr><th>Vendor / product</th><td>{{ ev.vendor }} / {{ ev.product or '—' }}</td></tr>
   <tr><th>Log type</th><td>{{ ev.log_type or '—' }}</td></tr>

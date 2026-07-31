@@ -31,7 +31,7 @@
 
 <table class="results">
   <tr><th>#</th><th>Title</th><th>Sev</th><th>Status</th><th class="r">Alerts</th>
-      <th>Assignee</th><th>Updated (UTC)</th></tr>
+      <th>Assignee</th><th>Updated (IST)</th></tr>
   {% for c in rows %}
   <tr onclick="location.href='/case/{{ c.id }}'">
     <td>{{ c.id }}</td>
@@ -40,7 +40,7 @@
     <td><span class="badge {{ 'closed' if c.status=='closed' else 'ack' if c.status=='investigating' else 'open' }}">{{ c.status }}</span></td>
     <td class="r">{{ c.alert_count }}</td>
     <td class="muted">{{ c.assignee or '' }}</td>
-    <td class="nowrap">{{ c.updated_at.strftime('%Y-%m-%d %H:%M') }}</td>
+    <td class="nowrap">{{ c.updated_at | ist('%Y-%m-%d %H:%M') }}</td>
   </tr>
   {% else %}<tr><td colspan="7" class="muted">No cases yet — create one above, or from an alert.</td></tr>{% endfor %}
 </table>

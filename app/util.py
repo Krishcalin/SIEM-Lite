@@ -10,8 +10,36 @@ import ipaddress
 import json
 import re
 import zlib
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterator, Optional
+
+# Display timezone. Events are STORED in UTC (partitioning, dedup, retention and
+# cross-source correlation all depend on it); timestamps are converted to this zone
+# only for presentation (UI + CSV export). India Standard Time is a fixed +05:30
+# offset with no daylight saving, so it needs no system tz database / tzdata dep.
+IST = timezone(timedelta(hours=5, minutes=30), "IST")
+DISPLAY_TZ_LABEL = "IST"
+
+
+def to_ist(dt: datetime) -> datetime:
+    """A UTC (or naive-assumed-UTC) datetime converted to the display timezone."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(IST)
+
+
+def fmt_ist(value, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Render a datetime in the display timezone (IST). A ``date`` (no time-of-day,
+    e.g. a daily chart label) is formatted as-is — a date has no zone to convert.
+    ``None``/empty renders an em dash so callers need no separate guard. Used as the
+    Jinja ``ist`` filter and by the CSV exporters."""
+    if value in (None, ""):
+        return "—"
+    if isinstance(value, datetime):
+        return to_ist(value).strftime(fmt)
+    if isinstance(value, date):
+        return value.strftime(fmt)
+    return str(value)
 
 from dateutil import parser as _dtparser
 

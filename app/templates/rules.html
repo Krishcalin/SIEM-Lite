@@ -58,7 +58,7 @@
     <tr>
       <td>{{ r.rule_id }}</td><td>{{ r.title }}</td>
       <td>{{ 'yes' if r.enabled else 'no' }}</td>
-      <td>{{ r.created_at.strftime('%Y-%m-%d') if r.created_at else '-' }}</td>
+      <td>{{ r.created_at | ist('%Y-%m-%d') if r.created_at else '-' }}</td>
       <td><form method="post" action="/rules/delete"
                 onsubmit="return confirm('Delete this rule?');">
             <input type="hidden" name="rule_id" value="{{ r.rule_id }}">

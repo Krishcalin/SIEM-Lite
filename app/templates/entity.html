@@ -7,8 +7,8 @@
 
 {% if entity %}
 <table class="kv">
-  <tr><th>First seen (UTC)</th><td>{{ entity.first_seen.strftime('%Y-%m-%d %H:%M') }}</td></tr>
-  <tr><th>Last seen (UTC)</th><td>{{ entity.last_seen.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+  <tr><th>First seen (IST)</th><td>{{ entity.first_seen | ist('%Y-%m-%d %H:%M') }}</td></tr>
+  <tr><th>Last seen (IST)</th><td>{{ entity.last_seen | ist('%Y-%m-%d %H:%M') }}</td></tr>
   <tr><th>Events</th><td>{{ "{:,}".format(entity.event_count) }}</td></tr>
 </table>
 {% else %}<p class="muted">No baseline recorded for this entity yet (it may only appear as a destination).</p>{% endif %}
@@ -26,7 +26,7 @@
         <td><a href="/entity?etype={{ a.peer_type }}&amp;value={{ a.peer_value|urlencode }}">{{ a.peer_type }}:{{ a.peer_value }}</a>
             {% if a.is_new %}<span class="badge high">new</span>{% endif %}</td>
         <td class="r">{{ "{:,}".format(a.count) }}</td>
-        <td class="nowrap muted">{{ a.first_seen.strftime('%Y-%m-%d') }}</td>
+        <td class="nowrap muted">{{ a.first_seen | ist('%Y-%m-%d') }}</td>
       </tr>
       {% else %}<tr><td colspan="3" class="muted">No associations recorded.</td></tr>{% endfor %}
     </table>
@@ -34,10 +34,10 @@
   <section>
     <h2>Recent alerts</h2>
     <table>
-      <tr><th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>Status</th></tr>
+      <tr><th>Raised (IST)</th><th>Sev</th><th>Rule</th><th>Status</th></tr>
       {% for r in alerts %}
       <tr>
-        <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at.strftime('%Y-%m-%d %H:%M') }}</a></td>
+        <td class="nowrap"><a href="/alert/{{ r.id }}">{{ r.created_at | ist('%Y-%m-%d %H:%M') }}</a></td>
         <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
         <td>{{ r.rule_title }}</td>
         <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>

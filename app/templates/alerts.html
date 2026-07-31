@@ -34,12 +34,12 @@
 
 <table class="results">
   <tr>
-    <th>Raised (UTC)</th><th>Sev</th><th>Rule</th><th>MITRE</th><th>Vendor</th>
+    <th>Raised (IST)</th><th>Sev</th><th>Rule</th><th>MITRE</th><th>Vendor</th>
     <th>Src</th><th>User</th><th>Host</th><th>Message</th><th>Assignee</th><th>Status</th>
   </tr>
   {% for r in rows %}
   <tr onclick="location.href='/alert/{{ r.id }}'">
-    <td class="nowrap">{{ r.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+    <td class="nowrap">{{ r.created_at | ist('%Y-%m-%d %H:%M:%S') }}</td>
     <td><span class="badge {{ r.level }}">{{ r.level }}</span></td>
     <td>{{ r.rule_title }}</td>
     <td class="nowrap muted">{{ (r.techniques or [])|join(', ') }}</td>

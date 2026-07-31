@@ -48,7 +48,7 @@
   {% for r in rows %}
   <div class="bar" title="{{ r[date_attr] }} — {{ r['n'] }}">
     <div class="fill" style="height: {{ (100 * r['n'] / maxn) if maxn else 0 }}%"></div>
-    <span class="bx">{{ r[date_attr].strftime('%m-%d') }}</span>
+    <span class="bx">{{ r[date_attr] | ist('%m-%d') }}</span>
   </div>
   {% endfor %}
 </div>
