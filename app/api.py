@@ -21,6 +21,7 @@ from starlette.concurrency import run_in_threadpool
 from . import db, ingest
 from .config import settings
 from .detect import detect_format
+from .loql import LoqlError, run_query
 from .parsers import PARSERS
 from .util import extract_api_key, gunzip_capped
 
@@ -96,3 +97,28 @@ async def api_ingest(
         log.exception("api ingest failed (key=%s, format=%s)", key.get("key_prefix"), fmt)
         raise HTTPException(status_code=500, detail="ingest failed; see server logs")
     return result
+
+
+@router.post("/query")
+async def api_query(body: dict, key: dict = Depends(require_api_key)):
+    """Run a LOQL query (``{"query": "...", "limit": N}``) and return the result set.
+
+    LOQL compiles to parameterized SQL under guardrails (statement timeout + row cap),
+    so a malformed/hostile query is a clean 400 (never SQL injection or a 500)."""
+    raw = body.get("query") if isinstance(body, dict) else None
+    if raw is not None and not isinstance(raw, str):
+        raise HTTPException(status_code=400, detail="'query' must be a string")
+    q = (raw or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="missing 'query'")
+    try:
+        limit = int(body.get("limit") or settings.loql_default_limit)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="'limit' must be an integer")
+    limit = max(1, min(limit, settings.loql_max_rows))
+    try:
+        return await run_in_threadpool(
+            run_query, q, limit=limit, max_rows=settings.loql_max_rows,
+            timeout_ms=settings.loql_timeout_ms)
+    except LoqlError as e:
+        raise HTTPException(status_code=400, detail=e.message)

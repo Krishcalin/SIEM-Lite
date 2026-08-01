@@ -38,6 +38,7 @@ an AI copilot, and passive OT/ICS monitoring on top.
   - [HTTP ingest API](#http-ingest-api)
   - [Syslog receiver](#syslog-receiver)
   - [Bulk import (large / historical backups)](#bulk-import-large--historical-backups)
+- [Search & analytics (LOQL)](#search--analytics-loql)
 - [Detection & alerting](#detection--alerting)
   - [Rules](#rules)
   - [Triage & tuning](#triage--tuning)
@@ -282,6 +283,35 @@ avoid a flood of stale alerts and to speed ingest. `--gzip` compresses each POST
 body (the server gunzips it) to save bandwidth; `--max-mb` must be ≤ the server's
 `MAX_UPLOAD_MB`. Note: a proprietary QRadar *system backup archive* is **not**
 readable — export the events as LEEF/CEF/syslog first.
+
+## Search & analytics (LOQL)
+
+**LOQL** is LogOcean's piped search/transform language (Splunk-SPL-shaped) — the first
+backbone of the [Splunk-class transformation roadmap](docs/SPLUNK_TRANSFORMATION_ROADMAP.md).
+A query is a pipeline of stages separated by `|`, and it compiles to **parameterized SQL**
+over the partitioned event store:
+
+```
+vendor=paloalto action=deny _time > "-24h" | stats count as n by src_ip | sort -n | head 10
+```
+
+Batch 1 ships `search · where · eval · fields · rename · sort · head · dedup · stats ·
+top · rare · bin · timechart`, with `stats`/`timechart` functions (`count`, `sum`, `avg`,
+`min`, `max`, `dc`, `values`, `list`), schema-on-read on the raw JSON (`errorCode=0`
+reads a field no column exists for), relative time (`_time > "-24h"`), and wildcard
+(`host="web*"`) matching. Run it via **`POST /api/v1/query`** (API-key auth):
+
+```bash
+curl -X POST http://host:8000/api/v1/query -H "X-API-Key: lo_..." \
+     -H "Content-Type: application/json" \
+     -d '{"query": "vendor=fortinet action=deny | top 10 src_ip", "limit": 500}'
+```
+
+**Safe by construction:** every value, jsonb key, and glob you type is a *bound parameter*
+— the compiler (`app/loql/`) emits only fixed SQL skeletons, so a malformed or hostile
+query is a clean `400`, never SQL injection. Guardrails (`LOQL_TIMEOUT_MS`, `LOQL_MAX_ROWS`,
+`LOQL_DEFAULT_LIMIT`) stop one heavy query from starving ingest on the shared Postgres.
+Full reference: [docs/LOQL.md](docs/LOQL.md).
 
 ## Detection & alerting
 

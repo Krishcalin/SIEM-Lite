@@ -301,7 +301,13 @@ DB-free and unit-tested; `/health` reports the scheduler.
 app/
   main.py        FastAPI routes + UI (dashboard, upload, search, event, alerts, cases,
                  killchain, risk, reports, workbench, compliance, admin) + lifespan
-  api.py         HTTP ingest API: POST /api/v1/ingest (API-key auth)
+  api.py         HTTP API: POST /api/v1/ingest + POST /api/v1/query (LOQL) (API-key auth)
+  loql/          LOQL query language — parser -> AST -> PARAMETERIZED SQL (Backbone #1 of
+                 the Splunk roadmap): nodes.py (frozen AST), parser.py (lexer+parse; the
+                 security gate), compiler.py (pure Query->(sql,params) CTE chain; every
+                 user value is a bound param), run.py (DB boundary + statement_timeout/row
+                 caps). Batch 1: search/where/eval/fields/rename/sort/head/dedup/stats/top/
+                 rare/bin/timechart. See docs/LOQL.md.
   config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency

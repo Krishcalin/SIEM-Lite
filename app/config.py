@@ -151,6 +151,16 @@ class Settings:
     admin_user: str = os.getenv("ADMIN_USER", "admin")
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
 
+    # LOQL — the piped analytics query language (POST /api/v1/query). Guardrails keep
+    # one heavy analyst query from starving ingest on the shared Postgres: a per-query
+    # statement timeout, a hard row cap, and a default result LIMIT.
+    loql_default_limit: int = int(os.getenv("LOQL_DEFAULT_LIMIT", "1000"))
+    loql_max_rows: int = int(os.getenv("LOQL_MAX_ROWS", "100000"))
+    loql_timeout_ms: int = int(os.getenv("LOQL_TIMEOUT_MS", "30000"))
+    # cap the element count of values()/list() aggregates so a single grouped row cannot
+    # array_agg an unbounded amount of memory (the LIMIT/row-cap count rows, not cell size).
+    loql_max_agg_elems: int = int(os.getenv("LOQL_MAX_AGG_ELEMS", "10000"))
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

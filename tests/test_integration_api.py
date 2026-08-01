@@ -128,3 +128,24 @@ def test_ingest_api_rejects_empty_and_unknown_format(clean_db):
                       headers=h).status_code == 400
         assert c.post("/api/v1/ingest?format=no_such_parser", content=SAMPLE,
                       headers=h).status_code == 400
+
+
+def test_loql_query_api(clean_db):
+    db = clean_db
+    rec = db.create_api_key("ci-key")
+    h = {"X-API-Key": rec["key"]}
+    with _client(db) as c:
+        assert c.post("/api/v1/query", json={"query": "*"}).status_code == 401   # auth required
+        # every malformed input is a clean 400, never a 500 (regressions from the verify pass):
+        assert c.post("/api/v1/query", json={"query": 123}, headers=h).status_code == 400   # non-string
+        assert c.post("/api/v1/query", json={"query": ["a"]}, headers=h).status_code == 400
+        assert c.post("/api/v1/query", json={}, headers=h).status_code == 400               # missing
+        assert c.post("/api/v1/query", json={"query": "| boguscmd"}, headers=h).status_code == 400
+        deep = "a=1 | where " + "(" * 3000 + "1" + ")" * 3000
+        assert c.post("/api/v1/query", json={"query": deep}, headers=h).status_code == 400  # fails closed
+        # a valid query returns the result shape
+        c.post("/api/v1/ingest?format=generic_json", content=SAMPLE, headers=h)
+        r = c.post("/api/v1/query", json={"query": "* | stats count as n", "limit": 10}, headers=h)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["fields"] == ["n"] and body["rows"][0]["n"] >= 1
