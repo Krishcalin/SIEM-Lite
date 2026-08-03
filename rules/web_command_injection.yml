@@ -6,11 +6,11 @@ fidelity: high
 data_source: [web, zeek, suricata]
 references:
   - https://attack.mitre.org/techniques/T1190/
+# Bound to the CIM Web data model rather than to `log_type: [access, http]` -- see
+# web_sql_injection.yml. The shell metacharacters are the detection; which product
+# logged the request is the registry's problem, not this rule's.
+datamodels: web
 detection:
-  http:
-    log_type:
-      - access
-      - http
   cmdi:
     - message|contains:
         - "$(id)"
@@ -29,7 +29,7 @@ detection:
         - ";wget http"
         - ";curl http"
     - message|re: "(?i)[;|`]\\s*(id|whoami|uname|ifconfig|cat|nc|ncat|bash|sh|curl|wget|ping)\\b"
-  condition: http and cmdi
+  condition: cmdi
 tags:
   - attack.t1190
   - attack.initial_access

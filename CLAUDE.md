@@ -59,13 +59,80 @@ add their own batch lifecycle around it.
  upload (web) ───────────────┐
  POST /api/v1/ingest (key) ──┤─► detect.py ─► parsers/<vendor>_<fmt>.py ─► NormalizedEvent
  syslog UDP/TCP/TLS ─► queue ┘        ─► pipeline.write_stream ─► normalize.py (dedup + FTS)
-                                       ├─► db.insert_events ─► events (month-partitioned, GIN)
+                                       ├─► db.insert_events ─► db._row: tsv_text(evt) +
+                                       │      cim.match.tags_for(evt) ─► events (month-partitioned,
+                                       │      GIN on search_tsv / raw / cim_models text[])
                                        ├─► UEBA entity baselines (entities / entity_links)
                                        └─► detection + threat-intel (per event) ─► suppression
                                               filter ─► alerts ─► /alerts ─► triage / cases
  scheduler (every CORRELATION_INTERVAL) ─► correlation rules (SQL over events) ─► alerts
  alerts ─► notify + response · dashboards / /reports (charts, ATT&CK-Navigator, CSV)
+ POST /api/v1/query ─► loql (parse ─► compile ─► parameterized SQL) ─► events / cim_<tag>
 ```
+
+**The two Splunk-transformation backbones** (`docs/SPLUNK_TRANSFORMATION_ROADMAP.md`
+Phase 1) sit on top of that core and everything later hangs off them.
+
+**Backbone #1 — LOQL** (`app/loql/`, `docs/LOQL.md`): a piped SPL-shaped language
+(`search | stats | timechart | …`) compiled to **parameterized SQL** CTE chains. Pure and
+snapshot-testable; the single place a per-role row filter will later be injected. Reached
+via `POST /api/v1/query` — **there is no UI search box for it yet**.
+
+**Backbone #2 — CIM** (`app/cim/`, `docs/CIM.md`): 11 versioned, vendor-agnostic data
+models (`models.yaml`) so a detection or a search binds to a **model, not a vendor**.
+Membership is materialized on the row — `events.cim_models text[]`, GIN-indexed, filled per
+event **in Python at ingest** by `cim.match.tags_for`, exactly the way `search_tsv` is
+filled from `normalize.tsv_text`. Deliberately **not** a generated column: PostgreSQL 16
+freezes a generation expression at `ADD COLUMN` (rewriting one needs `ALTER COLUMN … SET
+EXPRESSION`, PG17+, and docker-compose pins 16), so an edit to `models.yaml` could never
+reach an existing database; and detection needs membership **before** the INSERT, since
+`write_stream` evaluates per event while rows are flushed in chunks. One evaluator, in
+Python — `sql.membership_sql` stays as the readable, runnable *spec* only. Consumers:
+`db._row` (stamping), `db.init_cim`/`backfill_cim`/`cim_status` (per-model `cim_<tag>`
+views + drift), `loql.compiler` (`| datamodel X` / `from datamodel:X`), `detection.engine`
+(`datamodels:` rule gate), `/datamodels`, `/admin/cim/backfill`, `/health`.
+
+**Operator rule — every registry edit needs a restart.** `get_registry()` parses and
+caches for the process lifetime; nothing re-reads `models.yaml` while the app runs. A
+`fields:` edit needs a restart and nothing else. A `membership:` edit needs a restart too,
+and then applies only to NEW events — history is corrected by `db.backfill_cim()`, **in
+that order**. `cim_status()` reports the two separately: `restart_required` (the file has
+drifted from the loaded registry) and `backfill_due` (stored rows predate the current
+rule, measured against the FILE so that a backfill run before the restart cannot stamp the
+old rule's fingerprint and falsely report history as current). Both surface as banners.
+
+**Registry-failure policy.** Startup validates the registry and REFUSES TO BOOT on a
+malformed one (`main._require_cim_registry` → `db.validate_cim_registry`, first statement
+of the lifespan, unconditional — `CIM_ENABLED=false` gates the views only, never the
+per-row stamp). A registry that breaks *after* boot degrades instead: `db._cim_tags`
+stores the event with `cim_models = NULL` and counts it in `db.cim_write_state()`, because
+`streaming._flush` answers any exception from the write by DISCARDING the buffered batch —
+so a raising `_row` would turn one bad YAML file into silent loss of every live-ingested
+event. Untagged rows are counted, surfaced on `/health` as `untagged_events`, and
+repairable with `backfill_cim`; discarded events are none of those.
+
+**Failure is cached, on both sides, and neither cache is permanent.** The degraded path
+above calls `get_registry()` once per *event*, so success-only caching made a broken
+registry re-parse the 27 KB YAML per event behind a process-global lock — the handler
+became the outage. `registry.get_registry()` therefore also remembers the failure for
+`_FAILURE_TTL_SECONDS` (30 s) and replays it as a *fresh* exception object (re-raising one
+instance grows its traceback without bound). One layer up, `detection.engine._cim()`
+resolves the registry once for all datamodel-bound rules; a *failed* resolution used to be
+permanent process state, and is now retried on its own 30 s monotonic wall. `reload()`
+drops the registry's entry and re-reads; a failed `reload()` re-arms it. The two walls are
+independent and sit **in series**, so a fixed `models.yaml` is picked up in 30–60 s
+without a restart — bounded and self-correcting. `engine.reset_cim_cache()` clears only
+the engine's half, which is why it is documented as the call you make *after*
+`registry.reload()`, never instead of it.
+
+**Ingest membership is resolved once per event.** `pipeline.write_stream` walks the
+registry once and threads the result to both consumers —
+`db.insert_events(..., cim_tags=[...])` (index-aligned with the events; `None` at a
+position means "derive this one") and `engine.evaluate_event(evt, tags=...)`. Both
+arguments are optional and probed with `inspect.signature`, so a caller or test double
+that omits them still derives membership itself. When the pipeline's own resolution
+raises it threads `None`, deliberately *not* an empty set, so the failure lands in
+`db._cim_tags` and is counted rather than being silently reported as "belongs to nothing".
 
 Live sources (syslog) buffer in a bounded async queue (`streaming.py`) drained by
 writer workers that batch-insert; queue counters are on `GET /health`. One
@@ -307,8 +374,16 @@ app/
                  security gate), compiler.py (pure Query->(sql,params) CTE chain; every
                  user value is a bound param), run.py (DB boundary + statement_timeout/row
                  caps). Batch 1: search/where/eval/fields/rename/sort/head/dedup/stats/top/
-                 rare/bin/timechart. See docs/LOQL.md.
-  config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, ...)
+                 rare/bin/timechart/datamodel. See docs/LOQL.md.
+  cim/           CIM data models — versioned vendor-agnostic schemas (Backbone #2):
+                 spec.py (frozen contract: CimSource/CimField/CimTerm/CimClause/CimModel/
+                 CimRegistry), registry.py (load+validate models.yaml; get_registry/reload),
+                 match.py (the ONE runtime evaluator — tags_for(evt) -> the tags stamped
+                 into events.cim_models; pure, DB-free), sql.py (the only place CIM becomes
+                 SQL: cim_<tag> view DDL + membership_sql/membership_predicate),
+                 models.yaml (the registry — DATA). See docs/CIM.md.
+  config.py      env-driven settings (DB_DSN, RETENTION_YEARS, INGEST_*, SYSLOG_*, LOQL_*,
+                 CIM_*, ...)
   models.py      NormalizedEvent dataclass (the common schema)
   auth.py        password hashing (pbkdf2) + role ranking + require_role dependency
   compliance.py  MITRE technique -> framework control mapping + coverage report
@@ -360,17 +435,21 @@ app/
                  azure_activity, m365_audit, entra_signin, okta_system_log,
                  github_audit, gitlab_audit, nutanix_pc, nutanix_files  (29 total)
   templates/     base, dashboard, upload, search, event, alerts, alert, cases, case,
-                 killchain, risk, entity, ot, responses, compliance, report, coverage,
-                 workbench, admin, login, _macros
+                 killchain, risk, entity, ot, datamodels, responses, compliance, report,
+                 coverage, workbench, admin, login, _macros
   static/style.css
 rules/           detection + correlation rules (Sigma-subset YAML)
 playbooks/       agentless response playbooks (match + action YAML)
 clients/         logocean_push.py — copy-into-your-tool helper to push to the API;
                  logocean_import.py — bulk-import a large [.gz] file in size-bounded chunks
-schema.sql       events, ingest_batches, api_keys, alerts (+assignee +case_id),
-                 alert_notes, suppressions, cases, case_notes, entities, entity_links,
-                 detection_rules, response_actions (+reverted_at), collectors, users,
-                 sessions, audit_log, iocs, saved_searches
+schema.sql       events (+search_tsv +cim_models text[] + GIN events_cim_models_idx),
+                 cim_meta (one-row registry/backfill stamp), ingest_batches, api_keys,
+                 alerts (+assignee +case_id), alert_notes, suppressions, cases, case_notes,
+                 entities, entity_links, detection_rules, response_actions (+reverted_at),
+                 collectors, users, sessions, audit_log, iocs, saved_searches
+                 NOTE: split by db.split_statements (quote/comment aware), NOT `split(";")`
+docs/            LOQL.md · CIM.md · SPLUNK_TRANSFORMATION_ROADMAP.md ·
+                 DETECTION_COVERAGE_ROADMAP.md
 samples/         one example file per format (used by tests)
 tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, test_syslog,
                  test_detection, test_pipeline, test_correlation, test_notify, test_response,
@@ -378,7 +457,7 @@ tests/           unit (DB-free): test_parsers, test_api_auth, test_streaming, te
                  test_triage, test_severity, test_navigator, test_risk, test_compression,
                  test_killchain, test_workbench, test_copilot, test_hardening, test_ot,
                  test_saved, test_coverage, test_sigma_import, test_rule_quality,
-                 test_medium_hardening
+                 test_medium_hardening, test_loql, test_cim
                  integration (real Postgres, marked `integration`): conftest.py +
                  test_integration_db.py + test_integration_api.py
 pytest.ini       registers the `integration` marker
@@ -609,6 +688,11 @@ docker-compose.yml, Dockerfile, requirements.txt, .env.example
    over distinctive header/positional tokens — to avoid cross-vendor false positives;
    a stray field value like `SYSTEM` must not trip another vendor's detector).
 4. Add a `samples/` fixture and a test in `tests/test_parsers.py`.
+5. Check it lands in a **CIM data model** (`docs/CIM.md`). Most sources do so for free via
+   `log_type`; if not, add a membership clause to `app/cim/models.yaml` — a parser whose
+   events belong to no model is invisible to `datamodels:` rules and `| datamodel` searches.
+   `tests/test_cim.py` carries a per-source expectation over `samples/`, so a new fixture
+   that tags nothing (or wrongly) shows up there by name.
 
 ## Adding a detection rule
 
@@ -619,6 +703,21 @@ field modifiers (`|contains`, `|cidr`, `|gte`, `|base64offset|contains`,
 `|windash`, `|exists`, `|fieldref`, …), and tag with `attack.tNNNN` /
 `attack.<tactic>`. **Correlation** rules use a `correlation:` block (`match` /
 `group_by` / `window` / `threshold`) over normalized columns.
+
+A per-event rule may also carry **`datamodels:`** (singular alias `datamodel:`) to bind to
+CIM data models instead of a vendor — `datamodels: web` · `datamodels: [web, ids]` ·
+`datamodels: Industrial`. Values are registry **tags or display names**
+(`engine.rule_from_dict` → `Rule.datamodels`, resolved by `engine._gate`). Semantics:
+omitted = match-all (and costs nothing — the registry is never walked); several = **ANY**;
+`logsource:` and `datamodels:` are **AND**ed; a name that resolves to no model makes that
+rule **DEAD**, never match-all — `tests/test_rule_quality.py` fails CI on it, and it also
+rejects `datamodels:` on a `correlation:` rule (those filter in SQL via `db.correlate` and
+never reach `match_rule`). Membership is resolved at most once per event in
+`evaluate_event` and threaded to every bound rule. Shipped conversions:
+`rules/web_{sql_injection,path_traversal,command_injection,xss_attempt}.yml` →
+`datamodels: web`, `rules/ot_it_to_ot_write.yml` → `datamodels: ics`. `ot_cip_write` was
+deliberately **not** converted (its `log_type: [cip, enip]` is protocol-specific by design;
+binding it to `ics` would let its `ot.is_write` selection fire on Modbus).
 Rules are loaded on startup and synced into `detection_rules`; enable/disable from
 the Admin page (applies live). Match logic is unit-tested in `tests/test_detection.py`
 (per-event) and `tests/test_correlation.py` (correlation) — no DB needed.
@@ -688,6 +787,45 @@ Current scoreboard (`scripts/coverage_report.py`): **ATT&CK Enterprise ~82 techn
 ATLAS 0/31; high-fidelity 36**. When adding a rule, keep IOC lists to indicators you can
 corroborate, set `fidelity` + `data_source`, and ship a fire-test.
 
+## Adding / editing a CIM data model
+
+Everything is `app/cim/models.yaml` — **data, no code**. Full syntax reference:
+`docs/CIM.md`. The parts that bite:
+
+- A model is `name` (display) + `tag` (membership token + `cim_<tag>` view name) +
+  `membership:` (OR of clauses, AND of terms inside a clause) + `fields:` (the projection).
+  `name` and `tag` share **one key space** across the registry (`by_name` resolves names
+  first, then tags), so they must not collide; `DNS`/`dns` is fine.
+- A term reads a whitelisted **column** (`vendor`, `product`, `log_type`, `severity`,
+  `action`, `protocol`, `app`, `user_name`, `host_name`) or **any jsonb key**;
+  `const:`/`expr:` are rejected in terms. Values must be quoted strings or integers —
+  **bare `yes`/`no`/`on`/`off`/`null` are YAML-1.1 booleans/None and are rejected on load**
+  (they used to compile to `'true'` and match nothing, forever).
+- **Sources may list ordered alternatives (→ `COALESCE`) and nested paths, and a jsonb key
+  is NEVER split on `.`** — Zeek writes literal dotted top-level keys (`id.orig_h`).
+  Alternatives vs nesting is structural, not a delimiter: a top-level list = alternatives,
+  a list *inside* it = a segment list. `raw: [[ot, operation]]` is one nested path.
+- Duplicate mapping keys anywhere in the file, duplicate field names in a model, and
+  reserved field names (`id`/`event_time`/`raw`/`search_tsv`/`cim_models`) are all
+  load-time errors. The reserved set is **derived** from `cim.sql.IDENTITY_COLUMNS` +
+  `PASSTHROUGH_COLUMNS`, not restated, so a column added to a projection reserves its name
+  in the same edit — `search_tsv` was missed exactly once that way and the resulting view
+  compiled fine, then failed the next bareword search with 42702. The LOQL compiler guards
+  the same two names on the pipeline side (`_reject_carried`, over the same tuple), so
+  `| fields raw`, `| eval raw = 1` and `| rename x as search_tsv` are compile errors.
+- **Honesty rules the shipped file is held to:** every clause matches ≥1 event in
+  `samples/` or is annotated `# unsampled` / `# forward-looking`; no clause tests a vendor
+  alone; PAN-OS and FortiGate put the *subtype* in `log_type`, so those clauses read the
+  real type out of `raw`. Keep them.
+- After a **`fields:`** edit: restart (`db.init_cim` rebuilds the views). After a
+  **`membership:`** edit: restart **and** run the backfill (Admin → *Backfill membership*,
+  or `db.backfill_cim()`), or history keeps the old tags. `db.cim_status()["backfill_due"]`
+  compares a membership fingerprint (sha256 over a canonicalized rendering of every term)
+  against the `cim_meta` stamp, so it is true iff the *rule set* changed — not when someone
+  reorders the file.
+- `cim_` is a **reserved view namespace**: `init_cim` drops any `^cim_[a-z][a-z0-9_]*$`
+  view that is not a current tag.
+
 ## Adding a response playbook
 
 Drop a YAML file in `playbooks/` with a `match` (any of `rule_id` / `min_level` /
@@ -719,6 +857,12 @@ pull + POST to the ingest API.
 
 Two tiers: **unit** (DB-free, run anywhere) and **integration** (marked
 `integration`, need a live PostgreSQL — they self-skip when `DB_DSN` is unset).
+**885 unit tests + 67 integration tests** (952 collected) at the time of writing — 322 at
+the LOQL commit `ec1ed09`. Backbone #2 added `tests/test_cim.py` plus the LOQL
+`datamodel`, detection `datamodels:` and rule-linter cases, and then a hardening round
+covering the carried-column and time-column guards in the LOQL compiler, both halves of
+the CIM registry cache (success *and* failure), the engine's CIM retry wall, and the
+`cim_<tag>` view reads that had never executed against a real database.
 
 ```bash
 pip install pytest python-dateutil
@@ -774,6 +918,19 @@ Unit:
 - `test_hardening.py` — ingest input hardening: the JSON deep-nesting depth guard,
   gzip decompression-bomb cap, oversize-payload rejection, and numeric-overflow
   coercion on hostile log fields.
+- `test_loql.py` — LOQL parser + compiler snapshots, the injection invariant
+  (`sql.count("%s") == len(params)`), reserved/mixed-case identifier quoting at every
+  emission site, and the `datamodel` source (both spellings parse to one AST, the
+  projection matches `cim.sql.create_view_ddl`, the membership tag is BOUND, and a
+  model-shadowed column like `user_name` is a hard error).
+- `test_cim.py` — the CIM layer end to end without a database: registry loader guards
+  (YAML-1.1 booleans, duplicate keys/field names, name↔tag collisions), byte-exact SQL
+  emission (dots never split, every label quoted), evaluator equivalence (the compiled
+  `tags_for` vs the reference `model_matches` walk over the whole corpus), coercion
+  (`raw {"event_id": 4625}` matches `'4625'`, `"04625"` does not), never-raises on hostile
+  events, per-source tag expectations over `samples/`, and the store seams asserted as
+  emitted text (`db._INSERT`/`_row` placeholder alignment, `split_statements`,
+  `_orphan_cim_views`, `_cim_backfill_query`, the membership fingerprint).
 - `test_ot.py` — OT/ICS: `zeek_ics.enrich` protocol mapping (Modbus/DNP3/S7comm/CIP,
   string + numeric func), the Zeek parsers lifting `action`/`ot.*` from the ICS
   samples, the OT rule pack firing on malicious ops (and staying quiet on reads),
@@ -800,6 +957,19 @@ real PostgreSQL 16 — locally via `DB_DSN`, and in CI as a service container (s
 `.github/workflows/tests.yml`: a `pytest` job per Python 3.11–3.13 for unit, plus
 an `integration` job with Postgres). Run the relevant tier after any
 parser/detector/pipeline/rule/`db.py` change.
+
+**A configured-but-broken DSN is a FAILURE, not a skip.** Only an *absent* `DB_DSN`
+skips the integration tier. Once a DSN is set, an unreachable server, wrong
+credentials, a missing database or a `schema.sql` that will not apply all propagate
+and fail the run. `tests/conftest.py` adds a second, broader guard on top:
+`pytest_sessionfinish` fails any session that **collected** integration tests, had a
+DSN, and **executed none of them**. Both exist because the integration job reported
+green while running zero tests for roughly seventy commits — a dead service container
+and import-time collection errors each produced "all skipped, exit 0", which is
+indistinguishable from a job that tested everything. The guard is deliberately narrow
+(no DSN, nothing collected, anything executed, or `--collect-only`/`--setup-only`/
+`--setup-plan` → it returns immediately), so `pytest -m "not integration"` on a
+developer box with `DB_DSN` exported is unaffected.
 
 ## Security / ops notes
 

@@ -45,11 +45,13 @@ class QueueStats:
     received: int = 0      # items accepted onto the queue
     dropped: int = 0       # items rejected because the queue was full
     written: int = 0       # rows actually stored (post-dedup)
-    flush_errors: int = 0  # flushes that failed to commit
+    flush_errors: int = 0  # flush GROUPS that failed to commit (incidents, not events)
+    events_lost: int = 0   # EVENTS discarded by those failures — the number that matters
 
     def as_dict(self) -> dict:
         return {"received": self.received, "dropped": self.dropped,
-                "written": self.written, "flush_errors": self.flush_errors}
+                "written": self.written, "flush_errors": self.flush_errors,
+                "events_lost": self.events_lost}
 
 
 def group_items(items: list[IngestItem]) -> dict[tuple, list[NormalizedEvent]]:
@@ -138,6 +140,25 @@ class IngestQueue:
                 raise
 
     async def _flush(self, items: list[IngestItem]) -> None:
+        """Write each buffered group. A group that will not write is DISCARDED.
+
+        This is the system's one remaining silent-loss path and it is deliberate, not an
+        oversight: the events live only in this in-memory buffer (syslog/UDP has no
+        upstream to replay from), the worker must keep draining or the queue backs up and
+        `dropped` climbs instead, and a retry loop against a database that is down would
+        block every other source behind it.
+
+        What IS fixed here is the reporting. Both counters are surfaced on /health, which
+        now reports `status: degraded` while either is non-zero — previously the loss was
+        visible only as an incident count nothing looked at. `events_lost` is the honest
+        number: `flush_errors` counts failed GROUPS, so one bad flush of a 5000-event
+        buffer used to read as "1".
+
+        A durable dead-letter (spool the group to disk, replay on recovery) is the real
+        fix and is deliberately NOT attempted here — it needs a spool location, a size
+        bound, a replay path and a poison-message policy, none of which belong in a
+        counter change.
+        """
         for (fmt, st, addr, vendor), events in group_items(items).items():
             if not events:
                 continue
@@ -146,7 +167,11 @@ class IngestQueue:
                 self.stats.written += stored
             except Exception:  # noqa: BLE001
                 self.stats.flush_errors += 1
-                log.exception("ingest flush failed (fmt=%s, source=%s/%s)", fmt, st, addr)
+                self.stats.events_lost += len(events)
+                log.exception(
+                    "ingest flush failed and %d buffered event(s) were DISCARDED "
+                    "(fmt=%s, source=%s/%s); %d lost in total since start",
+                    len(events), fmt, st, addr, self.stats.events_lost)
 
 
 # Module-level singleton, created/started in the app lifespan.

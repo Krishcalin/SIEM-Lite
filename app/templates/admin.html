@@ -178,6 +178,88 @@
 </section>
 
 <section>
+  <h2>CIM data models</h2>
+  <p>Every event is tagged at ingest with the <a href="/datamodels">data models</a> it
+     belongs to (<code>events.cim_models</code>), and the <code>cim_&lt;tag&gt;</code>
+     views are rebuilt from <code>app/cim/models.yaml</code> on every startup. Editing a
+     model's <b>fields</b> only needs a restart. Editing its <b>membership</b> also needs
+     a backfill: events already stored keep the tags they were given under the old rule,
+     so every model under-reports until history is re-derived.</p>
+  <p>
+    <span class="badge {{ 'done' if cim_init.applied else 'error' }}">{{ 'views applied' if cim_init.applied else 'views not applied' }}</span>
+    registry <b>v{{ cim_status.registry_version or '—' }}</b> in the database,
+    <b>v{{ cim_status.current_version or '—' }}</b> loaded ·
+    {{ cim_init.views|length }} view(s){% if cim_init.dropped %}, {{ cim_init.dropped|length }} orphan(s) dropped{% endif %} ·
+    last backfill {{ cim_status.backfilled_at | ist('%Y-%m-%d %H:%M') if cim_status.backfilled_at else 'never' }}
+  </p>
+  {% if cim_init.error %}<div class="alert err">Startup could not build the model views:
+     <code>{{ cim_init.error }}</code>. Ingest and detection are unaffected.</div>{% endif %}
+  {% if cim_status.error %}<div class="alert err">Could not read the registry stamp:
+     <code>{{ cim_status.error }}</code>.</div>{% endif %}
+
+  {% if cim_backfill.state == 'running' %}
+  <div class="alert">Backfill running since
+    {{ cim_backfill.started_at | ist('%Y-%m-%d %H:%M:%S') }}
+    {% if cim_backfill.by %}(started by {{ cim_backfill.by }}){% endif %} — it runs in the
+    background and commits in chunks. Reload this page for progress.
+    {# `progress` is republished after every COMMITTED chunk, so these counters are
+       durable, not in-flight. `result` is None for the whole time the state is
+       'running', which is why the live view has to read `progress` instead. #}
+    {% if cim_backfill.progress %}
+    <br>Committed so far: scanned
+    {{ "{:,}".format(cim_backfill.progress.scanned) }},
+    retagged {{ "{:,}".format(cim_backfill.progress.updated) }},
+    unchanged {{ "{:,}".format(cim_backfill.progress.unchanged) }}
+    over {{ cim_backfill.progress.chunks }} chunk(s) — resume cursor
+    <code>start_id={{ cim_backfill.progress.last_id }}</code>.
+    {% else %}
+    <br>No chunk has committed yet.
+    {% endif %}</div>
+  {% elif cim_backfill.state == 'done' %}
+  <div class="alert ok">Backfill finished {{ cim_backfill.finished_at | ist('%Y-%m-%d %H:%M:%S') }}:
+    scanned {{ "{:,}".format(cim_backfill.result.scanned) }},
+    retagged {{ "{:,}".format(cim_backfill.result.updated) }},
+    unchanged {{ "{:,}".format(cim_backfill.result.unchanged) }}
+    in {{ cim_backfill.result.seconds }}s{% if not cim_backfill.result.done %} (stopped on
+    a row bound — not a full pass){% endif %}.</div>
+  {% elif cim_backfill.state == 'error' %}
+  <div class="alert err">Backfill failed: <code>{{ cim_backfill.error }}</code>. It commits
+    per chunk, so the rows it did reach are already corrected — re-running is safe.</div>
+  {% endif %}
+
+  {# RESTART FIRST, THEN BACKFILL. `get_registry()` caches for the process lifetime, so
+     an edited models.yaml is not live until a restart — and a backfill run before it
+     re-derives every row under the OLD rule, changing nothing while stamping the old
+     fingerprint. This banner is what makes that window visible; `backfill_due` is
+     measured against the file on disk so it stays true until both steps have happened. #}
+  {% if cim_status.restart_required %}
+  <div class="alert err"><b>Restart required.</b> <code>app/cim/models.yaml</code> has
+    changed since this process started, so the registry in use is the one loaded at boot.
+    Restart LogOcean <b>before</b> backfilling — a backfill now would re-derive every row
+    under the old rule.</div>
+  {% elif cim_status.registry_disk_error %}
+  <div class="alert err">Could not re-read <code>app/cim/models.yaml</code> to check for
+    edits: <code>{{ cim_status.registry_disk_error }}</code>. The running process is
+    unaffected (it uses the registry it loaded at boot), but a restart would fail until
+    this is fixed.</div>
+  {% endif %}
+
+  {% if cim_status.backfill_due %}
+  <div class="alert err">Membership has changed since the last full backfill — stored
+    events still carry the tags of the old rule.</div>
+  {% endif %}
+
+  <form method="post" action="/admin/cim/backfill" class="panel inline-form"
+        onsubmit="return confirm('Re-derive cim_models across every partition? This runs in the background and rewrites the rows whose membership changed.');">
+    <span class="muted">Re-derives <code>cim_models</code> for every stored event in
+      {{ "{:,}".format(cim_backfill_chunk) }}-row committed chunks. Rows whose tags are
+      unchanged are not written.</span>
+    <button type="submit" class="btn{{ ' primary' if cim_status.backfill_due }}"
+            {{ 'disabled' if cim_backfill.state == 'running' }}>Backfill membership</button>
+  </form>
+</section>
+
+<section>
   <h2>Threat intelligence</h2>
   <p>Ingested events are matched against these indicators (IPs, CIDRs, domains,
      file hashes, URLs); a hit raises a <b>Threat Intelligence Match</b> alert.

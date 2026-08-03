@@ -39,6 +39,7 @@ an AI copilot, and passive OT/ICS monitoring on top.
   - [Syslog receiver](#syslog-receiver)
   - [Bulk import (large / historical backups)](#bulk-import-large--historical-backups)
 - [Search & analytics (LOQL)](#search--analytics-loql)
+- [CIM data models](#cim-data-models)
 - [Detection & alerting](#detection--alerting)
   - [Rules](#rules)
   - [Triage & tuning](#triage--tuning)
@@ -102,6 +103,8 @@ round it out — all tested unit + integration against real PostgreSQL in CI.
   syslog receiver (UDP/TCP/TLS) fronted by a bounded async queue.
 - **Sigma-based detection & correlation** (90 detection + 10 correlation rules shipped)
   with the common Sigma modifiers, plus a **community SigmaHQ importer**.
+- **CIM data models** — 11 versioned, vendor-agnostic schemas (`/datamodels`) so a rule or
+  a search binds to `datamodels: web`, not to a vendor. Data-not-code YAML registry.
 - **Detection-coverage scoreboard** for **MITRE ATT&CK (Enterprise + ICS)** and
   **MITRE ATLAS**, with Navigator-layer export and a CI rule-linter.
 - **Threat-intelligence** IOC enrichment, **notifications** (webhook / email), and
@@ -261,6 +264,14 @@ Messages flow through a bounded async queue with writer workers that batch-inser
 so a burst never blocks the receiver; queue counters are on `GET /health`. TCP
 framing supports both octet-counting (RFC 6587) and newline-delimited streams.
 
+> **Live ingest can lose events, and `/health` says so.** If a flush fails (typically the
+> database is unreachable) the buffered group is **discarded** — it exists only in memory
+> and syslog has no upstream to replay from. `/health` reports `events_lost` alongside
+> `flush_errors` (the latter counts *incidents*, so one failed flush of a full buffer read
+> as `1`) and returns `status: degraded` while either is non-zero. `dropped` is the
+> different failure of arriving faster than the writer drains. A durable dead-letter spool
+> is not implemented.
+
 ### Bulk import (large / historical backups)
 
 To load a **big multi-GB export** — e.g. a 3-year IBM QRadar **LEEF** backup — use
@@ -313,6 +324,70 @@ query is a clean `400`, never SQL injection. Guardrails (`LOQL_TIMEOUT_MS`, `LOQ
 `LOQL_DEFAULT_LIMIT`) stop one heavy query from starving ingest on the shared Postgres.
 Full reference: [docs/LOQL.md](docs/LOQL.md).
 
+## CIM data models
+
+**CIM** is LogOcean's versioned, vendor-agnostic **data-model layer** — the second
+backbone of the [transformation roadmap](docs/SPLUNK_TRANSFORMATION_ROADMAP.md). A data
+model is a named schema plus a membership rule that decides which events belong to it, so
+a search or a detection binds to **what an event is, not who made the box**:
+
+```
+| datamodel Authentication | stats count by user, action | sort -count   # LOQL
+datamodels: web                                                          # a detection rule
+SELECT * FROM cim_ics WHERE is_write = 'true'                            # SQL view
+```
+
+**Eleven models ship** — Authentication · Network · Web · DNS · Endpoint · Change ·
+Malware · IDS · **Industrial (OT/ICS)** · Email · Vulnerability — nine of them populated by
+the parsers you already have (Email and Vulnerability are defined and waiting for a mail
+gateway / scanner source, and say so). Membership is many-to-many: an OT session is
+`['ics', 'network']`, a Falcon detection is `['endpoint', 'malware']`. Browse them all at
+**`/datamodels`**, with an opt-in member count per model.
+
+Membership is **materialized on the row**: `events.cim_models` is a plain `text[]`,
+GIN-indexed, filled per event **in Python at ingest** — exactly the way `search_tsv` is
+filled — so `cim_models @> ARRAY['web']` is an index lookup, and detection can see model
+membership *before* the row is inserted. Deliberately **not a generated column**:
+PostgreSQL 16 freezes a generation expression at `ADD COLUMN` (rewriting one needs
+`ALTER COLUMN … SET EXPRESSION`, PG17+, and we pin `postgres:16`), which would have made
+every future registry edit unreachable on an existing database.
+
+The whole layer is **data, not code** — `app/cim/models.yaml`. Add a source to a model, or
+add a model, by editing YAML: no Python, no schema migration. A field mapping may read a
+normalized column, a constant, or one **or several** jsonb keys (vendors spell the same
+concept differently), including nested paths:
+
+```yaml
+- name: Authentication
+  tag: authentication
+  membership:
+    - {log_type: [signin, authentication, auth, authpriv]}
+    - vendor: [microsoft]
+      product: [windows]
+      log_type: [security]
+      event_id:                                  # ordered alternatives -> COALESCE
+        raw: [event_id, EventID, "Event ID", Id, [Event, System, EventID]]
+        values: [4624, 4625, 4768, 4769, 4776]
+  fields:
+    - {name: user, column: user_name}
+    - {name: src,  column: src_ip}
+    - {name: query, raw: [query, QueryName, [dns, rrname]]}
+```
+
+**Operator note — every edit needs a restart.** `models.yaml` is data, but nothing in it
+is picked up by a running process: the registry is parsed and validated once and cached
+for the process lifetime. A `fields:` edit takes effect on the next restart (the
+`cim_<tag>` views are rebuilt, and nothing stored needs correcting — a field is computed
+on read). A `membership:` edit also takes effect on the next restart, and then only for
+**new** events; history is corrected by running **Admin → Backfill membership**.
+
+**Restart first, then backfill** — in that order. A backfill run before the restart
+re-derives every row under the *old* cached rule, changing nothing while stamping the
+progress marker, so `/admin` would report history as current under a rule that had never
+been applied to a single row. `/admin` shows a **restart required** banner when the file
+on disk has drifted from the loaded registry, and a **backfill due** banner when stored
+history predates the current rule. Full reference: [docs/CIM.md](docs/CIM.md).
+
 ## Detection & alerting
 
 Every ingested event is evaluated against **detection rules**, and a background
@@ -344,6 +419,24 @@ detection:
   condition: selection and permitted
 tags: [attack.t1021.001, attack.lateral_movement]
 ```
+
+A per-event rule can also bind to a **CIM data model** instead of (or as well as) a
+vendor — `datamodels: web` fires on Apache, Nginx, Zeek, Suricata, PAN URL-filtering,
+Meraki, FortiGate webfilter and CEF proxy alike, because the *model* owns that list:
+
+```yaml
+title: SQL Injection Attempt
+id: lo-web-sqli
+datamodels: web             # a tag, a display name, or a list (ANY of them)
+detection:
+  sel: { message|contains: ["union select", "' or 1=1"] }
+  condition: sel
+```
+
+`datamodels:` and `logsource:` are **AND**ed; an omitted binding is match-all (so every
+pre-existing rule is unchanged and costs nothing); and a name that resolves to no model
+**disables that rule** rather than widening it — the CI rule-linter fails on it. See
+[docs/CIM.md](docs/CIM.md).
 
 ```yaml
 # correlation (threshold) rule — e.g. brute force
@@ -792,6 +885,11 @@ All settings are environment variables (see `.env.example`).
 | `KILLCHAIN_WINDOW_HOURS` / `KILLCHAIN_MAX_GAP_MINUTES` / `KILLCHAIN_MIN_TACTICS` | `24` / `60` / `2` | Look-back window; max gap to link alerts; min distinct tactics for a story |
 | `KILLCHAIN_AUTOCREATE` / `KILLCHAIN_INTERVAL` / `KILLCHAIN_MIN_SEVERITY` | `false` / `300` / `high` | Auto-promote high-severity stories to cases; poll period (s); severity floor |
 | `WORKBENCH_WINDOW_DAYS` / `WORKBENCH_NOISY_THRESHOLD` | `30` / `50` | Rule firing-stats window; alerts/window above which a rule is flagged noisy |
+| `LOQL_DEFAULT_LIMIT` / `LOQL_MAX_ROWS` / `LOQL_TIMEOUT_MS` | `1000` / `100000` / `30000` | LOQL guardrails: default result `LIMIT`, hard row cap, per-query `statement_timeout` |
+| `LOQL_MAX_AGG_ELEMS` | `10000` | Cap on elements one `values()`/`list()` aggregate may collect (the row cap counts rows, not cells) |
+| `CIM_ENABLED` | `true` | Rebuild the per-model `cim_<tag>` views on startup. Gates the **views only** — membership tagging at ingest is not optional |
+| `CIM_COUNT_DAYS` / `CIM_COUNT_TIMEOUT_MS` | `30` / `5000` | `/datamodels` member counts: window (0 disables) and the budget for the **whole** sweep |
+| `CIM_BACKFILL_CHUNK` | `2000` | Rows per committed chunk of the Admin → membership backfill |
 | `COPILOT_ENABLED` | `false` | Enable the Claude-powered alert/case explainers + Sigma-from-NL (needs `anthropic` + a key) |
 | `COPILOT_API_KEY` / `COPILOT_MODEL` / `COPILOT_MAX_TOKENS` | — / `claude-opus-4-8` / `1024` | API key (else `ANTHROPIC_API_KEY`); Claude model; max response tokens |
 | `AUTH_ENABLED` | `false` | Built-in login + RBAC (else front with SSO/proxy) |
@@ -811,11 +909,14 @@ All settings are environment variables (see `.env.example`).
 SIEM-Lite/                  # repo root (product: LogOcean)
 ├── docker-compose.yml      # Postgres + app
 ├── Dockerfile
-├── schema.sql              # partitioned events table, FTS, indexes, batches
+├── schema.sql              # partitioned events table, FTS, indexes, batches, cim_models + cim_meta
 ├── requirements.txt
 ├── app/
 │   ├── main.py             # FastAPI routes + UI + lifespan
-│   ├── api.py              # HTTP ingest API (POST /api/v1/ingest, API-key auth)
+│   ├── api.py              # HTTP API: POST /api/v1/ingest + POST /api/v1/query (LOQL)
+│   ├── loql/               # LOQL: nodes (AST) → parser → compiler (parameterized SQL) → run
+│   ├── cim/                # CIM data models: spec (contract) + registry (models.yaml) +
+│   │                       #   match (Python membership evaluator) + sql (cim_<tag> views)
 │   ├── config.py
 │   ├── db.py               # pool, partitions, insert, search, stats, purge, api_keys
 │   ├── pipeline.py         # source-agnostic parse → normalize → insert core
@@ -853,7 +954,8 @@ SIEM-Lite/                  # repo root (product: LogOcean)
 ├── playbooks/              # agentless response playbooks
 ├── clients/                # logocean_push.py (push helper) · logocean_import.py (bulk file import)
 ├── scripts/                # coverage_report.py (coverage + Navigator layers) · import_sigma.py (SigmaHQ import)
-├── docs/                   # DETECTION_COVERAGE_ROADMAP.md (living detection-coverage plan)
+├── docs/                   # LOQL.md · CIM.md · SPLUNK_TRANSFORMATION_ROADMAP.md ·
+│                           #   DETECTION_COVERAGE_ROADMAP.md (living detection-coverage plan)
 ├── samples/                # one example file per format (+ samples/sigma/ importer fixtures)
 └── tests/                  # unit (DB-free) + integration (real Postgres) tiers
 ```
@@ -862,7 +964,12 @@ SIEM-Lite/                  # repo root (product: LogOcean)
 
 The suite has two tiers. **Unit tests** are DB-free and run anywhere; **integration
 tests** (marked `integration`) exercise a real PostgreSQL and self-skip when
-`DB_DSN` is unset.
+`DB_DSN` is unset. Currently **885 unit + 67 integration** (952 collected).
+
+Note the asymmetry: an *unset* `DB_DSN` skips, but a DSN that is **set and broken**
+fails the run rather than skipping it, and a session that collects integration tests
+with a DSN configured and then executes none of them also fails. Both guards live in
+`tests/conftest.py` — see [CLAUDE.md](CLAUDE.md#testing) for why.
 
 ```bash
 pip install pytest python-dateutil
@@ -890,7 +997,11 @@ Navigator builder, UEBA entity extraction + risk scoring, kill-chain reconstruct
 the detection workbench, the AI copilot (prompt construction + Sigma extraction
 against a fake client), auth (pbkdf2, role ranking, the RBAC dependency), the audit
 helper, the OT/ICS enrichment + rule pack, and the compliance report — all without a
-database.
+database. It also covers both transformation backbones as pure functions: **LOQL**
+(parser + emitted-SQL snapshots, the "every value is a bound parameter" invariant, and the
+`datamodel` source) and **CIM** (registry loader guards, byte-exact view DDL, evaluator
+equivalence between the compiled and reference membership walks, and a per-source tag
+expectation over every bundled sample — so a regression names the source it broke).
 
 The **integration** tier runs against an actual PostgreSQL 16 and verifies what mocks
 can't: month-partition auto-creation, the GIN full-text index, inet/CIDR search, ON
@@ -914,6 +1025,17 @@ dashboard / report / Navigator / CSV endpoints). CI runs the unit tier on Python
   `AUTO_PURGE=true` only when you want to *stop* keeping data beyond the floor.
 - **Idempotent ingest** — every record has a dedup hash, so re-uploading the same
   file (or overlapping exports) does not create duplicates.
+  > **One-time migration note (Windows Security only).** `windows_security.py` now writes
+  > the resolved Event ID back into the record as `raw["event_id"]`, which is what makes the
+  > CIM Authentication / Endpoint / Change clauses reachable for Windows. The dedup hash is
+  > taken over `raw`, so **every Windows Security event's identity changed**: re-uploading a
+  > previously-ingested Windows Security export will now **insert duplicates** instead of
+  > deduping. Delete the old batch first, or accept them. No other parser's `raw` shape
+  > changed, and dedup works normally from here on.
+- **CIM membership** — each row also carries `cim_models text[]` (GIN-indexed), the tags of
+  the [CIM data models](docs/CIM.md) it belongs to, stamped in Python at ingest. A
+  `cim_meta` row records which registry the views and the stored tags were derived from, so
+  the app can tell you when a membership backfill is due.
 - **Timezone** — events are **stored in UTC** (partitioning, dedup, retention and
   cross-source correlation all depend on it) and **displayed in IST** (UTC+05:30) in
   the UI and CSV exports. The conversion is render-time only — a fixed offset with no
@@ -972,7 +1094,14 @@ correlation/search SQL uses whitelisted columns with fully parameterized values.
 
 ## Roadmap
 
-Detection coverage is grown as a phased programme — see
+A separate, longer-range plan grows LogOcean toward Splunk-class analytics — see
+[docs/SPLUNK_TRANSFORMATION_ROADMAP.md](docs/SPLUNK_TRANSFORMATION_ROADMAP.md). Its two
+Phase-1 backbones have shipped: **LOQL** (piped query language → parameterized SQL) and
+**CIM data models** (`datamodels:` rules, `from datamodel:` searches, 11 models). Still
+open in Phase 1: window verbs (`eventstats`/`streamstats`/`transaction`), `rex`/`spath` +
+macros, a durable ingest queue with ack, and a published EPS / bytes-per-event benchmark.
+
+Detection coverage is grown as its own phased programme — see
 [docs/DETECTION_COVERAGE_ROADMAP.md](docs/DETECTION_COVERAGE_ROADMAP.md) for the
 living plan. Highlights: a measured **ATT&CK (Enterprise + ICS) + ATLAS** coverage
 scoreboard (done), a **community SigmaHQ importer** (done), curated high-fidelity

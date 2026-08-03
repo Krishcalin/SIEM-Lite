@@ -216,9 +216,12 @@ def test_windows_json():
     assert fail.host_name == "FIN-WS-014.corp.local"
     assert fail.rule_name == "Event 4625"
     assert fail.event_time.year == 2026
+    assert fail.raw["event_id"] == 4625     # canonical id written back for CIM membership
+    assert fail.raw["Id"] == 4625           # vendor's own key survives untouched
     ok = evs[1]
     assert ok.action == "logon" and ok.user_name == "CORP\\asmith"
     assert ok.src_ip == "10.20.30.9"
+    assert ok.raw["event_id"] == 4624 and ok.raw["Id"] == 4624
 
 
 def test_windows_csv():
@@ -229,6 +232,32 @@ def test_windows_csv():
     assert e.user_name == "CORP\\jdoe"
     assert e.src_ip is None
     assert e.host_name == "FIN-WS-014.corp.local"
+    assert e.raw["event_id"] == 4688        # CSV text cell normalized to an int
+    assert e.raw["Id"] == "4688"            # vendor's own cell left as exported text
+
+
+def test_windows_event_id_writeback_export_shapes():
+    """Every export spelling of the id lands on the one canonical `raw['event_id']`
+    key (jsonb ->> is byte-exact, so CIM membership has nothing else to match on),
+    and a record with no resolvable id gains no key at all."""
+    json_eventid = '[{"TimeCreated": "2026-06-15T10:00:00Z", "EventID": "04672 "}]'
+    ev = next(windows_security.parse(json_eventid))
+    assert ev.raw["event_id"] == 4672       # padded/spaced value normalized
+    assert ev.raw["EventID"] == "04672 "     # original preserved verbatim
+
+    csv_spaced = 'TimeCreated,Event ID,MachineName\n2026-06-15T10:00:00Z,1102,DC-01\n'
+    ev = next(windows_security.parse(csv_spaced))
+    assert ev.raw["event_id"] == 1102 and ev.raw["Event ID"] == "1102"
+    assert ev.action == "audit-log-cleared"
+
+    mixed = ('[{"TimeCreated": "2026-06-15T10:00:00Z", '
+             '"Id": "{9c1f-record-guid}", "EventID": 4740}]')     # non-numeric Id present
+    ev = next(windows_security.parse(mixed))
+    assert ev.raw["event_id"] == 4740 and ev.action == "account-locked"
+
+    no_id = '[{"TimeCreated": "2026-06-15T10:00:00Z", "ProviderName": "Sec-Auditing"}]'
+    ev = next(windows_security.parse(no_id))
+    assert "event_id" not in ev.raw          # nothing to resolve -> nothing added
 
 
 def test_sysmon():

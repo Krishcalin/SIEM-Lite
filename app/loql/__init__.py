@@ -22,8 +22,11 @@ Design invariants (charter):
     read from the ``raw`` jsonb (``raw ->> key``) with the key bound as a parameter.
 
 Batch 1 command set: search · where · eval · fields · rename · sort · head · dedup ·
-stats · top · rare · bin · timechart. (Window verbs eventstats/streamstats/transaction,
-rex/spath, macros, and CIM ``from datamodel:`` follow in batch 2.)
+stats · top · rare · bin · timechart · datamodel. The last of those is the CIM source
+(``| datamodel Authentication`` / ``from datamodel:Authentication``), which landed with
+Backbone #2 — it projects a model's vendor-agnostic field names over the GIN-indexed
+``cim_models`` membership column (see ``app/cim/`` and ``docs/CIM.md``). (Window verbs
+eventstats/streamstats/transaction, rex/spath, macros, and lookup follow in batch 2.)
 """
 from __future__ import annotations
 

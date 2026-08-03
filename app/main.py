@@ -3,14 +3,16 @@
 """LogOcean FastAPI application: dashboard, upload, search, event detail, admin."""
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import logging
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 from urllib.parse import urlencode, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
@@ -20,14 +22,15 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import (api, auth, collectors, compliance, coverage, custom_parser, db, ingest,
-               killchain_runtime, navigator, notify, ot, saved, sourcehealth, streaming,
-               workbench)
+from . import (api, auth, cim, collectors, compliance, coverage, custom_parser, db,
+               ingest, killchain_runtime, navigator, notify, ot, saved, sourcehealth,
+               streaming, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
 from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
+from .loql import LoqlError, run_query
 from .parsers import FORMAT_LABELS
 from .receivers import syslog
 from .response import engine as response_engine
@@ -79,9 +82,112 @@ def _csv_cell(value) -> str:
     return _csv_safe(value)
 
 
+# --------------------------------------------------------------------------- #
+#  CIM data models: startup state + the background membership backfill        #
+# --------------------------------------------------------------------------- #
+# What the last startup made of the registry, so /datamodels and /health can report
+# whether the model views are actually in the database instead of assuming they are.
+# `registry_version` is set by `_require_cim_registry` and therefore populated even when
+# CIM_ENABLED=false or the view DDL failed; `failed` lists the models whose view could
+# not be rebuilt (see `db.init_cim`, which is resilient per model rather than all-or-
+# nothing).
+_cim_init: dict[str, Any] = {"applied": False, "views": [], "dropped": [], "failed": [],
+                             "registry_version": None, "error": None}
+
+# `db.backfill_cim` re-derives `events.cim_models` for rows already stored — the step
+# that corrects HISTORY after a membership edit in models.yaml. It walks every
+# partition in committed chunks, so on a three-year store it is minutes, not
+# milliseconds. The admin route therefore STARTS it and returns, the way the
+# schedulers work (an asyncio.Task doing its blocking work in a threadpool); this
+# record is the progress view the admin page renders.
+# `progress` is the running counters of the CURRENT pass, republished by `db.backfill_cim`
+# after every committed chunk; `result` is only populated once the run returns. Both are
+# needed: while the state is "running" the result is None by construction, so anything
+# that wants the resume cursor mid-run (the shutdown handler) has to read `progress`.
+_cim_backfill: dict[str, Any] = {"state": "idle", "started_at": None,
+                                 "finished_at": None, "by": None, "result": None,
+                                 "progress": None, "error": None}
+# A strong reference to the in-flight task: asyncio only holds a weak one, so a
+# fire-and-forget task can be garbage-collected mid-run without it.
+_cim_backfill_task: Optional[asyncio.Task] = None
+
+
+def _require_cim_registry() -> None:
+    """Parse + validate app/cim/models.yaml, and REFUSE TO BOOT if it will not load.
+
+    Fatal, unconditionally, and it runs before anything else in the lifespan — before
+    the database is even touched. Three reasons, in order of how much they cost:
+
+    * The registry is not optional. `events.cim_models` is stamped per row in Python at
+      ingest whatever CIM_ENABLED says (that flag gates the `cim_<tag>` VIEWS only), so
+      an unparseable models.yaml is a defect in the WRITE path, not in a reporting view.
+    * models.yaml ships with the repo. A registry that does not parse is a deploy error,
+      not an operating condition, and the YAML author's own error message at boot is the
+      most useful thing this process can produce with it.
+    * Every alternative is worse than refusing. Before this call existed the load was
+      lazy and nothing triggered it at startup, so the app booted green and failed later:
+      on the upload path as "Ingest failed", and on the LIVE path as total silent data
+      loss — `streaming._flush` catches the exception, counts a flush error and DISCARDS
+      the buffered batch, dropping every syslog and API event while /health said "ok".
+      `db._cim_tags` now degrades that path so it can never happen again; this makes sure
+      it does not have to.
+    """
+    try:
+        reg = db.validate_cim_registry()
+    except Exception as exc:  # noqa: BLE001 — re-raised; the log line is for the operator
+        log.critical(
+            "app/cim/models.yaml did not load, so LogOcean is refusing to start: %s. "
+            "The CIM registry decides what every ingested event is tagged with, so "
+            "booting without it would either drop events or store them untagged. Fix "
+            "the YAML (or roll back to the previous revision) and start again", exc)
+        raise
+    _cim_init["registry_version"] = reg.version
+
+
+def _init_cim() -> None:
+    """Rebuild the per-model ``cim_<tag>`` views from the registry — log-and-continue.
+
+    Deliberately NOT fatal, and the asymmetry with `_require_cim_registry` above is the
+    point. These views are read-side only: `events.cim_models` is stamped in Python at
+    ingest (`db._row`) and both detection and LOQL gate on that column, so a failed
+    CREATE VIEW costs the `cim_<tag>` views and degrades nothing that stores or
+    classifies an event. Refusing to boot a SIEM over a broken reporting view would
+    trade a cosmetic outage for a real one — so this gets the same treatment as the
+    notify/response/collector subsystems: complain loudly, keep serving.
+
+    Two failure shapes are recorded rather than one. `db.init_cim` applies each model in
+    its own transaction and returns the ones that failed, so `error` here summarises
+    *those* (a dependent object, a bad `fields:` expression) while the views that did
+    rebuild are still reported in `views`; an exception out of `init_cim` itself is the
+    systemic case (no database, no `events` table) and sets `error` alone.
+
+    The registry itself is already known to parse by the time this runs — that is
+    `_require_cim_registry`'s job, and it is a boot failure, not a degradation.
+    """
+    if not settings.cim_enabled:
+        log.info("CIM_ENABLED=false — skipping the CIM model views (events.cim_models "
+                 "is still stamped at ingest, so detections and LOQL are unaffected)")
+        return
+    try:
+        res = db.init_cim()
+    except Exception as exc:  # noqa: BLE001 — read-side only; see the docstring
+        _cim_init["error"] = str(exc)
+        log.exception("CIM view DDL failed — `SELECT * FROM cim_<tag>` and /datamodels "
+                      "are degraded until the cause is fixed and the app restarts; "
+                      "ingest and detection are unaffected")
+        return
+    failed = res["failed"]
+    _cim_init.update(applied=True, views=res["views"], dropped=res["dropped"],
+                     failed=failed, registry_version=res["registry_version"],
+                     error=None if not failed else "; ".join(
+                         f"{f['view']}: {f['error']}" for f in failed))
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    _require_cim_registry()                    # FIRST: a bad models.yaml never serves
     db.init_schema()
+    _init_cim()                                # CIM model views (needs events.cim_models)
     if settings.auth_enabled and db.count_users() == 0:
         pw = settings.admin_password or secrets.token_urlsafe(12)
         db.create_user(settings.admin_user, auth.hash_password(pw), "admin")
@@ -180,6 +286,22 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        if _cim_backfill["state"] == "running":
+            # Nothing to stop cleanly: the work is in a threadpool and dies with the
+            # process. It commits per chunk, so say where to pick it up rather than
+            # letting the next operator wonder whether history is half-corrected.
+            #
+            # Read `progress`, NOT `result`. This branch fires only while the state is
+            # "running", and `result` is set to None when a run starts and filled in only
+            # after `backfill_cim` returns — so the old `result.last_id` was None here by
+            # construction and this line printed `start_id=0` every single time, telling
+            # the operator to redo the entire table. `progress` is republished by the job
+            # after every committed chunk.
+            done = _cim_backfill.get("progress") or {}
+            log.warning("shutting down during a CIM membership backfill — it is "
+                        "chunk-committed; %s rows were corrected, resume with "
+                        "db.backfill_cim(start_id=%s)",
+                        done.get("updated", 0), done.get("last_id", 0))
         if source_health_sched is not None:
             await source_health_sched.stop()
             sourcehealth.set_scheduler(None)
@@ -218,6 +340,7 @@ templates.env.globals["tz_label"] = DISPLAY_TZ_LABEL
 templates.env.globals["retention_years"] = settings.retention_years
 templates.env.globals["auth_enabled"] = settings.auth_enabled
 templates.env.globals["copilot_enabled"] = settings.copilot_enabled
+templates.env.globals["cim_backfill_chunk"] = settings.cim_backfill_chunk
 
 # Paths reachable without a session (login, static assets, health, and the
 # API which authenticates with its own keys).
@@ -301,7 +424,7 @@ def _audit(request: Request, action: str, detail: Optional[str] = None,
 # --------------------------------------------------------------------------- #
 @app.get("/login", response_class=HTMLResponse)
 def login_form(request: Request):
-    return templates.TemplateResponse("login.html", _ctx(request, error=None))
+    return templates.TemplateResponse(request, "login.html", _ctx(request, error=None))
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -310,7 +433,7 @@ async def login(request: Request, username: str = Form(...), password: str = For
     if not (user and user["enabled"] and auth.verify_password(password, user["password_hash"])):
         await run_in_threadpool(_audit, request, "login.failed", None, username)
         return templates.TemplateResponse(
-            "login.html", _ctx(request, error="Invalid username or password."),
+            request, "login.html", _ctx(request, error="Invalid username or password."),
             status_code=401)
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(hours=settings.session_ttl_hours)
@@ -335,15 +458,88 @@ def logout(request: Request):
     return resp
 
 
+def _ingest_degraded(q) -> list[str]:
+    """Reasons the live-ingest path is not healthy — events that never reached the store.
+
+    Two different losses, reported separately because they have different fixes:
+
+    * `events_lost` — buffered events DISCARDED because their flush failed
+      (`streaming.IngestQueue._flush`). Usually the database was unreachable. These are
+      gone: syslog has no upstream to replay from. This is the reason /health has to say
+      so, because nothing else in the system will.
+    * `dropped` — items refused at the door because the queue was full, i.e. sustained
+      arrival faster than the writer drains. The fix is capacity, not recovery.
+
+    Listed BEFORE the CIM reasons in /health: an event that was never stored outranks one
+    stored without its model tags, which is recoverable with a backfill.
+    """
+    if q is None:
+        return []
+    s, out = q.stats, []
+    if s.events_lost:
+        out.append(f"ingest: {s.events_lost} event(s) were discarded by {s.flush_errors} "
+                   "failed flush(es) and cannot be recovered — check the database and "
+                   "the log for 'ingest flush failed'")
+    if s.dropped:
+        out.append(f"ingest: {s.dropped} item(s) rejected because the queue was full — "
+                   "the writer is not keeping up with arrivals")
+    return out
+
+
+def _cim_health() -> tuple[dict[str, Any], list[str]]:
+    """The CIM block of /health, plus the reasons (if any) it is not healthy.
+
+    `untagged_events` is the one to watch: it counts events STORED without their model
+    tags because the registry could not be evaluated at insert time (`db._cim_tags`).
+    They are in the table and `db.backfill_cim` can re-derive them — nothing is dropped —
+    but every data model under-reports until that runs, so it is a degradation and is
+    reported as one. `views_failed` is read-side only: those models keep their previous
+    view definition while the rest refreshed.
+    """
+    write = db.cim_write_state()
+    block = {"enabled": settings.cim_enabled,
+             "registry_version": _cim_init["registry_version"],
+             "applied": _cim_init["applied"],
+             "views": len(_cim_init["views"]),
+             "views_failed": len(_cim_init["failed"]),
+             "error": _cim_init["error"],
+             "backfill": _cim_backfill["state"],
+             "untagged_events": write["failures"],
+             "write_error": write["error"]}
+    reasons = []
+    if write["failures"]:
+        reasons.append(f"cim: {write['failures']} event(s) stored without model tags "
+                       f"({write['error']}) — fix app/cim/models.yaml, then run the "
+                       "membership backfill from /admin")
+    if _cim_init["failed"]:
+        reasons.append("cim: " + ", ".join(f["view"] for f in _cim_init["failed"]) +
+                       " could not be rebuilt at startup; see /datamodels")
+    elif settings.cim_enabled and _cim_init["error"]:
+        reasons.append(f"cim: the model views were not applied ({_cim_init['error']})")
+    return block, reasons
+
+
 @app.get("/health")
 def health():
+    """Liveness plus a per-subsystem snapshot.
+
+    `status` is "ok" only when nothing is degraded, and `degraded` names what is. It was
+    previously the constant string "ok" whatever had failed, which is how a broken
+    app/cim/models.yaml could sit there dropping every live-ingested event while this
+    endpoint reported a healthy service. The HTTP status stays 200 either way: the
+    process IS alive and answering, and a load balancer pulling it out of rotation for a
+    reporting-view defect would turn a partial outage into a total one.
+    """
     q = streaming.get_queue()
     d = notify.get_dispatcher()
     r = response_engine.get_engine()
     rv = response_revert.get_scheduler()
     cs = collectors.get_scheduler()
     sh = sourcehealth.get_scheduler()
-    return {"status": "ok",
+    cim_block, degraded = _cim_health()
+    degraded = _ingest_degraded(q) + degraded
+    return {"status": "degraded" if degraded else "ok",
+            "degraded": degraded or None,
             "ingest_queue": q.stats.as_dict() if q else None,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
@@ -351,6 +547,7 @@ def health():
             "collectors": len(cs.collectors) if cs else None,
             "source_health": sh.stats() if sh else None,
             "threatintel_indicators": len(ti_runtime.get_index()),
+            "cim": cim_block,
             "copilot": {"enabled": settings.copilot_enabled,
                         "configured": copilot.is_configured(),
                         "model": settings.copilot_model} if settings.copilot_enabled else None}
@@ -377,7 +574,7 @@ def dashboard(request: Request):
     a = _alert_analytics(30)
     risk_users = db.top_risk_entities("user", 30, settings.risk_half_life_days, 5) \
         if settings.ueba_enabled else []
-    return templates.TemplateResponse("dashboard.html", _ctx(
+    return templates.TemplateResponse(request, "dashboard.html", _ctx(
         request, stats=db.stats(), top_event_sources=db.top_event_sources(7),
         ueba_enabled=settings.ueba_enabled, risk_users=risk_users,
         anomalies=db.anomaly_counts(24) if settings.ueba_enabled else {}, **a))
@@ -397,7 +594,7 @@ def _report_days(request: Request) -> int:
 def reports(request: Request):
     days = _report_days(request)
     a = _alert_analytics(days)
-    return templates.TemplateResponse("report.html", _ctx(
+    return templates.TemplateResponse(request, "report.html", _ctx(
         request, stats=db.stats(), top_event_sources=db.top_event_sources(min(days, 30)),
         generated=datetime.now(timezone.utc), **a))
 
@@ -423,7 +620,7 @@ def _coverage_rules():
 @app.get("/coverage", response_class=HTMLResponse)
 def coverage_page(request: Request):
     det, corr = _coverage_rules()
-    return templates.TemplateResponse("coverage.html", _ctx(
+    return templates.TemplateResponse(request, "coverage.html", _ctx(
         request, report=coverage.coverage_report(det, corr)))
 
 
@@ -470,7 +667,7 @@ def alerts_csv(request: Request):
 @app.get("/risk", response_class=HTMLResponse)
 def risk_page(request: Request):
     days, hl = settings.risk_window_days, settings.risk_half_life_days
-    return templates.TemplateResponse("risk.html", _ctx(
+    return templates.TemplateResponse(request, "risk.html", _ctx(
         request, enabled=settings.ueba_enabled, days=days,
         users=db.top_risk_entities("user", days, hl),
         hosts=db.top_risk_entities("host", days, hl),
@@ -491,7 +688,7 @@ def sources_page(request: Request):
                 "last_seen": s.last_seen, "event_count": s.event_count,
                 "age": sourcehealth.human_age(s.age_seconds), "status": s.status}
                for s in assessed]
-    return templates.TemplateResponse("sources.html", _ctx(
+    return templates.TemplateResponse(request, "sources.html", _ctx(
         request, enabled=settings.source_health_enabled, sources=sources,
         silent=sum(1 for s in sources if s["status"] == "silent"),
         silence_minutes=settings.source_health_silence_minutes,
@@ -506,7 +703,7 @@ def sources_page(request: Request):
 def ot_view(request: Request):
     days = _report_days(request)
     activity = db.ot_activity_summary(days)
-    return templates.TemplateResponse("ot.html", _ctx(
+    return templates.TemplateResponse(request, "ot.html", _ctx(
         request, days=days, protocols=ot.OT_PROTOCOLS,
         assets=db.ot_assets(days),
         conversations=ot.annotate_conversations(db.ot_conversations(days)),
@@ -517,7 +714,7 @@ def ot_view(request: Request):
 def entity_detail(request: Request, etype: str, value: str):
     if etype not in ("user", "host", "ip"):
         return HTMLResponse("Unknown entity type", status_code=404)
-    return templates.TemplateResponse("entity.html", _ctx(
+    return templates.TemplateResponse(request, "entity.html", _ctx(
         request, etype=etype, value=value, entity=db.get_entity(etype, value),
         associations=db.entity_associations(etype, value),
         alerts=db.entity_alerts(etype, value), activity=db.entity_activity(etype, value)))
@@ -537,7 +734,7 @@ def killchain_page(request: Request):
     if settings.killchain_enabled:
         stories = killchain_runtime.reconstruct_recent(hours=hours)
     existing = db.open_kc_signatures()
-    return templates.TemplateResponse("killchain.html", _ctx(
+    return templates.TemplateResponse(request, "killchain.html", _ctx(
         request, enabled=settings.killchain_enabled, stories=stories, hours=hours,
         window=settings.killchain_window_hours, autocreate=settings.killchain_autocreate,
         existing_signatures=existing))
@@ -558,6 +755,147 @@ def killchain_create_case(request: Request, signature: str = Form(...),
            f"case {cid} from story ({story['tactic_count']} tactics, "
            f"{story['alert_count']} alerts)")
     return RedirectResponse(url=f"/case/{cid}", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  CIM data models (reference)                                                #
+# --------------------------------------------------------------------------- #
+# models.yaml states a deliberately-unpopulated model in prose, with this exact marker
+# (Email and Vulnerability today). It is the only machine-readable hook the registry
+# offers — `CimModel` has no `status:` field — and without it a reader would see a zero
+# count next to eleven working models and conclude the detections were broken.
+_CIM_AWAITING = "EMPTY BY DESIGN"
+
+
+# The floor a single count query is still worth issuing at. Below this the remaining
+# budget cannot produce an answer, so the model reports "—" instead of burning a round
+# trip on a statement the server will cancel before it plans.
+_CIM_COUNT_MIN_MS = 250
+
+
+def _cim_source_text(source: cim.CimSource) -> str:
+    """A CIM value source as an analyst reads it: `describe()` minus the `column:`
+    prefix, which is noise on the normalized columns and only earns its keep on the
+    `raw:` lookups it exists to distinguish."""
+    text = source.describe()
+    return text[len("column:"):] if source.kind == "column" else text
+
+
+def _cim_model_view(model: cim.CimModel, count: Optional[int] = None) -> dict:
+    """Flatten one CimModel for the template — membership rendered as an OR of clauses,
+    each an AND of `<source> in (values)` terms, which is exactly how `match.tags_for`
+    and the `cim_<tag>` view both evaluate it."""
+    summary, awaiting = model.description, ""
+    if _CIM_AWAITING in model.description.upper():
+        head, _, tail = model.description.partition(_CIM_AWAITING)
+        awaiting = tail.lstrip(":").strip()
+        # The remainder is mid-sentence in the YAML; the page starts a sentence with it.
+        summary, awaiting = head.strip(), awaiting[:1].upper() + awaiting[1:]
+    return {
+        "name": model.name, "tag": model.tag, "version": model.version,
+        "description": summary, "awaiting": awaiting, "view": cim.view_name(model),
+        "clauses": [[f"{_cim_source_text(t.source)} in ({', '.join(t.values)})"
+                     for t in c.terms] for c in model.clauses],
+        "fields": [{"name": f.name, "source": _cim_source_text(f.source),
+                    "description": f.description} for f in model.fields],
+        "count": count,
+    }
+
+
+def _cim_member_counts(reg: cim.CimRegistry, days: int) -> dict[str, Optional[int]]:
+    """Live member count per model, or None for one that did not finish in budget.
+
+    Counting is one aggregate per model over the indexed `cim_models @> ARRAY[tag]`
+    predicate — cheap on a young store, a bitmap heap scan of most of the table on a
+    three-year one. So it is never done on a plain page load: the page asks for it
+    (`?counts=1`) and CIM_COUNT_DAYS bounds the window, which also lets the planner
+    prune whole partitions.
+
+    CIM_COUNT_TIMEOUT_MS is the budget for the WHOLE sweep, not per model: each query
+    is given whatever is LEFT of it and models are counted in registry order until it
+    runs out, so eleven data models on a starved database cost one budget instead of
+    eleven timeouts stacked into a minute-long page load. Whatever the sweep did not
+    reach reports None, rendered as an em dash — which is the honest signal that the
+    store is too slow to count right now, not that the model is empty. (An even slice
+    per model was the obvious alternative and is worse: with a tight budget every slice
+    falls under the floor except the last, so only the final model would ever be
+    counted, purely because of its position in the file.)
+
+    The counts run through LOQL on purpose: `from datamodel:<tag> | stats count` is the
+    very query this page teaches, so the number an analyst reads and the query they are
+    being shown cannot drift apart.
+    """
+    counts: dict[str, Optional[int]] = {}
+    deadline = time.monotonic() + settings.cim_count_timeout_ms / 1000
+    for tag in reg.tags:
+        budget = int(max(deadline - time.monotonic(), 0.0) * 1000)
+        if budget < _CIM_COUNT_MIN_MS:
+            counts[tag] = None
+            continue
+        try:
+            res = run_query(f'from datamodel:{tag} _time >= "-{int(days)}d" | stats count',
+                            limit=1, max_rows=1, timeout_ms=budget)
+            counts[tag] = int(res["rows"][0]["count"]) if res["rows"] else 0
+        except LoqlError as exc:      # a timeout, or the store is unreachable
+            counts[tag] = None
+            log.warning("CIM member count for %r did not complete: %s", tag, exc)
+    return counts
+
+
+def _cim_stamp() -> dict:
+    """`db.cim_status()` that degrades instead of raising. The CIM tables are the
+    newest thing in schema.sql, so a database that predates them must still be able to
+    render this page and /admin — those are where an operator goes to find out why."""
+    try:
+        return db.cim_status()
+    except Exception as exc:  # noqa: BLE001 — the stamp is diagnostics, not a feature
+        log.warning("could not read the CIM registry stamp: %s", exc)
+        return {"error": str(exc), "backfill_due": False, "current_tags": []}
+
+
+def _cim_registry_or_error() -> tuple[Optional[cim.CimRegistry], Optional[str]]:
+    """``(registry, None)``, or ``(None, message)`` when models.yaml will not load.
+
+    The same treatment `_cim_stamp` gives the database, for the same reason: /datamodels
+    and /admin are where an operator goes to find out what broke, so every fragile read
+    behind them has to degrade into an explanation rather than a 500. This one was the
+    exception — an unguarded `cim.get_registry()` on the first line of the page — so the
+    page survived a database outage and died on precisely the registry defect it exists
+    to explain, while its own docstring claimed it renders "from the registry alone".
+
+    A running process should not normally reach the error branch at all: startup refuses
+    to boot on a registry this cannot load. It is reachable after a live edit plus
+    `cim.reload()`, and it is exactly then that someone needs the page.
+    """
+    try:
+        return cim.get_registry(), None
+    except Exception as exc:  # noqa: BLE001 — rendered, not raised; see the docstring
+        log.exception("the CIM registry could not be loaded while rendering /datamodels")
+        return None, f"app/cim/models.yaml could not be loaded: {exc}"
+
+
+@app.get("/datamodels", response_class=HTMLResponse)
+def datamodels_page(request: Request, _user=Depends(require_role("viewer"))):
+    """The CIM registry as a reference page: every model with its membership rule, its
+    fields, and how to query it. Renders from the registry alone, so it still explains
+    the schema when the database is unreachable — and renders the reason, rather than a
+    500, when it is the registry itself that is unreadable."""
+    reg, reg_error = _cim_registry_or_error()
+    days = settings.cim_count_days
+    counting = reg is not None and request.query_params.get("counts") == "1" and days > 0
+    counts = _cim_member_counts(reg, days) if counting else {}
+    # `registry_error` and `init.error` are two different failures and the template now
+    # renders them as two — an unloadable registry (nothing is tagged) ahead of, and
+    # separately from, a view that would not rebuild (a reporting gap). They were briefly
+    # merged into one slot only because the template rendered `init.error` and nothing
+    # else; merging them also hid the registry error entirely under CIM_ENABLED=false,
+    # where the "views are disabled" banner matched first.
+    return templates.TemplateResponse(request, "datamodels.html", _ctx(
+        request,
+        models=[_cim_model_view(m, counts.get(m.tag)) for m in reg.models] if reg else [],
+        registry_version=reg.version if reg else None,
+        enabled=settings.cim_enabled, init=_cim_init, registry_error=reg_error,
+        status=_cim_stamp(), counting=counting, count_days=days))
 
 
 # --------------------------------------------------------------------------- #
@@ -588,7 +926,7 @@ def _workbench_page(request: Request, *, result=None, rule_yaml=_WORKBENCH_SAMPL
                     event_json=_WORKBENCH_SAMPLE_EVENT, **extra):
     days = settings.workbench_window_days
     rules = db.rule_stats(days)
-    return templates.TemplateResponse("workbench.html", _ctx(
+    return templates.TemplateResponse(request, "workbench.html", _ctx(
         request, days=days, coverage=workbench.coverage_map(rules),
         health=workbench.rule_health(rules, settings.workbench_noisy_threshold),
         rules=rules, result=result, rule_yaml=rule_yaml, event_json=event_json, **extra))
@@ -637,7 +975,8 @@ def workbench_generate(request: Request, description: str = Form(""),
 # --------------------------------------------------------------------------- #
 @app.get("/upload", response_class=HTMLResponse)
 def upload_form(request: Request):
-    return templates.TemplateResponse("upload.html", _ctx(request, result=None, error=None))
+    return templates.TemplateResponse(
+        request, "upload.html", _ctx(request, result=None, error=None))
 
 
 @app.post("/upload", response_class=HTMLResponse)
@@ -646,13 +985,13 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
     cap = settings.max_upload_mb * 1024 * 1024
     raw = await _read_capped(file, cap)
     if raw is None:
-        return templates.TemplateResponse("upload.html", _ctx(
+        return templates.TemplateResponse(request, "upload.html", _ctx(
             request, result=None,
             error=f"File exceeds the {settings.max_upload_mb} MB limit."))
     # Transparently gunzip a .gz upload (by magic bytes) under the same size budget.
     raw = await run_in_threadpool(gunzip_capped, raw, cap)
     if raw is None:
-        return templates.TemplateResponse("upload.html", _ctx(
+        return templates.TemplateResponse(request, "upload.html", _ctx(
             request, result=None,
             error=f"The gzip file is corrupt or expands past the {settings.max_upload_mb} MB limit."))
 
@@ -663,7 +1002,7 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
     if fmt == "auto":
         chosen = detect_format(hint, content)
         if chosen is None:
-            return templates.TemplateResponse("upload.html", _ctx(
+            return templates.TemplateResponse(request, "upload.html", _ctx(
                 request, result=None,
                 error="Could not auto-detect the format. Please pick one explicitly."))
 
@@ -674,13 +1013,14 @@ async def upload(request: Request, file: UploadFile = File(...), fmt: str = Form
             ingest.ingest, content, chosen, filename=file.filename, source_addr=src)
     except Exception:  # noqa: BLE001
         log.exception("ingest failed for %r (format=%s)", file.filename, chosen)
-        return templates.TemplateResponse("upload.html", _ctx(
+        return templates.TemplateResponse(request, "upload.html", _ctx(
             request, result=None,
             error="Ingest failed. The file could not be processed — see server logs for details."))
     await run_in_threadpool(
         _audit, request, "upload",
         f"{file.filename}: {result['inserted']} stored ({chosen})")
-    return templates.TemplateResponse("upload.html", _ctx(request, result=result, error=None))
+    return templates.TemplateResponse(
+        request, "upload.html", _ctx(request, result=result, error=None))
 
 
 # --------------------------------------------------------------------------- #
@@ -717,7 +1057,7 @@ def search(request: Request):
     pages = max((total + limit - 1) // limit, 1)
     base_qs = urlencode([(k, v) for k, v in request.query_params.multi_items()
                          if k != "page" and v])
-    return templates.TemplateResponse("search.html", _ctx(
+    return templates.TemplateResponse(request, "search.html", _ctx(
         request, rows=rows, total=total, page=page, pages=pages,
         params=request.query_params, base_qs=base_qs,
         saved=db.list_saved_searches(_owner(request), "/search"),
@@ -767,7 +1107,7 @@ def event_detail(request: Request, event_id: int):
     ev = db.get_event(event_id)
     if ev is None:
         return HTMLResponse("Event not found", status_code=404)
-    return templates.TemplateResponse("event.html", _ctx(request, ev=ev))
+    return templates.TemplateResponse(request, "event.html", _ctx(request, ev=ev))
 
 
 # --------------------------------------------------------------------------- #
@@ -792,7 +1132,7 @@ def alerts(request: Request):
     pages = max((total + limit - 1) // limit, 1)
     base_qs = urlencode([(k, v) for k, v in request.query_params.multi_items()
                          if k != "page" and v])
-    return templates.TemplateResponse("alerts.html", _ctx(
+    return templates.TemplateResponse(request, "alerts.html", _ctx(
         request, rows=rows, total=total, page=page, pages=pages,
         params=request.query_params, base_qs=base_qs,
         saved=db.list_saved_searches(_owner(request), "/alerts"),
@@ -805,7 +1145,7 @@ def _alert_page(request: Request, alert_id: int, **extra):
     if a is None:
         return None
     event_id = db.event_id_for(a["dedup_hash"], a["event_time"])
-    return templates.TemplateResponse("alert.html", _ctx(
+    return templates.TemplateResponse(request, "alert.html", _ctx(
         request, a=a, event_id=event_id, responses=db.responses_for_alert(alert_id),
         notes=db.alert_notes(alert_id),
         users=db.list_users() if settings.auth_enabled else [],
@@ -921,7 +1261,7 @@ def cases(request: Request):
     rows, total = db.list_cases(f, limit=limit, offset=(page - 1) * limit)
     pages = max((total + limit - 1) // limit, 1)
     base_qs = urlencode([(k, v) for k, v in q.multi_items() if k != "page" and v])
-    return templates.TemplateResponse("cases.html", _ctx(
+    return templates.TemplateResponse(request, "cases.html", _ctx(
         request, rows=rows, total=total, page=page, pages=pages, params=q,
         base_qs=base_qs, counts=db.case_status_counts()))
 
@@ -930,7 +1270,7 @@ def _case_page(request: Request, case_id: int, **extra):
     c = db.get_case(case_id)
     if c is None:
         return None
-    return templates.TemplateResponse("case.html", _ctx(
+    return templates.TemplateResponse(request, "case.html", _ctx(
         request, c=c, alerts=db.case_alerts(case_id), notes=db.case_notes(case_id),
         related=db.related_open_alerts(case_id),
         users=db.list_users() if settings.auth_enabled else [], **extra))
@@ -1013,7 +1353,7 @@ def case_remove_alert(request: Request, case_id: int, alert_id: int = Form(...),
 
 @app.get("/responses", response_class=HTMLResponse)
 def responses(request: Request):
-    return templates.TemplateResponse("responses.html", _ctx(
+    return templates.TemplateResponse(request, "responses.html", _ctx(
         request, rows=db.recent_responses(200)))
 
 
@@ -1024,7 +1364,7 @@ def compliance_view(request: Request):
         if r["enabled"]:
             enabled_techniques.update(t.upper() for t in (r["techniques"] or []))
     report = compliance.build_report(enabled_techniques, db.alert_technique_counts(30))
-    return templates.TemplateResponse("compliance.html", _ctx(
+    return templates.TemplateResponse(request, "compliance.html", _ctx(
         request, report=report, frameworks=compliance.FRAMEWORKS))
 
 
@@ -1033,7 +1373,7 @@ def compliance_view(request: Request):
 # --------------------------------------------------------------------------- #
 def _render_admin(request: Request, *, purged=None, new_key=None, user_error=None,
                   ti_error=None):
-    return templates.TemplateResponse("admin.html", _ctx(
+    return templates.TemplateResponse(request, "admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
         collectors=db.list_collectors(),
@@ -1042,6 +1382,7 @@ def _render_admin(request: Request, *, purged=None, new_key=None, user_error=Non
         ti_enabled=settings.threatintel_enabled, ti_counts=db.ioc_counts(),
         ti_indicators=db.list_iocs(25), ti_index_size=len(ti_runtime.get_index()),
         ti_types=ti_matcher.VALID_TYPES, suppressions=db.list_suppressions(),
+        cim_status=_cim_stamp(), cim_init=_cim_init, cim_backfill=_cim_backfill,
         purged=purged, new_key=new_key, user_error=user_error, ti_error=ti_error))
 
 
@@ -1096,6 +1437,72 @@ def admin_toggle_collector(request: Request, name: str, enabled: str = Form(...)
     on = enabled == "true"
     db.set_collector_enabled(name, on)
     _audit(request, "collector.toggle", f"{name} -> {'enabled' if on else 'disabled'}")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  CIM membership backfill (admin)                                            #
+# --------------------------------------------------------------------------- #
+async def _cim_backfill_job(actor: Optional[str], ip: Optional[str]) -> None:
+    """Run one backfill off the event loop and record how it went.
+
+    The completion entry goes to `db.add_audit` directly rather than through `_audit`:
+    by the time it lands, the request that started it is long gone, so the actor and
+    client address are the ones captured at the POST. Both halves are recorded because
+    the interesting fact — how many rows changed tags — is only known at the end.
+    """
+    def _publish(snapshot: dict) -> None:
+        """Republish the running counters after every committed chunk.
+
+        Called from the threadpool worker, which is safe here: it is a single dict
+        assignment, and everything that reads it (the /admin page, the shutdown handler)
+        wants the latest snapshot rather than a consistent series. Without it `last_id`
+        — the resume cursor for an interrupted run — is invisible until the run is over,
+        which is the one moment nobody needs it.
+        """
+        _cim_backfill["progress"] = snapshot
+
+    try:
+        res = await run_in_threadpool(db.backfill_cim,
+                                      chunk=settings.cim_backfill_chunk,
+                                      progress=_publish)
+        _cim_backfill.update(state="done", result=res, error=None,
+                             finished_at=datetime.now(timezone.utc))
+        detail = (f"scanned {res['scanned']}, retagged {res['updated']}, "
+                  f"unchanged {res['unchanged']} in {res['seconds']}s")
+    except Exception as exc:  # noqa: BLE001 — a background job must not die silently
+        log.exception("CIM membership backfill failed")
+        # `progress` is left as it stands on purpose: the run committed every chunk it
+        # completed, so its last snapshot is the resume cursor for whoever retries.
+        _cim_backfill.update(state="error", error=str(exc), result=None,
+                             finished_at=datetime.now(timezone.utc))
+        detail = f"failed: {exc}"[:300]
+    await run_in_threadpool(db.add_audit, actor, "cim.backfill.finished", detail, ip)
+
+
+@app.post("/admin/cim/backfill")
+async def admin_cim_backfill(request: Request, _user=Depends(require_role("admin"))):
+    """Start the membership backfill in the background and redirect straight back.
+
+    It is UPDATE traffic across every partition of `events`, so holding the request
+    open for it would tie up a worker for minutes and hand the operator a gateway
+    timeout instead of an answer. One run at a time: a second click while one is in
+    flight is refused (and audited) rather than doubling the write load.
+    """
+    global _cim_backfill_task
+    if _cim_backfill["state"] == "running":
+        await run_in_threadpool(_audit, request, "cim.backfill.denied",
+                                "a backfill is already running")
+        return RedirectResponse(url="/admin", status_code=303)
+    user = getattr(request.state, "user", None)
+    actor = user["username"] if user else None
+    _cim_backfill.update(state="running", by=actor, result=None, progress=None,
+                         error=None, started_at=datetime.now(timezone.utc),
+                         finished_at=None)
+    await run_in_threadpool(_audit, request, "cim.backfill",
+                            f"started (chunk {settings.cim_backfill_chunk})")
+    _cim_backfill_task = asyncio.create_task(
+        _cim_backfill_job(actor, request.client.host if request.client else None))
     return RedirectResponse(url="/admin", status_code=303)
 
 
@@ -1258,7 +1665,7 @@ def parsers_page(request: Request, _user=Depends(require_role("admin"))):
     rows = db.list_custom_parsers()
     for r in rows:
         r["field_map_text"] = _field_map_text(r.get("field_map"))
-    return templates.TemplateResponse("parsers.html", _ctx(
+    return templates.TemplateResponse(request, "parsers.html", _ctx(
         request, parsers=rows, columns=sorted(custom_parser._ALLOWED)))
 
 
@@ -1315,7 +1722,7 @@ def parsers_test(request: Request, sample: str = Form(...),
     rows = db.list_custom_parsers()
     for r in rows:
         r["field_map_text"] = _field_map_text(r.get("field_map"))
-    return templates.TemplateResponse("parsers.html", _ctx(
+    return templates.TemplateResponse(request, "parsers.html", _ctx(
         request, parsers=rows, columns=sorted(custom_parser._ALLOWED),
         test=result, draft=defn, sample=sample,
         draft_map_text=_field_map_text(defn.get("field_map"))))
@@ -1327,7 +1734,7 @@ def parsers_test(request: Request, sample: str = Form(...),
 
 @app.get("/rules", response_class=HTMLResponse)
 def rules_page(request: Request, _user=Depends(require_role("admin"))):
-    return templates.TemplateResponse("rules.html", _ctx(
+    return templates.TemplateResponse(request, "rules.html", _ctx(
         request, rules=db.list_custom_rules()))
 
 
@@ -1344,7 +1751,7 @@ def rules_save(request: Request, rule_id: str = Form(...), title: str = Form(...
     except Exception as exc:  # noqa: BLE001
         err = f"YAML error: {exc}"
     if err:
-        return templates.TemplateResponse("rules.html", _ctx(
+        return templates.TemplateResponse(request, "rules.html", _ctx(
             request, rules=db.list_custom_rules(), error=err,
             draft={"rule_id": rule_id, "title": title, "yaml_text": yaml_text}))
     db.upsert_custom_rule(rule_id.strip(), title.strip(), yaml_text,
@@ -1392,7 +1799,13 @@ def rules_test(request: Request, yaml_text: str = Form(...),
                 user_name=r.get("user_name"), host_name=r.get("host_name"),
                 rule_name=r.get("rule_name"), message=r.get("message"),
                 raw=r.get("raw") or {})
-            if match_rule(rule, flatten_event(evt)):
+            # Pass `evt` as well as the flat view: CIM membership reads jsonb keys
+            # byte-exact, while `flatten_event` lower-cases and dot-joins them. Without
+            # it a rule bound to a model whose membership is `raw:`-sourced (the Windows
+            # event_id clauses of Authentication/Endpoint/Change) would under-match here
+            # and match in production — a dry-run that quietly disagrees with the
+            # pipeline is worse than no dry-run.
+            if match_rule(rule, flatten_event(evt), evt):
                 hits.append({"event_time": r.get("event_time"),
                              "vendor": r.get("vendor"),
                              "user_name": r.get("user_name"),
@@ -1402,6 +1815,6 @@ def rules_test(request: Request, yaml_text: str = Form(...),
                   "rule_title": rule.title, "level": rule.level}
     except Exception as exc:  # noqa: BLE001
         result = {"error": str(exc)}
-    return templates.TemplateResponse("rules.html", _ctx(
+    return templates.TemplateResponse(request, "rules.html", _ctx(
         request, rules=db.list_custom_rules(), test=result,
         draft={"rule_id": rule_id, "title": title, "yaml_text": yaml_text}))

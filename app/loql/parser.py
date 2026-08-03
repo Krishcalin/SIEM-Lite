@@ -11,6 +11,10 @@ and keywords), and comparison/arithmetic operators are always their own tokens. 
 value containing special characters (an IP, a path, a wildcard) must therefore be
 quoted — ``src_ip="10.0.0.1"``, ``url="/admin*"`` — which keeps the grammar tiny and
 leaves the wildcard/CIDR handling entirely to bound parameters.
+
+``:`` is a token solely so ``from datamodel:<Name>`` can be spelled the way the roadmap
+promises it. No other production accepts one, so a stray colon is still rejected — as a
+positioned parse error now rather than an "unexpected character" from the lexer.
 """
 from __future__ import annotations
 
@@ -28,6 +32,7 @@ _TOKEN_RE = re.compile(r"""
   | (?P<OP>!=|<=|>=|[=<>+\-*/%.])
   | (?P<PIPE>\|)
   | (?P<COMMA>,)
+  | (?P<COLON>:)
   | (?P<LP>\()
   | (?P<RP>\))
   | (?P<ID>[A-Za-z_]\w*)
@@ -45,7 +50,7 @@ _FUNCS = {
     "isnotnull": ("__isnotnull__", 1),
 }
 _COMMANDS = {"search", "where", "eval", "fields", "rename", "sort", "head",
-             "dedup", "stats", "top", "rare", "bin", "timechart"}
+             "dedup", "stats", "top", "rare", "bin", "timechart", "datamodel"}
 _AGG_FUNCS = {"count", "sum", "avg", "min", "max", "dc", "distinct_count", "values", "list"}
 
 
@@ -129,26 +134,98 @@ class _Parser:
     # -- top level ------------------------------------------------------------
     def parse(self) -> N.Query:
         stages: List[N.Stage] = []
+        dm = self._datamodel_prefix()                # `from datamodel:<Name>`, or None
         if self._at("PIPE"):
-            stages.append(N.Search(None))            # leading pipe -> match-all
+            stages.append(N.Search(None, dm))        # leading pipe -> match-all
         else:
             pred = self._search_expr()
-            stages.append(N.Search(pred))
+            stages.append(N.Search(pred, dm))
         while self._at("PIPE"):
             self._eat("PIPE")
-            stages.append(self._command())
+            pos = self.cur.pos
+            stage = self._command()
+            if isinstance(stage, N.Search) and stage.datamodel is not None:
+                self._set_datamodel(stages, stage.datamodel, pos)   # `| datamodel <Name>`
+                continue
+            stages.append(stage)
         self._eat("EOF")
         return N.Query(tuple(stages))
+
+    # -- the data-model source ------------------------------------------------
+    def _datamodel_prefix(self) -> Optional[str]:
+        """The roadmap-literal source spelling ``from datamodel:<Name>``.
+
+        It desugars to the very same ``Search.datamodel`` field that ``| datamodel
+        <Name>`` sets, so the two spellings are one AST and one compiler path — an alias
+        that produced its own node would be a second dialect to keep in step forever.
+
+        ``from`` stays an ordinary bareword everywhere else (mail logs really do carry a
+        ``from`` field), so the prefix is recognised only by the three-token shape
+        ``from`` ``datamodel`` ``:``. ``from datamodel`` WITHOUT a colon is rejected
+        rather than read as a two-word full-text search: it is a typo with near-certainty,
+        and the wrong reading would answer quietly instead of pointing at the mistake.
+        """
+        if not (self.cur.kind == "ID" and self.cur.val.lower() == "from"):
+            return None
+        nxt = self.toks[self.i + 1]
+        if not (nxt.kind == "ID" and nxt.val.lower() == "datamodel"):
+            return None
+        self.i += 2
+        if not self._at("COLON"):
+            raise LoqlError("expected ':' after 'datamodel' "
+                            "(write: from datamodel:Authentication)", self.cur.pos)
+        self._eat("COLON")
+        return self._model_name()
+
+    def _model_name(self) -> str:
+        """A CIM data-model name: a bareword (``Authentication``) or a quoted string.
+
+        Deliberately NOT checked against the registry here — the parser stays pure
+        grammar and importable without the YAML, and the compiler is the one place that
+        resolves a name (and raises for an unknown one)."""
+        t = self.cur
+        if t.kind == "STR":
+            self.i += 1
+            name = _unquote(t.val).strip()
+        elif t.kind in ("ID", "KW"):
+            self.i += 1
+            name = t.val
+        else:
+            raise LoqlError(f"expected a data model name but found {t.val or t.kind!r}", t.pos)
+        if not name:
+            raise LoqlError("a data model name cannot be empty", t.pos)
+        return name
+
+    def _set_datamodel(self, stages: List[N.Stage], name: str, pos: int) -> None:
+        """Fold ``| datamodel <Name>`` into the query's source node.
+
+        A data model chooses what the pipeline READS, so it can only be the first stage:
+        after a ``stats`` there are no events left to re-source, and after a search term
+        that term was written against the columns the model replaces. Both misuses are a
+        positioned error rather than a silently different query."""
+        head = stages[0]
+        assert isinstance(head, N.Search)
+        if len(stages) != 1 or head.datamodel is not None or head.predicate is not None:
+            raise LoqlError("'datamodel' is a source and must come first - write "
+                            "'| datamodel <Name> | ...' or 'from datamodel:<Name>'", pos)
+        stages[0] = N.Search(None, name)
 
     # -- commands -------------------------------------------------------------
     def _command(self) -> N.Stage:
         if self.cur.kind not in ("ID", "KW"):
             raise LoqlError(f"expected a command after '|' but found {self.cur.val or self.cur.kind!r}", self.cur.pos)
         name = self.cur.val.lower()
+        if name == "from":                            # the source spelling, in the wrong place
+            raise LoqlError("'from datamodel:<Name>' must start the query, not follow a '|' "
+                            "(use '| datamodel <Name>' as the first stage)", self.cur.pos)
         if name not in _COMMANDS:
             raise LoqlError(f"unknown command {name!r}", self.cur.pos)
         self.i += 1
         return getattr(self, f"_cmd_{name}")()
+
+    def _cmd_datamodel(self) -> N.Stage:
+        # A source, not a transform — `parse` folds this into stages[0] via _set_datamodel.
+        return N.Search(None, self._model_name())
 
     def _cmd_search(self) -> N.Stage:
         return N.Search(self._search_expr())

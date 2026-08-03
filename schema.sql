@@ -46,6 +46,8 @@ CREATE TABLE IF NOT EXISTS events (
     search_tsv  tsvector,                     -- full-text vector over key fields + raw
     batch_id    bigint      NOT NULL,
     dedup_hash  text        NOT NULL,         -- sha256 over canonical raw (+vendor+time)
+    -- NOTE: `cim_models text[]` also belongs to this table. It is added by the CIM
+    -- section below as a post-hoc ALTER (see the comment there for why).
     PRIMARY KEY (id, event_time)
 ) PARTITION BY RANGE (event_time);
 
@@ -63,13 +65,75 @@ CREATE INDEX IF NOT EXISTS events_dst_idx      ON events (dst_ip);
 CREATE INDEX IF NOT EXISTS events_user_idx     ON events (user_name);
 CREATE INDEX IF NOT EXISTS events_host_idx     ON events (host_name);
 CREATE INDEX IF NOT EXISTS events_batch_idx    ON events (batch_id);
--- search() filters severity/action case-insensitively; expression indexes make the
+-- search() filters severity/action case-insensitively — expression indexes make the
 -- lower(col) predicates index-usable instead of scanning every partition.
 CREATE INDEX IF NOT EXISTS events_severity_idx ON events (lower(severity));
 CREATE INDEX IF NOT EXISTS events_action_idx   ON events (lower(action));
 
 -- Dedup within partitions (must include the partition key on a partitioned table).
 CREATE UNIQUE INDEX IF NOT EXISTS events_dedup_idx ON events (dedup_hash, event_time);
+
+-- ============================================================================
+--  CIM data models (Backbone 2): membership materialized on `events`.
+-- ============================================================================
+-- `cim_models` carries the tags of the CIM data models an event belongs to
+-- ('authentication', 'network', 'endpoint', …). It is a PLAIN text[] filled per row
+-- in Python at ingest from app.cim.match.tags_for(), exactly the way `search_tsv` is
+-- filled from normalize.tsv_text() — deliberately NOT `GENERATED … STORED`:
+--   * PostgreSQL 16 freezes a generation expression at ADD COLUMN. Rewriting one
+--     needs ALTER COLUMN … SET EXPRESSION, which is PG17+, and docker-compose pins
+--     postgres:16 — so an edit to models.yaml could never reach an existing database.
+--   * Detection needs membership BEFORE the INSERT: the engine evaluates each event
+--     as it streams through the pipeline, while rows are flushed only in chunks.
+-- Declared as a post-hoc ALTER rather than as a column of CREATE TABLE above so that
+-- a fresh database and an upgraded one converge on the SAME schema — identical
+-- ordinal position included — which is the pattern this file already uses for every
+-- column added after the fact (ingest_batches.source_type, alerts.assignee, …).
+-- With no DEFAULT the ADD COLUMN is catalog-only (no heap rewrite) and it recurses to
+-- every existing partition. Partitions created LATER inherit it because
+-- `CREATE TABLE … PARTITION OF events` takes its whole column list from the parent.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS cim_models text[];
+
+-- The performance premise of the model views and of LOQL `datamodel:`: the
+-- containment predicate `cim_models @> ARRAY['authentication']::text[]` must be
+-- index-served, never a scan across three years of partitions. Declared on the parent
+-- like the indexes above, so every partition db.ensure_partitions creates later gets a
+-- matching child index automatically. Rows in no model store NULL, not '{}', so they
+-- contribute no index entries at all.
+CREATE INDEX IF NOT EXISTS events_cim_models_idx ON events USING GIN (cim_models);
+
+-- Exactly one row: which registry the `cim_<tag>` views were built from, and which one
+-- the stored `cim_models` values were last derived under. The two halves have different
+-- writers and must not be confused:
+--   * registry_version / model_tags / membership_hash / applied_at — written by
+--     db.init_cim (the `_CIM_STAMP_UPSERT`, an ON CONFLICT DO UPDATE on the boolean key)
+--     every time the views are rebuilt, i.e. on every startup. A RECORD of which registry
+--     the view surface came from, surfaced on /admin and /datamodels.
+--   * backfilled_at / backfill_hash — written ONLY by db.backfill_cim, and only by a run
+--     that was unbounded and completed. The rule the rows in `events` were last derived
+--     under. init_cim never touches them: the views can move ahead of history, and saying
+--     otherwise would report a membership edit as applied to rows it has not reached.
+--
+-- `backfill_due` IS NOT `backfill_hash <> membership_hash`. This comment used to say it
+-- was, and db.cim_status() has never computed it that way. It compares `backfill_hash`
+-- against the fingerprint of the registry ON DISK, re-read by db.registry_drift() (and it
+-- falls back to the in-process registry only when models.yaml cannot be read at all).
+-- The difference is the whole window that matters: `membership_hash` is refreshed only by
+-- a startup, so between an operator's edit to models.yaml and the restart it still holds
+-- the OLD fingerprint — equal to `backfill_hash` — and a stored-vs-stored comparison
+-- would answer "history is current" for precisely as long as the edit has been ignored.
+-- Against the file it stays true until restart-then-backfill has actually happened.
+-- `membership_hash` is therefore a durable record for an operator reading the row, not an
+-- input to the staleness check.
+CREATE TABLE IF NOT EXISTS cim_meta (
+    id               boolean     PRIMARY KEY DEFAULT true CHECK (id),  -- one row only
+    registry_version integer     NOT NULL,
+    model_tags       text[]      NOT NULL DEFAULT '{}',
+    membership_hash  text        NOT NULL,
+    applied_at       timestamptz NOT NULL DEFAULT now(),
+    backfilled_at    timestamptz,
+    backfill_hash    text
+);
 
 -- ============================================================================
 --  Live ingestion (Phase 1): API keys + source tracking on batches.
@@ -101,7 +165,7 @@ ALTER TABLE ingest_batches ALTER COLUMN file_sha256 DROP NOT NULL;
 -- ============================================================================
 
 -- Rule registry: metadata + enable flag per detection rule. The rule logic lives
--- in the YAML files under rules/; this table tracks enablement and is synced from
+-- in the YAML files under rules/ — this table tracks enablement and is synced from
 -- those files on startup (enabled flags are preserved across restarts).
 CREATE TABLE IF NOT EXISTS detection_rules (
     rule_id    text PRIMARY KEY,
@@ -161,7 +225,7 @@ CREATE INDEX IF NOT EXISTS alert_notes_alert_idx ON alert_notes (alert_id);
 
 -- Suppression / allowlist rules: an alert that matches an enabled, unexpired rule
 -- is stored as status='suppressed' and not notified. Each non-null column is an
--- AND condition; src_ip accepts an exact IP or a CIDR.
+-- AND condition, and src_ip accepts an exact IP or a CIDR.
 CREATE TABLE IF NOT EXISTS suppressions (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     name       text        NOT NULL,
@@ -181,7 +245,7 @@ CREATE TABLE IF NOT EXISTS suppressions (
 CREATE INDEX IF NOT EXISTS suppressions_enabled_idx ON suppressions (enabled);
 
 -- Incidents / cases: one investigation grouping many related alerts. An alert
--- points at its case via alerts.case_id; a case's severity rolls up to the
+-- points at its case via alerts.case_id, and a case's severity rolls up to the
 -- highest of its members.
 CREATE TABLE IF NOT EXISTS cases (
     id         bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -220,7 +284,7 @@ CREATE INDEX IF NOT EXISTS case_notes_case_idx ON case_notes (case_id);
 -- ============================================================================
 -- One row per actor (user / host / ip), maintained incrementally at ingest. The
 -- first_seen baseline drives "new entity" and (via entity_links) "new
--- association" anomalies; risk is scored from the alerts attributed to it.
+-- association" anomalies, and risk is scored from the alerts attributed to it.
 CREATE TABLE IF NOT EXISTS entities (
     entity_type  text        NOT NULL,          -- user | host | ip
     entity_value text        NOT NULL,
@@ -253,7 +317,7 @@ CREATE INDEX IF NOT EXISTS alerts_srcip_idx   ON alerts (src_ip);
 
 -- Audit trail of agentless response actions taken when an alert matched a
 -- playbook. A time-boxed action (playbook `revert_after`) stores when it is due
--- to be undone in revert_at; the revert scheduler fires the inverse action then
+-- to be undone in revert_at — the revert scheduler fires the inverse action then
 -- and stamps reverted_at so it is undone exactly once.
 CREATE TABLE IF NOT EXISTS response_actions (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -340,7 +404,7 @@ CREATE INDEX IF NOT EXISTS audit_created_idx ON audit_log (created_at DESC);
 --  Threat intelligence: indicators of compromise (IOCs).
 -- ============================================================================
 -- Indicators loaded from feeds (by `source`) or added manually. The ingest
--- pipeline matches events against the enabled, unexpired rows; a hit raises a
+-- pipeline matches events against the enabled, unexpired rows, and a hit raises a
 -- threat-intel alert. Re-syncing a feed replaces only that source's rows.
 CREATE TABLE IF NOT EXISTS iocs (
     indicator   text        NOT NULL,

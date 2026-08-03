@@ -27,10 +27,18 @@ import pytest
 
 # Tables truncated between integration tests (children of `events` are dropped
 # separately so partition-creation assertions start from a clean slate).
+# `cim_meta` is the one-row CIM registry stamp (schema.sql, Backbone 2): it must be
+# emptied like everything else, or the `backfill_due` / `applied_at` state one test
+# writes becomes the starting state of the next.
 _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_notes",
            "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
            "response_actions", "collectors", "sessions", "users", "audit_log", "iocs",
-           "saved_searches")
+           "saved_searches", "cim_meta")
+
+# Exactly the shape `app.cim.sql.view_name` emits, matched independently of that module
+# on purpose: this is the broom the CIM tests are swept up with, so it must not share a
+# code path (or a bug) with the reconciler those tests are trying to prove correct.
+_CIM_VIEW_RE = re.compile(r"^cim_[a-z][a-z0-9_]*$")
 
 
 def _dsn() -> str:
@@ -55,7 +63,7 @@ def pg():
 
     This used to turn `psycopg.OperationalError` into a skip as well, which reads as
     prudence and is the opposite. The CI integration job always sets DB_DSN, so a dead
-    service container produced skips and exit 0 — a green job that tested nothing,
+    service container produced 52 skips and exit 0 — a green job that tested nothing,
     indistinguishable from a green job that tested everything. `pytest_sessionfinish`
     below is the second half of the same guard.
     """
@@ -92,7 +100,20 @@ def pg():
 
 @pytest.fixture
 def clean_db(pg):
-    """Empty every table (and drop month partitions) before a test, for isolation."""
+    """Empty every table (and drop month partitions) before a test, for isolation.
+
+    Also reconciles the `cim_<tag>` views: any view matching the CIM naming shape that
+    the *current* registry does not define is dropped. A test that deliberately plants a
+    stale `cim_zzz` (to prove `db.init_cim` reconciles orphans) would otherwise leave it
+    behind and change the orphan count another test asserts on. The views of real models
+    are left alone — they are cheap, `init_cim` rebuilds them anyway, and dropping them
+    here would make every test that reads one depend on fixture ordering.
+
+    CASCADE is used *only here*, and the contrast is the point: `db._drop_orphan_cim_views`
+    is deliberately RESTRICT so production never deletes an operator's dependent object
+    silently. The orphan test plants such a dependent object to prove that; this broom has
+    to be able to sweep it up afterwards, so it is the one place CASCADE is correct.
+    """
     with pg.pool().connection() as conn:
         parts = conn.execute(
             "SELECT c.relname AS name FROM pg_inherits i "
@@ -101,6 +122,17 @@ def clean_db(pg):
         ).fetchall()
         for r in parts:
             conn.execute(f"DROP TABLE IF EXISTS {r['name']}")
+
+        from app.cim import get_registry, view_name
+        keep = {view_name(m) for m in get_registry().models}
+        views = conn.execute(
+            "SELECT viewname FROM pg_views WHERE schemaname = current_schema() "
+            "AND viewname LIKE %s", (r"cim\_%",)).fetchall()
+        for v in views:
+            name = v["viewname"]
+            if name not in keep and _CIM_VIEW_RE.match(name):
+                conn.execute(f"DROP VIEW IF EXISTS {name} CASCADE")
+
         conn.execute(f"TRUNCATE {', '.join(_TABLES)} RESTART IDENTITY CASCADE")
         conn.commit()
     return pg
@@ -156,8 +188,8 @@ def pytest_sessionfinish(session, exitstatus):
       `--setup-plan`) -> not a test run at all. Without this the collection check that
       this whole change is verified with would itself fail whenever DB_DSN is exported.
 
-    What is left is precisely the failure that hid a blocker for seventy commits: tests
-    collected, all skipped, exit 0, nobody any the wiser.
+    What is left is precisely the failure that hid a blocker for seventy commits: 52
+    tests collected, 52 skipped, exit 0, nobody any the wiser.
     """
     opt = session.config.option
     if any(getattr(opt, name, False)

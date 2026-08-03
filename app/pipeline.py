@@ -10,12 +10,14 @@ a stream of NormalizedEvents into stored rows.
 """
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime, timezone
-from typing import Iterable, Iterator, NamedTuple, Optional
+from typing import Any, Callable, Iterable, Iterator, NamedTuple, Optional
 
 from . import alert_actions, db, risk
 from . import custom_parser
+from .cim import match as cim_match
 from .config import settings
 from .detection import engine as detengine, runtime as detruntime
 from .models import NormalizedEvent
@@ -43,6 +45,25 @@ def parse_events(content: str, fmt: str) -> Iterator[NormalizedEvent]:
     if fmt not in PARSERS:
         raise ValueError(f"unknown format: {fmt}")
     return PARSERS[fmt].parse(content)
+
+
+def _accepts(fn: Callable[..., Any], name: str) -> bool:
+    """Does ``fn`` take a parameter called ``name``?
+
+    Both consumers of an event's CIM membership (`db.insert_events` and the detection
+    engine's `evaluate_event`) take the resolved tags as an OPTIONAL argument and derive
+    them themselves when it is absent — see `write_stream`. Whether a given build, or a
+    given test double, actually has that parameter is asked here rather than assumed,
+    because guessing wrong is a `TypeError` in the middle of an ingest batch.
+
+    Probed once per `write_stream` call (i.e. per batch, never per event), so a
+    monkeypatched `db.insert_events` is read as it is at call time, not as it was at
+    import.
+    """
+    try:
+        return name in inspect.signature(fn).parameters
+    except (TypeError, ValueError):        # a C builtin / an unintrospectable callable
+        return False
 
 
 def _upsert_baselines(conn, events: list[NormalizedEvent]) -> None:
@@ -97,8 +118,24 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     supp_active = len(supp_index) > 0
     ueba_active = settings.ueba_enabled        # maintain entity baselines on write
     track_alerts = alert_actions.active()
+    # CIM membership is wanted twice per event — by the detection `datamodels:` gate as
+    # the event streams, and by `db._row` when the chunk flushes — and it is ~40 term
+    # tests (tens of microseconds) each time. Resolve it ONCE here and hand the same
+    # value to both, the way `dedup_hash` is already computed once and threaded into
+    # the alert row.
+    #
+    # Both consumers take it as an OPTIONAL argument and derive it themselves without
+    # one, so this is asked of them rather than assumed (`_accepts`) and costs two
+    # signature reads per batch. Resolving is gated on the INSERT side specifically:
+    # `db._row` derives membership for EVERY event whether detection ran or not, so
+    # with that consumer opted out, resolving here would add a walk rather than move
+    # one — and the gate side, which resolves lazily and only when some enabled rule
+    # binds to a data model, would keep its own.
+    tags_to_db = _accepts(db.insert_events, "cim_tags")
+    tags_to_engine = engine is not None and _accepts(engine.evaluate_event, "tags")
     total = 0
     chunk: list[NormalizedEvent] = []
+    chunk_tags: list[Optional[frozenset[str]]] = []   # index-aligned with `chunk`
     pending: list[dict] = []
     new_alerts: list[dict] = []
     supp_hits: dict[int, int] = {}             # suppression id -> times fired
@@ -113,7 +150,13 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         pending.append(alert)
 
     def flush() -> None:
-        db.insert_events(conn, chunk, batch_id)
+        if tags_to_db:
+            # `None` at a position means "unresolved" — `db._row` derives that one row's
+            # membership itself, which is what happens for every row when an older
+            # `insert_events` (or a test double) has no `cim_tags` parameter at all.
+            db.insert_events(conn, chunk, batch_id, cim_tags=chunk_tags)
+        else:
+            db.insert_events(conn, chunk, batch_id)
         new_alerts.extend(db.insert_alerts(conn, pending, return_inserted=track_alerts))
         if supp_hits:
             db.bump_suppressions(conn, supp_hits)
@@ -126,12 +169,29 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         apply_fallback_time(evt, fb)
         chunk.append(evt)
         dh: Optional[str] = None               # event identity, computed once if needed
+        tags: Optional[frozenset[str]] = None  # CIM membership, resolved once if wanted
         # Detection / threat-intel must never abort the batch: on any unexpected
         # error the event is still stored (already in `chunk`), just un-alerted.
         try:
             custom_parser.apply(evt)   # console-authored field maps fill empty columns
+            if tags_to_db:
+                # AFTER `custom_parser.apply`, which fills empty columns and so can
+                # change membership — the same point in the event's life at which
+                # `db._row` derives it.
+                try:
+                    tags = frozenset(cim_match.tags_for(evt))
+                except Exception:  # noqa: BLE001 — deliberately silent HERE
+                    # A malformed registry (never a malformed event) raises. Leaving
+                    # the event unresolved hands it back to `db._row`, which owns the
+                    # degraded write: store `cim_models` NULL, count the event in
+                    # `db.cim_write_state()`, throttle the log and surface it on
+                    # /health. Boxing the failure here instead would thread a
+                    # confident empty set into the INSERT and leave that counter
+                    # reading zero while every row went in untagged.
+                    tags = None
             if engine is not None:
-                matched = engine.evaluate_event(evt)
+                matched = (engine.evaluate_event(evt, tags=tags) if tags_to_engine
+                           else engine.evaluate_event(evt))
                 if matched:
                     dh = dedup_hash(evt)       # same identity used for the event row
                     for r in matched:
@@ -144,9 +204,13 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
         except Exception:  # noqa: BLE001
             log.warning("detection/threat-intel failed for an event; stored un-alerted",
                         exc_info=True)
+        # Appended outside the try so the two lists stay index-aligned even when the
+        # block above bailed before resolving membership (then it is None, and `db._row`
+        # derives that row itself).
+        chunk_tags.append(tags)
         if len(chunk) >= CHUNK:
             flush()
-            chunk, pending = [], []
+            chunk, chunk_tags, pending = [], [], []
     if chunk or pending:
         flush()
     # Suppressed alerts are stored for audit but never notified / actioned.

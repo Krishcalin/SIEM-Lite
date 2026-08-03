@@ -6,11 +6,12 @@ fidelity: high
 data_source: [web, zeek, suricata]
 references:
   - https://attack.mitre.org/techniques/T1190/
+# Bound to the CIM Web data model rather than to `log_type: [access, http]` -- see
+# web_sql_injection.yml. Traversal is a property of the request; the registry decides
+# which products emit web requests, so proxy / URL-filter / web-filter sources are
+# covered without touching this rule.
+datamodels: web
 detection:
-  http:
-    log_type:
-      - access
-      - http
   traversal:
     message|contains:
       - "../../"
@@ -27,7 +28,7 @@ detection:
       - "/windows/win.ini"
       - "\\windows\\win.ini"
       - "file:///"
-  condition: http and traversal
+  condition: traversal
 tags:
   - attack.t1190
   - attack.initial_access

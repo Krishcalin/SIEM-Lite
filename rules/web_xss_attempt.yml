@@ -6,11 +6,11 @@ fidelity: medium
 data_source: [web, zeek, suricata]
 references:
   - https://attack.mitre.org/techniques/T1190/
+# Bound to the CIM Web data model rather than to `log_type: [access, http]` -- see
+# web_sql_injection.yml. Completes the T1190 web-exploitation set, so all four rules
+# see exactly the same population of web requests instead of four copies of a list.
+datamodels: web
 detection:
-  http:
-    log_type:
-      - access
-      - http
   xss:
     message|contains:
       - "<script"
@@ -23,7 +23,7 @@ detection:
       - "%3cimg"
       - "document.cookie"
       - "<svg/onload"
-  condition: http and xss
+  condition: xss
 tags:
   - attack.t1190
   - attack.initial_access

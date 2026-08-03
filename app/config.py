@@ -161,6 +161,26 @@ class Settings:
     # array_agg an unbounded amount of memory (the LIMIT/row-cap count rows, not cell size).
     loql_max_agg_elems: int = int(os.getenv("LOQL_MAX_AGG_ELEMS", "10000"))
 
+    # CIM data models — the vendor-agnostic schemas in app/cim/models.yaml. Membership
+    # itself is NOT gated here: `events.cim_models` is stamped in Python at ingest and
+    # detections + `datamodel:` searches read that column, so switching it off would
+    # silently break them. CIM_ENABLED gates the database-side half only — the per-model
+    # `cim_<tag>` views rebuilt from the registry at startup.
+    cim_enabled: bool = _bool("CIM_ENABLED", True)
+    # /datamodels can show a live member count per model. Each one is an aggregate over
+    # an indexed `cim_models @> ARRAY[tag]` predicate — cheap on a young store, a bitmap
+    # heap scan of most of the table on a three-year one. So counting is opt-in per page
+    # view and bounded twice: CIM_COUNT_DAYS windows it (0 disables counting, and a
+    # window lets the planner prune whole partitions), and CIM_COUNT_TIMEOUT_MS is the
+    # budget for the WHOLE sweep — each model gets a slice of what is left, so a starved
+    # database costs one budget rather than one timeout per model.
+    cim_count_days: int = int(os.getenv("CIM_COUNT_DAYS", "30"))
+    cim_count_timeout_ms: int = int(os.getenv("CIM_COUNT_TIMEOUT_MS", "5000"))
+    # Rows per committed chunk of the admin membership backfill (db.backfill_cim), the
+    # maintenance pass that re-derives cim_models for events already stored after a
+    # models.yaml membership edit. Smaller chunks hold shorter locks, at more round trips.
+    cim_backfill_chunk: int = int(os.getenv("CIM_BACKFILL_CHUNK", "2000"))
+
     # Async ingest queue (live sources buffer here; writer workers batch-insert).
     ingest_queue_max: int = int(os.getenv("INGEST_QUEUE_MAX", "10000"))
     ingest_workers: int = int(os.getenv("INGEST_WORKERS", "2"))

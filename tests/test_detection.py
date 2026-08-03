@@ -1,20 +1,51 @@
 # Author : Krishnendu De
 # Co-Author: Claude Fable 5.0
 """Unit tests for the Sigma-subset detection engine (no database needed)."""
+import logging
+import re
+import threading
 from pathlib import Path
 
+import pytest
+
 from app.detection.engine import (DetectionEngine, Rule, alert_from_match,
-                                   flatten_event, load_rules, match_rule)
+                                   as_str_list, cim_tags, datamodels_match,
+                                   flatten_event, load_rules, match_rule,
+                                   reset_cim_cache)
 from app.models import NormalizedEvent
 
 RULES_DIR = Path(__file__).resolve().parent.parent / "rules"
 
 
-def _match(detection: dict, logsource: dict | None = None, **fields) -> bool:
+def _rule(detection: dict, rid: str = "t", logsource=None, datamodels=None) -> Rule:
+    return Rule(id=rid, title="t", level="low", description="",
+                logsource=logsource or {}, detection=detection,
+                datamodels=as_str_list(datamodels))
+
+
+def _match(detection: dict, logsource: dict | None = None, *,
+           datamodels=None, **fields) -> bool:
+    """Evaluate one ad-hoc rule against one ad-hoc event.
+
+    `datamodels` is keyword-only so it can never be mistaken for an event field, and
+    is coerced with the loader's own `as_str_list` so a bare string behaves here
+    exactly as `datamodels: web` does in a rule file. The event is passed to
+    `match_rule` alongside its flattened view because the CIM gate reads jsonb keys
+    byte-exact -- `flat` has lower-cased and dot-joined them.
+    """
     fields.setdefault("vendor", "v")
-    rule = Rule(id="t", title="t", level="low", description="",
-                logsource=logsource or {}, detection=detection)
-    return match_rule(rule, flatten_event(NormalizedEvent(event_time=None, **fields)))
+    evt = NormalizedEvent(event_time=None, **fields)
+    return match_rule(_rule(detection, logsource=logsource, datamodels=datamodels),
+                      flatten_event(evt), evt)
+
+
+@pytest.fixture
+def cim_reset():
+    """The engine resolves the CIM registry ONCE per process and memoizes every gate,
+    so a test that breaks or swaps the registry must invalidate that on both sides."""
+    reset_cim_cache()
+    yield
+    reset_cim_cache()
 
 
 # ── value / selection matching ──────────────────────────────────────────────
@@ -106,6 +137,654 @@ def test_logsource_filters_by_vendor_and_logtype():
     assert _match(d, ls, vendor="microsoft", log_type="security", action="failed-logon")
     # wrong vendor -> no match even though the selection would hit
     assert not _match(d, ls, vendor="cisco", log_type="security", action="failed-logon")
+
+
+# ── CIM data-model gate ─────────────────────────────────────────────────────
+_DENY = {"s": {"action": "deny"}, "condition": "s"}
+
+
+def test_datamodel_gate_admits_a_member():
+    # log_type `traffic` is a Network member in the registry, whatever the vendor
+    assert _match(_DENY, datamodels="network", log_type="traffic", action="deny")
+    # a binding may be written as the display name or as the tag
+    assert _match(_DENY, datamodels="Network", log_type="traffic", action="deny")
+    assert _match(_DENY, datamodels=["web", "network"], log_type="traffic", action="deny")
+
+
+def test_datamodel_gate_blocks_a_non_member():
+    # an `access` log is Web, not Network -- the gate blocks it...
+    assert not _match(_DENY, datamodels="network", log_type="access", action="deny")
+    # ...and the selection itself would have matched, so the gate is what decided
+    assert _match(_DENY, log_type="access", action="deny")
+
+
+def test_datamodel_gate_reads_raw_keys_from_the_event_not_the_flat_view():
+    """Windows Security 4624 is an Authentication member only through the jsonb key
+    `event_id`, so this is the guard that `match_rule` is handed the EVENT and not
+    just its flattened Sigma view (which lower-cases and dot-joins raw keys)."""
+    win = dict(vendor="microsoft", product="windows", log_type="security",
+               action="logon", raw={"event_id": 4624})
+    d = {"s": {"action": "logon"}, "condition": "s"}
+    assert _match(d, datamodels="authentication", **win)
+
+    # the documented degradation: with no event to read, a `raw:` membership term
+    # cannot resolve and the bound rule under-matches
+    evt = NormalizedEvent(event_time=None, **win)
+    assert not match_rule(_rule(d, datamodels="authentication"), flatten_event(evt))
+
+
+def test_evaluate_event_uses_membership_the_caller_already_resolved(monkeypatch):
+    """`pipeline.write_stream` resolves membership once and threads it here, so the
+    registry is walked once per ingested event instead of once for this gate and again
+    for `db._row`. A threaded value must be USED — if it were merely accepted and then
+    recomputed, the hand-off would be dead code and the saving imaginary."""
+    from app.cim import match as cim_match
+
+    def never(evt, registry=None):
+        raise AssertionError("the registry was walked despite being handed the answer")
+
+    monkeypatch.setattr(cim_match, "tags_for", never)
+    eng = DetectionEngine([_rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    fired = {r.id for r in eng.evaluate_event(evt, tags=frozenset({"network"}))}
+    assert fired == {"bound", "unbound"}
+
+
+def test_evaluate_event_threaded_tags_can_close_a_gate_too(monkeypatch):
+    """The threaded value must decide the gate in BOTH directions — a bound rule whose
+    model is absent from the supplied tags must not fire."""
+    from app.cim import match as cim_match
+    monkeypatch.setattr(cim_match, "tags_for", lambda *a, **k: (_ for _ in ()).throw(
+        AssertionError("walked the registry")))
+    eng = DetectionEngine([_rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    assert {r.id for r in eng.evaluate_event(evt, tags=frozenset({"web"}))} == {"unbound"}
+
+
+def test_evaluate_event_without_tags_still_resolves_them_itself(cim_reset):
+    """Omitting the argument is the original behaviour and every pre-existing caller's
+    call shape — membership is resolved lazily, at most once per event."""
+    eng = DetectionEngine([_rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    assert {r.id for r in eng.evaluate_event(evt)} == {"bound", "unbound"}
+
+
+def test_every_match_rule_caller_hands_over_the_event():
+    """`match_rule`'s docstring promises "every caller inside LogOcean passes one of
+    them" — and that promise is load-bearing, not decorative: a caller that passes only
+    the flat view silently under-matches any rule bound to a model with `raw:`-sourced
+    membership, so a dry-run reports zero hits for a rule that fires in production.
+
+    That is exactly what `/rules` did. This walks the AST rather than trusting the
+    docstring, so the next caller cannot reintroduce it.
+    """
+    import ast
+    import pathlib
+
+    offenders = []
+    for path in sorted(pathlib.Path("app").rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            fn = node.func
+            name = fn.attr if isinstance(fn, ast.Attribute) else getattr(fn, "id", "")
+            if name != "match_rule":
+                continue
+            # (rule, flat) alone is the defect; (rule, flat, evt) or tags=... is fine.
+            if len(node.args) < 3 and not any(k.arg in ("evt", "tags") for k in node.keywords):
+                offenders.append(f"{path}:{node.lineno}")
+
+    assert not offenders, (
+        "match_rule called without the event (or its resolved tags) at: "
+        + ", ".join(offenders)
+        + " -- a rule bound to a raw:-sourced data model will under-match there")
+
+
+def test_empty_datamodels_is_match_all():
+    """Backward-compatibility guard for every rule written before the gate existed:
+    unbound means match-all, even for an event that belongs to no data model."""
+    unmodelled = NormalizedEvent(event_time=None, vendor="v",
+                                 log_type="nothing-modelled", action="deny")
+    assert cim_tags(unmodelled) == frozenset()          # genuinely in no model
+    assert _match(_DENY, log_type="nothing-modelled", action="deny")
+    assert datamodels_match(_rule(_DENY), frozenset())
+
+    # and the shipped pack: every rule that declares no binding is still match-all
+    rules = load_rules(RULES_DIR)
+    unbound = [r for r in rules if not r.datamodels]
+    assert len(rules) - len(unbound) <= 10              # only a handful are bound yet
+    assert all(datamodels_match(r, frozenset()) for r in unbound)
+
+
+def test_datamodel_and_logsource_are_both_required():
+    """The two gates AND: `datamodels:` says what the event is, `logsource:` says
+    which source produced it, and a rule declaring both means the intersection."""
+    d = {"s": {"action": "get"}, "condition": "s"}
+    ls = {"vendor": "web"}
+    assert _match(d, ls, datamodels="web", vendor="web", log_type="access", action="get")
+    # right kind of event, wrong source
+    assert not _match(d, ls, datamodels="web", vendor="zeek", log_type="http", action="get")
+    # right source, wrong kind of event (a `conn` record is Network, not Web)
+    assert not _match(d, ls, datamodels="web", vendor="web", log_type="conn", action="get")
+
+
+def test_unknown_datamodel_kills_only_its_own_rule(cim_reset, caplog):
+    """A typo'd binding disables exactly one rule -- it must not fall through to
+    match-all, and it must not take the other rules down with it. The gate runs per
+    event, so it must also complain exactly once and not once per event."""
+    eng = DetectionEngine([_rule(_DENY, rid="typo", datamodels="netwrok"),
+                           _rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    with caplog.at_level(logging.ERROR, logger="logocean"):
+        fired = [{r.id for r in eng.evaluate_event(evt)} for _ in range(3)]
+    assert fired == [{"bound", "unbound"}] * 3
+    assert sum("netwrok" in r.getMessage() for r in caplog.records) == 1
+
+
+def test_cim_registry_failure_degrades_to_dead_rules(monkeypatch, cim_reset):
+    """A registry that will not load costs the bound rules and nothing else -- the
+    pipeline evaluates every other rule and keeps ingesting."""
+    from app.cim import registry as cim_registry
+
+    def boom():
+        raise RuntimeError("models.yaml is unreadable")
+
+    monkeypatch.setattr(cim_registry, "get_registry", boom)
+    reset_cim_cache()                       # force re-resolution through the break
+
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    assert cim_tags(evt) == frozenset()     # never raises, just knows nothing
+    eng = DetectionEngine([_rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    assert {r.id for r in eng.evaluate_event(evt)} == {"unbound"}
+
+
+def test_cim_evaluation_failure_is_reported_once_not_per_event(monkeypatch, cim_reset,
+                                                               caplog):
+    """A registry that LOADS and then blows up while evaluating is the nastier case:
+    it happens per event, so it has to degrade to dead bound rules AND stay quiet
+    after the first report, or one bad model floods the log with the whole stream."""
+    from app.cim import match as cim_match
+
+    def boom(evt, registry=None):
+        raise RuntimeError("a membership term the evaluator cannot read")
+
+    monkeypatch.setattr(cim_match, "tags_for", boom)
+    reset_cim_cache()                       # force re-resolution through the break
+
+    eng = DetectionEngine([_rule(_DENY, rid="bound", datamodels="network"),
+                           _rule(_DENY, rid="unbound")])
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    with caplog.at_level(logging.ERROR, logger="logocean"):
+        fired = [{r.id for r in eng.evaluate_event(evt)} for _ in range(3)]
+    assert fired == [{"unbound"}] * 3
+    assert sum("CIM membership evaluation failed" in r.getMessage()
+               for r in caplog.records) == 1
+
+
+# ── CIM resolution: concurrency + cache hygiene ─────────────────────────────
+def test_a_second_thread_waits_for_the_registry_instead_of_racing_past_it(monkeypatch,
+                                                                          cim_reset):
+    """Two threads reaching `_cim()` at once — the second must WAIT for the resolution.
+
+    The resolution used to publish its "already resolved" flag BEFORE doing the work,
+    so a thread arriving inside the window read `(None, None)`, `_gate` turned that into
+    a dead `_Gate` and cached it — and `_gate_cache` is cleared only by
+    `reset_cim_cache()` (tests) or by overflow, so that rule then returned False for the
+    life of the process. Silently, too: `_cim` never entered its except branch on that
+    path, so nothing was logged and nothing could be noticed.
+
+    Concurrent first callers are the normal case (INGEST_WORKERS writers, /upload,
+    /api/ingest, /rules/test, the workbench), and with CIM_ENABLED=false nothing warms
+    the registry at boot so the window is a whole `registry.load()` wide. Here it is
+    held open with an Event so the race is reproduced on purpose rather than waited for.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    real_get_registry = cim_registry.get_registry
+    resolving = threading.Event()          # the first caller is inside the slow load
+    finish = threading.Event()             # ...and may now come out of it
+    racing = threading.Event()             # the second caller is about to call in
+
+    def slow_get_registry():
+        resolving.set()
+        assert finish.wait(10), "the resolver was never released"
+        return real_get_registry()
+
+    monkeypatch.setattr(cim_registry, "get_registry", slow_get_registry)
+    reset_cim_cache()                      # force re-resolution through the slow path
+
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    seen: dict[str, bool] = {}
+
+    def resolver():
+        seen["first"] = datamodels_match(rule, cim_tags(evt))
+
+    def racer():
+        racing.set()
+        seen["second"] = datamodels_match(rule, cim_tags(evt))
+
+    first = threading.Thread(target=resolver, name="cim-resolver")
+    second = threading.Thread(target=racer, name="cim-racer")
+    first.start()
+    assert resolving.wait(10), "the first caller never reached the registry load"
+    second.start()
+    assert racing.wait(10)
+    # The second caller is now either parked on the resolution (correct) or already
+    # through it holding `(None, None)` (the bug). `join` tells the two apart without
+    # depending on timing to produce the failure: a correct engine keeps the thread
+    # alive until `finish` is set, so this always waits the whole 0.25s and then the
+    # asserts below pass; a broken one lets it run to completion in microseconds and
+    # `join` returns at once, with a dead gate already cached.
+    second.join(0.25)
+    raced_past = not second.is_alive()
+    finish.set()                           # release BEFORE asserting — never hang here
+    first.join(10)
+    second.join(10)
+    assert not first.is_alive() and not second.is_alive(), "a caller never came back"
+
+    assert seen == {"first": True, "second": True}, (
+        f"a datamodel-bound rule was silently disabled by a concurrent first call: {seen}")
+    assert not raced_past, (
+        "the second thread got an answer while the registry was still loading - it read "
+        "the resolution flag before the handles it guards were set")
+    # The permanence is what made this a blocker rather than a hiccup: the dead gate is
+    # memoized, so the rule stays off long after the registry finished loading.
+    assert datamodels_match(rule, cim_tags(evt)), (
+        "the rule is permanently dead - a dead gate from the race is still cached")
+    assert engine._gate_cache[("bound", ("network",))].dead is False
+
+
+def test_a_failed_resolution_is_never_memoized_as_a_gate(monkeypatch, cim_reset):
+    """A `_Gate` is only ever cached when it was resolved against a REAL registry.
+
+    `_gate_cache` outlives everything but `reset_cim_cache()` (tests only) and its own
+    overflow, so caching the gate built for "there is no registry" promotes whatever
+    broke the resolution — a race, a half-written models.yaml — into permanent state for
+    that rule. The dead gate is still RETURNED, because a bound rule has nothing to
+    match against while the registry is missing; it is simply not remembered.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    def boom():
+        raise RuntimeError("models.yaml is unreadable")
+
+    monkeypatch.setattr(cim_registry, "get_registry", boom)
+    reset_cim_cache()                       # force re-resolution through the break
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    assert not datamodels_match(rule, {"network"})     # off while there is no registry
+    assert engine._gate_cache == {}, (
+        "a gate resolved against a null registry was memoized - the outage now outlives "
+        "itself and that rule can never come back without a restart")
+
+    # and with the registry back, the same rule resolves normally
+    monkeypatch.undo()
+    reset_cim_cache()
+    assert datamodels_match(rule, {"network"})
+
+
+def test_log_once_keys_are_bounded_like_the_gate_cache(cim_reset, caplog):
+    """`_log_once`'s keys embed `rule.id`, which reaches the engine straight from pasted
+    YAML (`main.rules_test`, `workbench.evaluate`). That makes the key set user-driven,
+    exactly like the gate cache right below it — which got an explicit cap for this
+    reason while the log-key set got none, so pasting rules grew it forever.
+    """
+    from app.detection import engine
+
+    fed = engine._LOG_KEYS_MAX + 50
+    # every id is unique and every binding is a typo, so each pass mints one new key
+    with caplog.at_level(logging.CRITICAL, logger="logocean"):   # ...and stays quiet
+        for i in range(fed):
+            datamodels_match(_rule(_DENY, rid=f"pasted-{i}", datamodels="netwrok"),
+                             frozenset())
+    assert len(engine._logged) < fed, "the once-only log keys grew with the input"
+    assert len(engine._logged) <= engine._LOG_KEYS_MAX
+    assert len(engine._gate_cache) <= engine._GATE_CACHE_MAX
+
+
+def test_a_failed_cim_resolution_is_retried_instead_of_becoming_permanent(monkeypatch,
+                                                                          cim_reset):
+    """A registry that fails at first touch and would succeed on retry must not switch
+    the bound rules off for the life of the process.
+
+    The resolution used to set its "resolved" flag on the failure path too, one level up
+    from the gate that was fixed for the same reason. So ONE bad moment -- a models.yaml
+    caught mid-write, a `registry.reload()` that raised and left the singleton empty, a
+    transient MemoryError -- disabled every datamodel-bound rule until someone restarted
+    the process. Nothing in the app calls `reset_cim_cache()`, so there was no way back.
+
+    Driven by an INJECTED clock, never by sleeping: the retry wall is a wall-clock
+    interval and the test steps over it explicitly.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    real, broken, attempts, now = cim_registry.get_registry, [True], [], [1000.0]
+
+    def flaky():
+        attempts.append(now[0])
+        if broken[0]:
+            raise RuntimeError("models.yaml was half-written")
+        return real()
+
+    monkeypatch.setattr(cim_registry, "get_registry", flaky)
+    monkeypatch.setattr(engine, "_clock", lambda: now[0])
+    reset_cim_cache()                       # force re-resolution through the break
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    assert not datamodels_match(rule, {"network"})     # dead while the registry is down
+    broken[0] = False                                  # ...and now it would load again
+
+    now[0] += engine._CIM_RETRY_SECONDS + 1            # one event, past the retry wall
+    assert datamodels_match(rule, {"network"}), (
+        "a datamodel-bound rule stayed dead after the registry recovered - the failed "
+        "resolution was memoized as permanent process state")
+    assert attempts == [1000.0, 1000.0 + engine._CIM_RETRY_SECONDS + 1], (
+        f"expected one failed attempt and one successful retry, got {attempts}")
+
+
+def test_the_cim_retry_waits_instead_of_reloading_the_registry_per_event(monkeypatch,
+                                                                         cim_reset):
+    """The other half of retrying: it has to stay affordable.
+
+    `registry.load()` measures ~200 ms on the shipped 11-model models.yaml and it runs
+    UNDER `_cim_lock`, so retrying on every call would turn a broken registry from "the
+    bound rules are off" into "the whole detection path stalls for 200 ms per event".
+    The wall bounds that at one load per `_CIM_RETRY_SECONDS` whatever the event rate --
+    which is also why it is a clock and not a count of calls: a call budget is seconds of
+    recovery latency at 10k events/s and hours of it on a quiet box.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    attempts, now = [], [1000.0]
+
+    def boom():
+        attempts.append(now[0])
+        raise RuntimeError("models.yaml is still unreadable")
+
+    monkeypatch.setattr(cim_registry, "get_registry", boom)
+    monkeypatch.setattr(engine, "_clock", lambda: now[0])
+    reset_cim_cache()                       # force re-resolution through the break
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    tick = engine._CIM_RETRY_SECONDS / 1000.0          # 500 events = half the wall
+    for _ in range(500):
+        assert not datamodels_match(rule, {"network"})
+        now[0] += tick
+    assert attempts == [1000.0], (
+        f"a broken registry was re-loaded {len(attempts)} times inside one retry wall")
+
+    now[0] += engine._CIM_RETRY_SECONDS     # ...and the wall expires
+    assert not datamodels_match(rule, {"network"})
+    assert len(attempts) == 2, "the retry never fired once the wall expired"
+
+
+def test_the_engine_and_registry_retry_walls_compose_instead_of_cancelling(monkeypatch,
+                                                                           cim_reset):
+    """The two negative caches are in SERIES, and this pins what that costs.
+
+    Every other retry test here patches `cim_registry.get_registry` itself, which hops
+    over the registry's own negative cache — so none of them can see the composition.
+    This one breaks `registry.load` instead and goes through the real `get_registry`,
+    which is the arrangement a running process actually has.
+
+    Two properties, and they pull in opposite directions:
+
+    * CHEAP. The engine's retry is usually answered from the registry's remembered
+      failure in O(1) rather than re-parsing the 27KB YAML. So the engine's wall bounds
+      attempts and the registry's bounds PARSES, and the expensive one is the inner one.
+    * SLOWER TO RECOVER. This engine's wall is armed a few hundred ms before the
+      registry's (`now` is sampled before the load), so the first retry past 30 s lands
+      inside the registry's still-warm entry, is refused, and re-arms the engine. A
+      fixed models.yaml is picked up in 30-60 s, not 30 — bounded and self-correcting,
+      and documented as such on `_cim`.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    parses, now = [], [1000.0]
+
+    def broken_load(*a, **k):
+        parses.append(now[0])
+        raise RuntimeError("models.yaml is unreadable")
+
+    monkeypatch.setattr(cim_registry, "load", broken_load)
+    monkeypatch.setattr(cim_registry, "_cache", None)
+    monkeypatch.setattr(cim_registry, "_failure", None)
+    monkeypatch.setattr(engine, "_clock", lambda: now[0])
+    reset_cim_cache()
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    assert not datamodels_match(rule, {"network"})
+    assert len(parses) == 1
+
+    # The engine's wall expires first. It retries, and the registry — whose own entry is
+    # still warm on the REAL monotonic clock the engine's injected one cannot move —
+    # replays the remembered failure without touching the file.
+    now[0] += engine._CIM_RETRY_SECONDS + 1
+    assert not datamodels_match(rule, {"network"})
+    assert len(parses) == 1, (
+        f"the engine's retry re-parsed models.yaml ({len(parses)} parses) - the "
+        "registry's negative cache is meant to absorb it")
+
+    # Drop the registry's half the way `registry.reload()` does, and the next engine
+    # retry reaches the file again. This is the "reload, then reset" sequence.
+    cim_registry._failure = None
+    now[0] += engine._CIM_RETRY_SECONDS + 1
+    assert not datamodels_match(rule, {"network"})
+    assert len(parses) == 2, "with both walls dropped the retry must reach load()"
+
+
+def test_reset_cim_cache_alone_cannot_clear_the_registrys_remembered_failure(monkeypatch,
+                                                                             cim_reset):
+    """`reset_cim_cache()` is "try again NOW" for THIS module's wall only.
+
+    It is documented as the call you make AFTER `registry.reload()`, and this is why:
+    used alone against a registry that is currently failing, the immediate re-resolution
+    is answered from the registry's private negative entry, so the reset buys nothing
+    but a freshly armed wall. Pinned because the docstring makes the claim.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    parses, broken = [], [True]
+    real = cim_registry.load
+
+    def flaky_load(*a, **k):
+        parses.append(1)
+        if broken[0]:
+            raise RuntimeError("models.yaml is unreadable")
+        return real(*a, **k)
+
+    monkeypatch.setattr(cim_registry, "load", flaky_load)
+    monkeypatch.setattr(cim_registry, "_cache", None)
+    monkeypatch.setattr(cim_registry, "_failure", None)
+    reset_cim_cache()
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    assert not datamodels_match(rule, {"network"})
+    broken[0] = False                       # the operator fixes the file...
+
+    reset_cim_cache()                       # ...and resets ONLY the engine
+    assert not datamodels_match(rule, {"network"}), (
+        "reset_cim_cache() alone appeared to recover - if the registry's negative cache "
+        "is gone, the claim on reset_cim_cache's docstring needs deleting too")
+    assert len(parses) == 1, "the file was re-read without reload() dropping the entry"
+
+    cim_registry.reload()                   # the supported sequence: reload, then reset
+    reset_cim_cache()
+    assert datamodels_match(rule, {"network"}), "reload + reset did not recover"
+
+
+def test_a_successful_cim_resolution_is_still_resolved_exactly_once(monkeypatch,
+                                                                    cim_reset):
+    """Retrying FAILURE must not have made SUCCESS repeat: the handle is resolved once
+    per process and reused for every event, which is the whole point of the global."""
+    from app.cim import registry as cim_registry
+
+    real, attempts = cim_registry.get_registry, []
+
+    def counted():
+        attempts.append(1)
+        return real()
+
+    monkeypatch.setattr(cim_registry, "get_registry", counted)
+    reset_cim_cache()
+
+    evt = NormalizedEvent(event_time=None, vendor="v", log_type="traffic", action="deny")
+    for _ in range(50):
+        assert cim_tags(evt) == frozenset({"network"})
+    assert attempts == [1], f"the registry was resolved {len(attempts)} times"
+
+
+def test_a_gate_resolved_before_a_reset_is_not_written_back_after_it(monkeypatch,
+                                                                     cim_reset):
+    """`reset_cim_cache()` cleared `_gate_cache` OUTSIDE `_cim_lock`, so a gate already
+    resolved against the PRE-reset registry could land in the cache after the clear.
+
+    That cache is dropped by nothing else but its own overflow, so the stale binding then
+    outlives the registry it was resolved against for the life of the process -- the same
+    permanent-state class as the two findings above it. `_cim_generation` is what lets the
+    thread holding an in-flight gate notice that its registry has been discarded.
+
+    The window is FORCED with an Event rather than waited for: the fake registry parks
+    inside `by_name`, which is precisely the unlocked middle of `_gate`.
+    """
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    resolving, release = threading.Event(), threading.Event()
+
+    class _Model:
+        tag = "network"
+
+    class _SlowRegistry:
+        tags = ("network",)
+
+        def by_name(self, name):            # noqa: ARG002 — one model, whatever is asked
+            resolving.set()
+            assert release.wait(10), "the gate resolution was never released"
+            return _Model()
+
+    monkeypatch.setattr(cim_registry, "get_registry", _SlowRegistry)
+    reset_cim_cache()                       # force re-resolution through the fake
+
+    rule = _rule(_DENY, rid="bound", datamodels="network")
+    seen: dict[str, bool] = {}
+
+    def resolver():
+        seen["gate"] = datamodels_match(rule, {"network"})
+
+    t = threading.Thread(target=resolver, name="cim-gate")
+    t.start()
+    assert resolving.wait(10), "the resolver never reached the registry"
+    reset_cim_cache()                       # ...and the reset lands mid-resolution
+    release.set()                           # release BEFORE asserting - never hang here
+    t.join(10)
+    assert not t.is_alive(), "the resolver never came back"
+
+    assert seen["gate"] is True, "the in-flight call must still get its own answer"
+    assert engine._gate_cache == {}, (
+        "a gate resolved against the pre-reset registry was written back after the "
+        "reset cleared the cache - that binding now outlives the registry it came from")
+
+
+def test_the_cim_docstring_names_the_real_boot_time_registry_warmer(monkeypatch):
+    """`_cim`'s docstring carries the performance argument for resolving under a lock:
+    the registry is already warm in a served process, so the load behind the lock is a
+    cache hit and the window nobody can race through is small.
+
+    That argument is only true of the function that actually forces the load. The
+    docstring named `main._init_cim`, which builds the `cim_<tag>` VIEWS, returns early
+    under CIM_ENABLED=false and never touches the registry -- so the sentence holding up
+    the whole construction was checkable and wrong. `main._require_cim_registry` is the
+    real one: first in the lifespan, ungated, and fatal if the load raises.
+    """
+    from app import db, main
+    from app.cim import registry as cim_registry
+    from app.detection import engine
+
+    refs = set(re.findall(r"main\.(_[A-Za-z_]+)", engine._cim.__doc__ or ""))
+    assert refs, "the docstring no longer names anything in app.main"
+    missing = sorted(r for r in refs if not callable(getattr(main, r, None)))
+    assert not missing, f"the docstring names something app.main does not have: {missing}"
+    assert "_require_cim_registry" in refs, (
+        "the docstring must name the function that actually forces the boot-time "
+        f"registry load; it names {sorted(refs)}")
+
+    # ...and that function really is the warmer, rather than merely being named as one
+    real, warmed = cim_registry.get_registry, []
+
+    def counted():
+        warmed.append(1)
+        return real()
+
+    monkeypatch.setattr(db, "get_registry", counted)
+    main._require_cim_registry()
+    assert warmed == [1], "main._require_cim_registry did not force the registry load"
+
+
+def test_converted_web_rules_bind_to_the_web_data_model():
+    """The four T1190 web-exploitation rules read the Web data model now, so they see
+    every source the registry calls Web -- not just the two log_types they listed."""
+    rules = {r.id: r for r in load_rules(RULES_DIR)}
+    for rid in ("lo-web-sql-injection", "lo-web-path-traversal",
+                "lo-web-command-injection", "lo-web-xss"):
+        assert rules[rid].datamodels == ["web"], rid
+
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    # a PAN URL-filtering record: log_type `url` is a Web member but was never in the
+    # old [access, http] list, so this SQL injection used to be invisible
+    assert "lo-web-sql-injection" in hits(
+        vendor="paloalto", product="ngfw", log_type="url", action="alert",
+        message="GET /item?id=1 union select username,password from users")
+    # a FortiGate web-filter record, likewise
+    assert "lo-web-path-traversal" in hits(
+        vendor="fortinet", product="fortigate", log_type="webfilter", action="blocked",
+        message="GET /download?f=../../../../etc/passwd")
+    # the gate still holds: the same payload on a non-web event does NOT fire
+    assert "lo-web-sql-injection" not in hits(
+        vendor="linux", product="auditd", log_type="execve", action="process-create",
+        message="psql -c 'select 1 union select 2'")
+
+
+def test_converted_ot_rule_covers_the_protocols_its_old_list_missed():
+    """`lo-ot-it-to-ot-write` binds to the Industrial model instead of copying five
+    protocol names, so the other four in app/ot.py:OT_PROTOCOLS are covered too."""
+    rules = {r.id: r for r in load_rules(RULES_DIR)}
+    assert rules["lo-ot-it-to-ot-write"].datamodels == ["ics"]
+
+    eng = DetectionEngine(load_rules(RULES_DIR))
+
+    def hits(**kw):
+        return {r.id for r in eng.evaluate_event(NormalizedEvent(event_time=None, **kw))}
+
+    # BACnet was NOT in the rule's old protocol list. Addresses are the placeholder
+    # lab CIDRs the rule ships with: an IT source writing into the OT zone.
+    itot = dict(vendor="zeek", product="bacnet", log_type="bacnet", action="write",
+                src_ip="10.10.0.9", dst_ip="10.60.1.5", raw={"ot": {"operation": "write"}})
+    assert "lo-ot-it-to-ot-write" in hits(**itot)
+    # a write that starts inside the OT zone is routine engineering, not a violation
+    assert "lo-ot-it-to-ot-write" not in hits(**{**itot, "src_ip": "10.60.0.9"})
+    # a read is not a write
+    assert "lo-ot-it-to-ot-write" not in hits(
+        **{**itot, "action": "read", "raw": {"ot": {"operation": "read"}}})
+    # and a non-OT event with the same shape is not an OT zone violation at all
+    assert "lo-ot-it-to-ot-write" not in hits(**{**itot, "log_type": "conn"})
 
 
 # ── the shipped rule library ────────────────────────────────────────────────

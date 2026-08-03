@@ -65,7 +65,17 @@ class Agg:
 # ── pipeline stages ───────────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Search:
+    """The pipeline's SOURCE — the one node that decides what is being read.
+
+    ``datamodel`` names a CIM data model (display name or tag); the compiler then reads
+    the model's members and projects its CIM field names instead of the raw ``events``
+    columns. Only the FIRST stage may carry one — a source cannot be re-chosen halfway
+    down a pipeline — and both spellings (``| datamodel X`` and ``from datamodel:X``)
+    are folded into this single field by the parser, so there is one AST and one
+    compiler path rather than two dialects to keep in step.
+    """
     predicate: Optional[Expr]       # None -> match all
+    datamodel: Optional[str] = None # CIM model name/tag; None -> the raw `events` table
 
 
 @dataclass(frozen=True)

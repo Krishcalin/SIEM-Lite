@@ -1,0 +1,456 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
+# ============================================================================
+#  LogOcean CIM registry — versioned, vendor-agnostic data models.
+#
+#  This file is DATA. Editing it re-shapes the CIM layer with no code change —
+#  but NOT in a running process. `app.cim.registry.get_registry()` parses and
+#  validates this file once and caches it for the lifetime of the process, so
+#  every kind of edit below needs a RESTART before it changes anything at all.
+#    * `fields:` edits take effect on the next startup — `db.init_cim` drops and
+#      recreates one `cim_<tag>` view per model from `app.cim.sql.ddl_statements`.
+#      A field is computed on read, so nothing stored has to be corrected after.
+#    * `membership:` edits take effect on the next startup too, and then only for
+#      NEW events: `app.cim.match.tags_for` stamps `events.cim_models` (a PLAIN
+#      `text[]` column declared in schema.sql and filled per row at ingest,
+#      exactly like `search_tsv` is filled from `normalize.tsv_text`), so rows
+#      already in the table keep the tags they were ingested with until
+#      `db.backfill_cim()` re-derives them.
+#
+#      RESTART FIRST, THEN BACKFILL — in that order, and it matters. A backfill
+#      run before the restart re-derives history under the OLD cached rule
+#      (changing nothing) and then stamps `cim_meta.backfill_hash` with that old
+#      rule's fingerprint, so `db.cim_status()["backfill_due"]` turns False:
+#      history is reported as current under a rule that has never been applied to
+#      a single row. The restart exposes the drift again — the stamp stops
+#      matching the live rule — but until then the Admin page is confidently
+#      wrong, and every event ingested in between is tagged the old way.
+#
+#  MEMBERSHIP — an event belongs to a model when ANY clause matches (OR of
+#  clauses); within a clause every term must match (AND of terms). Comparison is
+#  case-insensitive on both sides. A term reads either a normalized `events`
+#  column (vendor / product / log_type / severity / action / protocol / app /
+#  user_name / host_name) or a jsonb key, in one of two forms:
+#
+#      - {log_type: [security], vendor: [microsoft]}        # short: key = source
+#      - {raw:event_id: [4624, 4625]}                       # short: ONE jsonb key
+#      - label: {raw: [EventID, event_id], values: [4624]}  # long: key = label
+#      - label: {column: log_type, values: [modbus]}        # long, explicit column
+#
+#  In the long form `raw:` may list ORDERED ALTERNATIVES (compiled to COALESCE —
+#  the first non-null wins) and an alternative that is itself a list is a NESTED
+#  path (`[[alert, category]]` reads raw['alert']['category']). A jsonb key is
+#  NEVER split on a dot: Zeek writes literal dotted top-level keys (`id.orig_h`).
+#  Values must be quoted strings or integers — bare yes/no/on/off/null are YAML
+#  booleans and are rejected on load.
+#
+#  FIELDS map a CIM field name to its source: `column:` (a normalized column),
+#  `raw:` (jsonb, schema-on-read, same alternative/nesting syntax), `const:` or
+#  `expr:` (a whitelisted named snippet). A field is null for a source that does
+#  not provide it — exactly as in Splunk CIM.
+#
+#  HONESTY RULES this file is held to (verified by parsing every file in
+#  samples/ with its real parser and evaluating the clauses below):
+#    1. Every clause either MATCHES at least one event in the shipped sample
+#       corpus, or is annotated `# unsampled` (a real parser path with no sample)
+#       or `# forward-looking` (a source LogOcean does not parse yet).
+#    2. No clause tests a vendor alone — vendor is always paired with product,
+#       log_type, action or a jsonb key.
+#    3. No clause keys on a value a parser cannot emit. Note especially that
+#       `paloalto_syslog.py` / `paloalto_csv.py` / `fortinet_fortigate.py` put
+#       the *subtype* in `log_type` (end / deny / vulnerability / forward), so
+#       the PAN and FortiGate clauses read the real TYPE out of raw.
+#    4. On a POPULATED model, a field mapping no member source can ever provide
+#       is deleted rather than shipped null-by-construction; a mapping kept for
+#       an unsampled-but-real parser path says so in a comment. Email and
+#       Vulnerability have no members at all — their fields are the schema those
+#       models will project once a source onboards, and they say so.
+# ============================================================================
+version: 1
+
+models:
+  # ── Authentication ────────────────────────────────────────────────────────
+  - name: Authentication
+    tag: authentication
+    version: 1
+    description: >
+      Login / logon / SSO / credential-validation activity across identity
+      providers, operating systems and network devices (Splunk CIM: Authentication).
+    membership:
+      # entra signin, aws ConsoleLogin, PAN AUTHENTICATION, syslog auth/authpriv,
+      # LEEF cat=Authentication. Deliberately vendor-agnostic — this one clause
+      # covers every source whose parser already names the activity.
+      - {log_type: [signin, authentication, auth, authpriv]}
+      - {vendor: [okta], product: [system-log]}                    # every Okta system-log event
+      # Windows Security. The canonical key is `event_id` (an int written back by
+      # windows_security.py); the vendor spellings are kept as COALESCE fallbacks
+      # so a raw EVTX/CSV export that never went through the write-back still matches.
+      - vendor: [microsoft]
+        product: [windows]
+        log_type: [security]
+        event_id:
+          raw: [event_id, EventID, "Event ID", Id, [Event, System, EventID]]
+          values: [4624, 4625, 4634, 4647, 4648, 4768, 4769, 4771, 4776, 4740]
+      - {vendor: [linux], product: [auditd],
+         log_type: [user_login, user_auth, user_start, user_end, cred_acq, cred_refr, login, user_logout]}
+      # M365 unified audit log sign-in operations (measured: UserLoginFailed).
+      - {vendor: [microsoft], product: [o365], action: [userloginfailed, userloggedin]}
+      # FortiGate device administration: type=event carries admin login/logout
+      # (measured: logid 0100032001, action=login). log_type here is the subtype.
+      - vendor: [fortinet]
+        product: [fortigate]
+        action: [login, logout]
+        fgt_type: {raw: [type], values: [event]}
+      - {vendor: [cisco], product: [ios], log_type: [sec_login]}    # %SEC_LOGIN-4-LOGIN_FAILED
+      # ASA log_type is the numeric message id: 605005 login permitted (measured),
+      # 611101/611102 user auth ok/fail, 113004/113005 AAA ok/fail.
+      - {vendor: [cisco], product: [asa], log_type: [605005, 611101, 611102, 113004, 113005]}
+    fields:
+      - {name: action, column: action, description: "success | failure | ..."}
+      - {name: app, column: app}
+      - {name: src, column: src_ip, description: "authentication source address"}
+      - {name: dest, column: host_name, description: "system authenticated to"}
+      - {name: dvc, column: host_name}
+      - {name: user, column: user_name}
+      - {name: signature, column: rule_name}
+      - {name: severity, column: severity}
+      - {name: vendor_product, expr: vendor_product}
+      # DROPPED: src_user <- raw:src_user. No shipped parser writes that key and no
+      # member source carries an initiating account distinct from `user`.
+
+  # ── Network Traffic ───────────────────────────────────────────────────────
+  - name: Network
+    tag: network
+    version: 1
+    description: >
+      Firewall / router / flow / connection records — allowed and denied traffic
+      between endpoints, including OT/ICS sessions (Splunk CIM: Network Traffic).
+    membership:
+      # `firewall` is the CEF/LEEF `cat=` of the Fortinet and Juniper SRX samples.
+      - {log_type: [traffic, forward, flow, flows, conn, connection, netflow, vpn,
+                    decryption, firewall]}
+      # OT/ICS sessions are network sessions too — the 9 canonical protocol tags
+      # from app/ot.py:OT_PROTOCOLS, which is what zeek_tsv/zeek_json put in
+      # log_type after zeek_ics.enrich(). They are ALSO members of Industrial.
+      - {log_type: [modbus, dnp3, s7comm, cip, enip, bacnet, iec104, opcua, profinet]}
+      - {vendor: [cisco], product: [asa, firepower, ios]}          # ASA/FTD/IOS device syslog
+      # PAN-OS: log_type holds the SUBTYPE (start / end / drop / deny), so the flow
+      # logs are recognised by their TYPE, which both parsers keep in raw
+      # (syslog: log_type + type; CSV export header: "Type"). Subtype-proof.
+      - vendor: [paloalto]
+        product: [ngfw]
+        pan_type: {raw: [log_type, type, Type], values: [traffic]}
+      # FortiGate: same shape — log_type holds the subtype (forward / local /
+      # sniffer / multicast), the real type is raw["type"].
+      - vendor: [fortinet]
+        product: [fortigate]
+        fgt_type: {raw: [type], values: [traffic]}
+    fields:
+      - {name: action, column: action, description: "allowed | blocked | ..."}
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      - {name: src_port, column: src_port}
+      - {name: dest_port, column: dst_port}
+      - {name: transport, column: protocol}
+      - {name: app, column: app}
+      - {name: bytes, column: bytes_total}
+      - {name: user, column: user_name}
+      - {name: dvc, column: host_name}
+      - {name: rule, column: rule_name}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Web ───────────────────────────────────────────────────────────────────
+  - name: Web
+    tag: web
+    version: 1
+    description: >
+      HTTP access / proxy / URL-filtering activity — requests, methods, statuses
+      and user agents (Splunk CIM: Web).
+    membership:
+      # access (apache/nginx), http (suricata eve), url (PAN THREAT subtype=url),
+      # urls (meraki), proxy (CEF cat=Proxy), webfilter (FortiGate UTM subtype).
+      - {log_type: [access, http, url, urls, webfilter, web-filter, proxy]}
+    fields:
+      - {name: action, column: action}
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      - {name: dest_port, column: dst_port}
+      - {name: user, column: user_name}
+      # suricata nests the request under `http`; zeek http writes `uri`;
+      # web_access.py writes `path` (its `request` is the whole request line).
+      - {name: url, raw: [url, [http, url], uri, path]}
+      - {name: http_method, raw: [method, [http, http_method]]}
+      - {name: status, raw: [status, [http, status], status_code]}
+      - {name: http_user_agent, raw: [user_agent, [http, http_user_agent]]}
+      # The site/vhost. NOT `host`: web_access.py stores the CLF *client* host
+      # under that key, so reading it here would report the client as the site.
+      - {name: site, raw: [[http, hostname], hostname, site]}
+      - {name: app, column: app}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── DNS ───────────────────────────────────────────────────────────────────
+  - name: DNS
+    tag: dns
+    version: 1
+    description: >
+      DNS resolution activity — queries, record types and answers (Splunk CIM:
+      Network Resolution / DNS).
+    membership:
+      - {log_type: [dns, dns-query, dnsquery]}
+    fields:
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      # zeek `query`, sysmon EID 22 `QueryName`, suricata eve `dns.rrname`.
+      - {name: query, raw: [query, QueryName, [dns, rrname]], description: "queried name"}
+      - {name: record_type, raw: [qtype_name, [dns, rrtype]]}
+      - {name: answer, raw: [answers, QueryResults, [dns, rdata]]}
+      - {name: user, column: user_name}
+      - {name: dvc, column: host_name}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Endpoint ──────────────────────────────────────────────────────────────
+  - name: Endpoint
+    tag: endpoint
+    version: 1
+    description: >
+      Host telemetry — process, file, registry, image/driver-load and file-audit
+      activity from EDR/Sysmon/auditd/FIM (Splunk CIM: Endpoint / Processes / Filesystem).
+    membership:
+      - {vendor: [microsoft], product: [sysmon]}                   # all Sysmon
+      - {vendor: [crowdstrike], product: [falcon]}                 # all Falcon
+      # `fileintegrity` is the LEEF cat= of Tripwire Enterprise FIM; `file` is the
+      # ECS event.category a generic-JSON FIM source lands on.
+      - {log_type: [process-create, process-exit, image-load, network-connect,
+                    create-remote-thread, process-access, file-create, file-delete,
+                    registry-set, registry-add-delete, registry-rename, pipe-create,
+                    pipe-connect, driver-load, execve, syscall, file-audit,
+                    fileintegrity, file]}
+      - vendor: [microsoft]
+        product: [windows]
+        log_type: [security]
+        event_id:
+          raw: [event_id, EventID, "Event ID", Id, [Event, System, EventID]]
+          values: [4688, 4689]                                     # process create / exit
+    fields:
+      - {name: action, column: action}
+      - {name: dvc, column: host_name}
+      - {name: user, column: user_name}
+      - {name: process, raw: [CommandLine, [event, CommandLine]]}
+      - {name: process_name, raw: [Image, [event, ImageFileName], exe, comm]}
+      - {name: parent_process, raw: [ParentImage, ParentCommandLine]}
+      # sysmon TargetFilename (sample gap — no file-create event shipped), Falcon
+      # FileName, Tripwire FIM attributes.resource, Nutanix Files object_name.
+      - {name: file_name, raw: [TargetFilename, FileName, [event, FileName],
+                                [attributes, resource], object_name]}
+      - {name: registry_path, raw: TargetObject}                   # sysmon EID 12/13/14 (sample gap)
+      - {name: process_hash, raw: [Hashes, SHA256, [event, SHA256]]}
+      - {name: signature, column: rule_name}
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Change ────────────────────────────────────────────────────────────────
+  - name: Change
+    tag: change
+    version: 1
+    description: >
+      Configuration / administrative / management-plane changes — cloud audit,
+      device config, account and repo administration (Splunk CIM: Change).
+    membership:
+      - {log_type: [config, audit, api_audit, activity]}
+      - {vendor: [github], product: [audit]}
+      - {vendor: [gitlab], product: [audit]}
+      - {vendor: [aws], product: [cloudtrail]}
+      - {vendor: [gcp], product: [cloud-audit]}
+      - {vendor: [microsoft], product: [azure, o365]}
+      # log_type qualified: nutanix_pc.py also emits `flow` (micro-segmentation
+      # traffic), which is a Network record and must not land in Change.
+      - {vendor: [nutanix], product: [prism-central], log_type: [audit, api_audit]}
+      # unsampled — no account-management Windows event ships in samples/, but the
+      # shape is the one the Authentication clause is measured on.
+      - vendor: [microsoft]
+        product: [windows]
+        log_type: [security]
+        event_id:
+          raw: [event_id, EventID, "Event ID", Id, [Event, System, EventID]]
+          values: [4720, 4722, 4723, 4724, 4725, 4726, 4728, 4732, 4738, 4756, 1102]
+      # PAN-OS SYSTEM logs: subtype `general` is the commit / content-update /
+      # admin channel (measured: "Configuration committed successfully by admin").
+      # Other system subtypes (ha, vpn, dhcp, dnsproxy, ras…) are device health
+      # and are deliberately left out so they cannot dilute Change.
+      # PAN CONFIG logs need no clause here — the parser sets log_type=config.
+      - vendor: [paloalto]
+        product: [ngfw]
+        log_type: [system]
+        pan_subtype: {raw: [subtype], values: [general]}
+    fields:
+      - {name: action, column: action}
+      # m365 ObjectId, azure resourceId, github repo, nutanix restEndpoint,
+      # gcp protoPayload.resourceName, gitlab details.target_details.
+      - {name: object, raw: [object, ObjectId, resourceId, repo, restEndpoint,
+                             [protoPayload, resourceName], [details, target_details]]}
+      # PAN CONFIG writes `command` (paloalto_syslog.py, unsampled path);
+      # Nutanix Prism API audit writes the HTTP verb.
+      - {name: command, raw: [command, httpMethod]}
+      - {name: user, column: user_name}
+      - {name: src, column: src_ip}
+      - {name: dvc, column: host_name}
+      - {name: status, raw: [status, ResultStatus, resultType, errorCode,
+                             [protoPayload, status, message]]}
+      - {name: signature, column: rule_name}
+      - {name: severity, column: severity}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Malware ───────────────────────────────────────────────────────────────
+  - name: Malware
+    tag: malware
+    version: 1
+    description: >
+      Anti-malware / ransomware / sandbox verdicts — EDR detections, AV hits and
+      file-reputation events (Splunk CIM: Malware).
+    membership:
+      # unsampled. `wildfire` / `virus` are PAN-OS THREAT subtypes and `virus` is
+      # also a FortiGate UTM subtype — both parsers put the subtype in log_type;
+      # `ransomware-alert` is nutanix_files.py's Data Lens alert (line 212).
+      - {log_type: [ransomware-alert, wildfire, virus, malware, quarantine]}
+      - {vendor: [crowdstrike], product: [falcon], log_type: [detection]}
+      # unsampled — nutanix_files.py:211 sets product=data-lens only for its
+      # ransomware/anomaly alerts, so this needs no log_type qualifier.
+      - {vendor: [nutanix], product: [data-lens]}
+    fields:
+      - {name: action, column: action}
+      - {name: signature, column: rule_name, description: "detection / malware name"}
+      - {name: file_name, raw: [filename, FileName, [event, FileName]]}
+      - {name: file_hash, raw: [Hashes, SHA256, [event, SHA256]]}
+      # Falcon's MITRE tactic is the closest thing any member emits to a category.
+      - {name: category, raw: [category, Tactic, [event, Tactic]]}
+      - {name: user, column: user_name}
+      - {name: dest, column: host_name}
+      - {name: src, column: src_ip}
+      - {name: severity, column: severity}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Intrusion Detection ───────────────────────────────────────────────────
+  - name: IDS
+    tag: ids
+    version: 1
+    description: >
+      IDS / IPS / WAF / network-threat alerts — signatures, categories and the
+      offending flow (Splunk CIM: Intrusion Detection).
+    membership:
+      # `waf` is the CEF cat= of the Imperva SecureSphere sample — Splunk CIM
+      # models a WAF as an application-layer IDS.
+      - {log_type: [alert, ids-alerts, ids, ips, threat, intrusion, waf]}
+      # PAN-OS THREAT subtypes that are IPS detections (measured: vulnerability).
+      # `virus` / `wildfire` / `url` / `file` / `data` are deliberately excluded —
+      # they belong to Malware and Web.
+      - {vendor: [paloalto], product: [ngfw],
+         log_type: [vulnerability, spyware, flood, scan, packet]}
+    fields:
+      - {name: action, column: action}
+      - {name: signature, column: rule_name}
+      # suricata alert.category, PAN category (syslog) / Category (CSV export),
+      # FortiGate UTM `attack`, CEF extension cat.
+      - {name: category, raw: [category, Category, [alert, category], attack,
+                               [extension, cat]]}
+      - {name: severity, column: severity}
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      - {name: dest_port, column: dst_port}
+      - {name: transport, column: protocol}
+      # null for every member in the corpus; kept because PAN threat logs carry a
+      # source user whenever User-ID is deployed.
+      - {name: user, column: user_name}
+      - {name: dvc, column: host_name}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Industrial (OT / ICS) ─────────────────────────────────────────────────
+  - name: Industrial
+    tag: ics
+    version: 1
+    description: >
+      OT / ICS control-plane activity — the Zeek ICSNPP protocol logs (modbus,
+      dnp3, s7comm, cip/enip, bacnet …) after app/parsers/zeek_ics.py has lifted
+      the operation onto `action` and a compact `ot` object into raw. Reads and
+      writes to a controller, with the master and the controller as src/dest.
+      No Splunk CIM equivalent — this model is LogOcean's OT contract.
+    membership:
+      # The canonical protocol tags from app/ot.py:OT_PROTOCOLS, which is also
+      # what db.ot_* filters events.log_type on. Keep the two lists in step.
+      - {log_type: [modbus, dnp3, s7comm, cip, enip, bacnet, iec104, opcua, profinet]}
+    fields:
+      - {name: protocol, raw: [[ot, protocol]], description: "canonical OT protocol tag"}
+      - {name: operation, raw: [[ot, operation]], description: "read | write | control | other"}
+      - {name: is_write, raw: [[ot, is_write]], description: "'true' when the op mutates the controller"}
+      - {name: action, column: action, description: "normalized control-plane op (write-registers, plc-stop …)"}
+      # The protocol's own function/service: modbus `func`, dnp3 `fc_request`,
+      # s7comm `function_name`, cip/enip `cip_service`, bacnet `bacnet_service`.
+      - {name: function_code, raw: [func, function_code, fc_request, function_name,
+                                    cip_service, bacnet_service]}
+      - {name: unit_id, raw: [[ot, unit_id], unit_id], description: "Modbus unit / DNP3 station id"}
+      - {name: register, raw: [[ot, address], address, start_address, reference_number],
+         description: "register / coil / point address"}
+      - {name: quantity, raw: [[ot, quantity], quantity], description: "registers or coils touched"}
+      - {name: src, column: src_ip, description: "master / engineering station"}
+      - {name: dest, column: dst_ip, description: "controller (PLC / RTU)"}
+      - {name: src_port, column: src_port}
+      - {name: dest_port, column: dst_port}
+      - {name: session_id, column: rule_name, description: "Zeek connection uid"}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Email ─────────────────────────────────────────────────────────────────
+  - name: Email
+    tag: email
+    version: 1
+    description: >
+      Message / mail-gateway activity — sender, recipient, subject and delivery
+      action (Splunk CIM: Email). EMPTY BY DESIGN: no shipped parser emits mail
+      telemetry. It populates when an email-security source onboards (O365
+      Exchange workload fan-out, mail gateway) — see roadmap Phase 2.
+    membership:
+      # forward-looking. m365_audit.py puts the workload in log_type, so an
+      # Exchange record already lands on `exchange` the day one is ingested.
+      - {log_type: [email, smtp, mail, exchange, message-trace]}
+      # REMOVED: {app: [smtp, smtps, submission]} — app is the L7 protocol a
+      # firewall detected, so that clause filled Email with flow records whose
+      # sender/recipient/subject were all null.
+      # REMOVED: {vendor: microsoft, product: o365, log_type: exchange} — strictly
+      # subsumed by the clause above, so it could never be the decisive one.
+    fields:
+      - {name: action, column: action}
+      - {name: src, column: src_ip}
+      - {name: dest, column: dst_ip}
+      - {name: src_user, raw: [sender, from]}
+      - {name: recipient, raw: [recipient, to]}
+      - {name: subject, raw: subject}
+      - {name: user, column: user_name}
+      - {name: signature, column: rule_name}
+      - {name: vendor_product, expr: vendor_product}
+
+  # ── Vulnerability ─────────────────────────────────────────────────────────
+  - name: Vulnerability
+    tag: vulnerability
+    version: 1
+    description: >
+      Vulnerability-scanner findings — CVE, severity and the affected host
+      (Splunk CIM: Vulnerabilities). EMPTY BY DESIGN: no shipped parser emits
+      vulnerability telemetry; it populates when a Qualys/Tenable/Rapid7
+      collector onboards (roadmap Phase 2).
+    membership:
+      # forward-looking, and qualified by BOTH vendor and log_type on purpose.
+      # The previous bare `{log_type: [vulnerability, …]}` clause captured every
+      # PAN-OS IPS alert, because paloalto_*.py put the THREAT *subtype* in
+      # log_type — a firewall detection is not a scanner finding. Those events
+      # are IDS members now; nothing here may match a non-scanner vendor.
+      - vendor: [qualys, tenable, rapid7, nessus, openvas, nexpose]
+        log_type: [vulnerability, vuln, vulnerabilities, vulnerability-detection,
+                   host-detection]
+    fields:
+      - {name: signature, column: rule_name, description: "vulnerability / plugin name"}
+      - {name: cve, raw: [cve, cve_id]}
+      - {name: severity, column: severity}
+      - {name: dest, column: host_name, description: "affected host"}
+      - {name: dvc, column: host_name}
+      - {name: category, raw: [category, plugin_family]}
+      - {name: user, column: user_name}
+      - {name: vendor_product, expr: vendor_product}

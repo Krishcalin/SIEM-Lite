@@ -76,6 +76,36 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt pytest httpx
 
+      # ------------------------------------------------------------------ #
+      #  Why three steps and not one                                       #
+      # ------------------------------------------------------------------ #
+      # This job reported GREEN while executing ZERO tests for roughly 70
+      # commits. Two independent holes did it: import-time errors made the
+      # whole integration suite fail collection, and a DSN that was unset or
+      # unreachable made every test skip — and a run of nothing but skips
+      # exits 0. `tests/conftest.py` now fails a run that collected
+      # integration tests, had a DSN and executed none of them, which is the
+      # real guard and protects local runs too. These steps exist so the
+      # failure is FAST and LEGIBLE instead of arriving as a fixture error
+      # partway down a long log.
+      - name: Verify PostgreSQL is actually reachable
+        run: |
+          pg_isready -d "$DB_DSN" \
+            || { echo "::error::PostgreSQL is not reachable at DB_DSN — the integration job would otherwise skip every test and still exit 0"; exit 1; }
+          psql "$DB_DSN" -v ON_ERROR_STOP=1 -c 'SELECT version();'
+        env:
+          DB_DSN: postgresql://logocean:logocean@localhost:5432/logocean
+
+      - name: Verify the integration suite collects (catches import-time errors)
+        run: |
+          n=$(python -m pytest tests/ -m integration --collect-only -q 2>&1 | tail -1)
+          echo "collected: $n"
+          python -m pytest tests/ -m integration --collect-only -q > /dev/null \
+            || { echo "::error::the integration suite does not collect — every test would 'fail' as a collection error and the DB claims would go unverified"; exit 1; }
+        env:
+          PYTHONPATH: .
+          DB_DSN: postgresql://logocean:logocean@localhost:5432/logocean
+
       - name: Run integration tests against PostgreSQL
         run: python -m pytest tests/ -m integration -q
         env:

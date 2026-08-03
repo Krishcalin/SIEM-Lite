@@ -6,7 +6,10 @@ Three analyst tools over the detection rule pack, all dependency-free:
 
 * **Rule tester** — evaluate a Sigma-subset rule against a sample event with the
   *same* engine the pipeline uses, and show per-selection + condition results so
-  you can see exactly why a rule did or didn't fire.
+  you can see exactly why a rule did or didn't fire. Both source gates are reported
+  separately from the selections — ``logsource_ok`` and ``datamodel_ok``, the latter
+  next to the CIM data models the sample event actually belongs to — because "the
+  rule looks right but nothing fires" is nearly always a gate, not a selection.
 * **Coverage map** — which ATT&CK tactics/techniques the *enabled* rules cover,
   and where the gaps are (techniques only a disabled rule would catch, or none).
 * **Rule health** — never-fired, noisy, and stale rules, so the pack can be tuned.
@@ -46,14 +49,23 @@ def test_rule(rule_yaml: str, event_json: str) -> dict:
     """Evaluate a rule (YAML) against an event (JSON) with the production engine.
 
     Returns a result dict: ``ok`` (parsed cleanly), ``error`` (message if not),
-    ``matched`` (final verdict), ``logsource_ok``, ``selections`` (per-named
-    selection booleans), ``condition`` (the rule's condition expression), and the
-    parsed ``techniques`` / ``tactics``. Never raises on bad input.
+    ``matched`` (final verdict), ``logsource_ok``, ``datamodel_ok``, ``datamodels``
+    (what the rule binds to), ``event_datamodels`` (what the sample event actually
+    *is*), ``selections`` (per-named selection booleans), ``condition`` (the rule's
+    condition expression), and the parsed ``techniques`` / ``tactics``. Never raises
+    on bad input.
+
+    The two gate booleans are what turn "it didn't fire" into a diagnosis: a rule
+    bound to ``web`` against an event whose ``event_datamodels`` reads ``['network']``
+    is a mis-binding, not a broken selection. An unbound rule reports
+    ``datamodel_ok`` true, exactly as an empty ``logsource`` reports ``logsource_ok``
+    true — both gates are match-all when absent.
     """
     import json
 
     result: dict[str, Any] = {
         "ok": False, "error": None, "matched": False, "logsource_ok": None,
+        "datamodel_ok": None, "datamodels": [], "event_datamodels": [],
         "selections": {}, "condition": "", "techniques": [], "tactics": [],
     }
     try:
@@ -75,18 +87,26 @@ def test_rule(rule_yaml: str, event_json: str) -> dict:
 
     try:
         rule = de.rule_from_dict(doc, "workbench")
-        flat = de.flatten_event(event_from_json(event))
+        evt = event_from_json(event)
+        flat = de.flatten_event(evt)
         det = rule.detection
         selections = {name: de._eval_selection(flat, body)
                       for name, body in det.items() if name != "condition"}
         condition = str(det.get("condition", ""))
         logsource_ok = de._logsource_matches(rule.logsource, flat)
-        matched = de.match_rule(rule, flat)
+        # Resolve membership from the EVENT (never from `flat`, whose raw keys are
+        # lower-cased and dot-joined) and hand the same tags to `match_rule`, so the
+        # signal shown to the analyst is provably the one the verdict was made on.
+        event_tags = de.cim_tags(evt)
+        datamodel_ok = de.datamodels_match(rule, event_tags)
+        matched = de.match_rule(rule, flat, evt, event_tags)
     except Exception as e:  # noqa: BLE001 — surface any evaluator error to the UI
         result["error"] = f"Evaluation error: {e}"
         return result
 
     result.update(ok=True, matched=matched, logsource_ok=logsource_ok,
+                  datamodel_ok=datamodel_ok, datamodels=list(rule.datamodels),
+                  event_datamodels=sorted(event_tags),
                   selections=selections, condition=condition,
                   techniques=rule.techniques, tactics=rule.tactics)
     return result

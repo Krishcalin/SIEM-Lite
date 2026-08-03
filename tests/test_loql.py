@@ -169,13 +169,278 @@ def test_base_where_injected_with_its_params():
     assert "(tenant_id = %s)" in sql and "t1" in params
 
 
+# ── datamodel (CIM) ───────────────────────────────────────────────────────────
+# `| datamodel <Name>` and `from datamodel:<Name>` are the same thing said twice: the
+# parser folds both into `Search.datamodel`, so there is one AST and one compiler path.
+# s0 stops being the raw `events` table and becomes a CIM model's projection of it,
+# filtered on the GIN-indexed membership array. The model tag is the one piece of user
+# input that names something server-side, which makes it precisely the thing the
+# injection invariant has to keep watching.
+
+def test_datamodel_membership_tag_is_bound_never_inlined():
+    sql, params = sql_of('| datamodel Authentication')
+    assert "cim_models @> ARRAY[%s]::text[]" in sql   # index-usable containment, not a scan
+    assert "authentication" not in sql                # the tag reaches Postgres only as a param
+    assert params == ["authentication"]
+
+
+def test_datamodel_projects_cim_field_names_with_the_reserved_one_quoted():
+    # `user` is the model field the output quoter exists for: emitted bare, every row
+    # would come back with the database login instead of the account that logged in.
+    sql, _ = sql_of('| datamodel Authentication')
+    assert 'user_name AS "user"' in sql               # the CIM name, not the events column
+    assert "host(src_ip) AS src" in sql               # inet rendered to text, renamed to CIM
+    assert "rule_name AS signature" in sql
+    assert not bare_ident(sql, "user")
+    assert sql.endswith('SELECT id, event_time, action, app, src, dest, dvc, "user", '
+                        "signature, severity, vendor_product, vendor, product, log_type, "
+                        "message FROM s0 LIMIT 1000")
+
+
+@pytest.mark.parametrize("primary, alias", [
+    ('| datamodel Authentication', 'from datamodel:Authentication'),
+    ('| datamodel Web | stats count by user', 'from datamodel:Web | stats count by user'),
+    ('| datamodel DNS | top 5 query', 'from datamodel:DNS | top 5 query'),
+    ('* | datamodel ics | head 3', 'from datamodel:ics | head 3'),
+])
+def test_both_datamodel_syntaxes_are_one_ast(primary, alias):
+    # an alias that built its own node would be a second dialect to keep in step forever.
+    assert parse(primary) == parse(alias)
+    assert sql_of(primary) == sql_of(alias)
+
+
+def test_datamodel_lands_on_the_search_node_not_a_stage_of_its_own():
+    q = parse('| datamodel Authentication | stats count by user')
+    assert q.stages[0] == N.Search(None, "Authentication")
+    assert len(q.stages) == 2 and isinstance(q.stages[1], N.Stats)
+    assert parse('vendor=x').stages[0].datamodel is None      # the field stays defaulted
+
+
+def test_datamodel_resolves_by_display_name_and_by_tag():
+    # `Industrial` is the one model whose tag is not its own lower-cased name, so it is
+    # the only one that can prove both lookups actually happen.
+    by_name, p1 = sql_of('| datamodel Industrial')
+    by_tag, p2 = sql_of('| datamodel ics')
+    shouting, p3 = sql_of('| datamodel INDUSTRIAL')
+    assert by_name == by_tag == shouting
+    assert p1 == p2 == p3 == ["ics"]
+
+
+def test_unknown_datamodel_is_an_error_that_names_the_known_ones():
+    # never a silently empty result — an empty data model and a typo look identical.
+    with pytest.raises(LoqlError) as e:
+        compile_query('| datamodel Authentcation')
+    assert "unknown data model" in e.value.message
+    assert "Authentication" in e.value.message
+
+
+@pytest.mark.parametrize("q", [
+    'vendor=okta | datamodel Authentication',        # after a search term
+    '| stats count | datamodel Authentication',      # after a transform
+    '| head 5 | datamodel Web',
+    '| datamodel Web | datamodel DNS',               # twice
+    'from datamodel:Web | datamodel DNS',            # once in each spelling
+    'a=1 | from datamodel:Web',                      # the alias, mid-pipeline
+])
+def test_datamodel_is_only_legal_as_the_source(q):
+    # a source decides what is read; halfway down a pipeline there is nothing left to
+    # re-source, and the stages already written meant the columns it replaces.
+    with pytest.raises(LoqlError) as e:
+        compile_query(q)
+    assert e.value.pos is not None                   # positioned, so an editor can point at it
+
+
+def test_datamodel_as_a_later_search_node_is_rejected_by_the_compiler_too():
+    # the parser cannot build this; a saved search or a future stage-rewriter could, and
+    # silently ignoring the source would be far worse than refusing it.
+    with pytest.raises(LoqlError):
+        compile_query(N.Query((N.Search(None), N.Search(None, "Authentication"))))
+
+
+def test_datamodel_predicate_reads_model_fields_from_its_own_cte():
+    # SQL cannot reference a SELECT's own output labels from that SELECT's WHERE, so a
+    # search over a data model has to sit above the projection, not inside it.
+    sql, params = sql_of('from datamodel:Authentication user="alice"')
+    assert 'SELECT * FROM s0 WHERE ("user" = %s)' in sql
+    assert params == ["authentication", "alice"]     # SQL order == bind order, tag first
+
+
+def test_datamodel_groups_by_the_models_field_not_the_events_column():
+    sql, params = sql_of('| datamodel Authentication | stats count by user | sort -count')
+    assert 'user_name AS "user"' in sql               # s0 maps it
+    assert '"user" AS "user"' in sql and 'GROUP BY "user"' in sql
+    assert sql.endswith('SELECT "user", count FROM s2 ORDER BY count DESC NULLS LAST LIMIT 1000')
+    assert params == ["authentication"]               # field names are identifiers, not params
+
+
+@pytest.mark.parametrize("q, name", [
+    ('| datamodel Authentication | stats count by user_name', 'user_name'),
+    ('| datamodel Authentication | where bytes_total > 5', 'bytes_total'),
+    ('| datamodel Authentication | fields src_ip', 'src_ip'),
+    ('| datamodel Network | eval x = dst_ip', 'dst_ip'),
+    ('from datamodel:Authentication host_name="h1"', 'host_name'),
+])
+def test_datamodel_rejects_a_normalized_column_the_model_replaced(q, name):
+    # the point of a data model is `user`, not `user_name`. Left to schema-on-read this
+    # would compile to (raw ->> 'user_name'), answer NULL in every row, and read as
+    # "there were no such events" — the failure mode with no symptom.
+    with pytest.raises(LoqlError) as e:
+        compile_query(q)
+    assert name in e.value.message and "data model" in e.value.message
+
+
+def test_datamodel_keeps_schema_on_read_for_keys_it_does_not_map():
+    # `raw` rides along in s0, so a jsonb key the model never mapped is still reachable —
+    # only the normalized names the model *replaced* are refused.
+    sql, params = sql_of('| datamodel Authentication | stats count by eventName')
+    assert '(raw ->> %s) AS "eventName"' in sql
+    assert params == ["authentication", "eventName", "eventName"]
+
+
+def test_datamodel_projection_matches_the_cim_view_shape():
+    # `| datamodel X` and `SELECT * FROM cim_x` must return one shape — an analyst should
+    # not be able to tell which door they came in by. This pins the passthrough tail both
+    # sides append after the model's own fields.
+    from app.cim import get_registry
+    from app.cim.sql import create_view_ddl
+    view = create_view_ddl(get_registry().by_name("Authentication"))
+    sql, _ = sql_of('| datamodel Authentication')
+    tail = ", vendor, product, log_type, message, raw"
+    assert tail in view and tail in sql               # severity is a field here, so not repeated
+
+
+def test_every_registered_model_compiles():
+    # the registry is data, not code — but a model whose fields did not compile would
+    # otherwise surface the first time an analyst typed its name.
+    from app.cim import get_registry
+    for m in get_registry().models:
+        sql, params = compile_query(f'| datamodel {m.name}')
+        assert params == [m.tag] and sql.count("%s") == 1
+        for f in m.fields:
+            assert f" AS {f.name}" in sql or f' AS "{f.name}"' in sql
+
+
+def test_datamodel_equals_is_still_an_ordinary_raw_field():
+    # REJECTED by design and it stays rejected: `datamodel=X` already parses as a
+    # raw-jsonb comparison, so intercepting it would silently re-point every query that
+    # ever used a raw key of that name.
+    sql, params = sql_of('datamodel=authentication')
+    assert "(raw ->> %s) = %s" in sql and params == ["datamodel", "authentication"]
+    assert "cim_models" not in sql
+
+
+def test_from_is_still_an_ordinary_field_name():
+    # mail logs really do carry a `from`; only the three-token `from datamodel:` shape is
+    # the source spelling.
+    sql, params = sql_of('from="a@b.com"')
+    assert "(raw ->> %s) = %s" in sql and params == ["from", "a@b.com"]
+
+
+@pytest.mark.parametrize("q", [
+    ':', 'vendor=x : y', 'datamodel:Authentication', '* | stats count : by user',
+    'vendor=:', 'from datamodel Web', 'from datamodel:', 'a=1 | datamodel',
+])
+def test_stray_colon_and_half_written_sources_are_rejected(q):
+    # COLON exists only so `from datamodel:<Name>` can be spelled; no other production
+    # accepts one, so adding the token must not have opened a hole. It only moves the
+    # message from the lexer's "unexpected character" to a positioned parse error.
+    with pytest.raises(LoqlError):
+        compile_query(q)
+
+
+@pytest.mark.parametrize("q", [
+    '| datamodel Authentication',
+    'from datamodel:Authentication action=failure | stats count by user | sort -count',
+    '| datamodel Network | top 10 src by dest_port',
+    '| datamodel Industrial | timechart span=1h count by protocol',
+    '| datamodel DNS | stats dc(query) as q by src | head 5',
+    '| datamodel Web | rename user as account | fields site, account',
+    '| datamodel Endpoint | bin span=5m _time | dedup process_hash',
+    '| datamodel Malware | where isnotnull(file_hash) | top 5 signature',
+])
+def test_datamodel_keeps_params_aligned(q):
+    # the standing guard, extended to the new source: the CIM projection is emitted as
+    # inline SQL from the registry, so a stray %s (or a bare %) in a field expression
+    # would shift every parameter after it — psycopg binds positionally.
+    assert_bindable(*compile_query(q))
+
+
+def test_datamodel_still_takes_the_apps_base_where_and_final_limit():
+    # the guardrails run.py leans on (a bound row filter, the baked-in LIMIT) are not
+    # bypassed by choosing a different source.
+    sql, params = compile_query('| datamodel Web | head 3',
+                                base_where="tenant_id = %s", base_params=["t1"],
+                                default_limit=250)
+    assert "cim_models @> ARRAY[%s]::text[] AND (tenant_id = %s)" in sql
+    assert params == ["web", "t1"]                   # membership first, exactly as emitted
+    assert sql.rstrip().endswith("LIMIT 250")
+
+
+# ── a broken CIM registry is still ONE exception type ─────────────────────────
+# `_cim_model` guarded only `CimError`, which is not the only way `get_registry()` fails:
+# loading it READS AND PARSES A YAML FILE. `api.py` calls `compile_query` outside its
+# `except LoqlError` (and so does `run.py`), so every other failure escaped the documented
+# clean 400 as a 500 with a traceback — a YAML typo in models.yaml taking the whole
+# /search endpoint with it. These are the four real ones, produced by real files.
+
+def _registry_from(monkeypatch, path):
+    """Point the compiler's lazy `from ..cim import get_registry` at `path`. The cached
+    singleton is never touched, so a broken registry here cannot leak into other tests."""
+    import app.cim
+    from app.cim import registry as cim_registry
+    monkeypatch.setattr(app.cim, "get_registry", lambda: cim_registry.load(path))
+
+
+@pytest.mark.parametrize("name, body", [
+    # OSError — models.yaml is simply not there.
+    ("missing.yaml", None),
+    # yaml.ParserError — a mis-indented mapping.
+    ("syntax.yaml", "models:\n  - name: X\n   tag: x\n"),
+    # yaml.ConstructorError — SafeLoader refuses the `<<:` merge key.
+    ("merge.yaml", "version: 1\nmodels:\n  - <<: {name: X}\n    tag: x\n"),
+    # ValueError — int('abc') inside registry.load.
+    ("version.yaml", "version: abc\nmodels:\n  - name: X\n    tag: x\n"
+                     "    membership: [{vendor: [a]}]\n    fields: [{name: f, column: vendor}]\n"),
+])
+def test_a_broken_registry_is_a_loql_error_not_a_traceback(monkeypatch, tmp_path, name, body):
+    path = tmp_path / name
+    if body is not None:
+        path.write_text(body, encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    with pytest.raises(LoqlError) as e:
+        compile_query('| datamodel Authentication')
+    assert "CIM registry is unavailable" in e.value.message
+
+
+def test_the_broken_registry_message_is_one_bounded_line(monkeypatch, tmp_path):
+    # a YAML error carries a multi-line problem mark and this string is an HTTP 400 body.
+    path = tmp_path / "models.yaml"
+    path.write_text("models:\n  - name: X\n   tag: x\n", encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    with pytest.raises(LoqlError) as e:
+        compile_query('from datamodel:Web')
+    assert "\n" not in e.value.message and len(e.value.message) < 300
+
+
+def test_a_healthy_registry_is_untouched_by_all_that():
+    # the guard widened to `Exception`; an unknown model must still be its own message,
+    # not swallowed into "the registry is unavailable".
+    with pytest.raises(LoqlError) as e:
+        compile_query('| datamodel Nope')
+    assert "unknown data model" in e.value.message
+
+
 # ── full text: the search vector has to be in scope where it is matched ───────
 # A bareword compiles to `search_tsv @@ plainto_tsquery('simple', %s)`, and `search_tsv`
 # is a column of `events` — not of a CTE. So every stage a search can sit ABOVE has to
-# carry it forward, exactly as it carries `raw`. `_BASE_SELECT` projected only `raw`:
-# fine for a FIRST-stage search (it is folded into s0's WHERE, over `events` itself) and
-# broken for `… | search <word>`. `fields` and `rename` re-project an explicit list and
-# had the same hole.
+# carry it forward, exactly as it carries `raw`. Two projections dropped it:
+#   * `_cim_select`, which projects only the model's fields + raw. A data-model search is
+#     lifted into its own CTE over that projection (a WHERE cannot read its own SELECT's
+#     labels), so EVERY full-text query over ALL eleven models — both documented
+#     spellings — died with `column "search_tsv" does not exist`.
+#   * `_BASE_SELECT`, the same shape one layer down: fine for a FIRST-stage search (it is
+#     folded into s0's WHERE, over `events` itself) and broken for `… | search <word>`.
+# `fields` and `rename` re-project an explicit list and had the same hole.
 
 _STAR_HEAD = re.compile(r"^SELECT (?:\*|DISTINCT ON \(.*?\) \*)(?:,|$)")
 
@@ -229,11 +494,36 @@ def assert_fts_is_in_scope(sql: str) -> None:
     'vendor=x | dedup src_ip | search certutil',
     'vendor=x | eval n = 1 | search certutil',
     'vendor=x | bin span=5m _time | search certutil',
+    'from datamodel:Web certutil',                    # LOQL.md "CIM data models" — lifted CTE
+    '| datamodel Web | search certutil',              # CIM.md "Querying a data model → LOQL"
+    '| datamodel Authentication | fields user | search failed',
+    '| datamodel DNS | head 5 | search nslookup',
+    '| datamodel Endpoint | rename dvc as box | search powershell',
+    '| datamodel Industrial | dedup src | search modbus',
 ])
 def test_a_bareword_search_can_always_reach_the_search_vector(q):
     sql, params = compile_query(q)
     assert_fts_is_in_scope(sql)
     assert_bindable(sql, params)
+
+
+def test_full_text_works_over_every_registered_data_model():
+    # the registry is data, not code — a twelfth model must not need a second fix here.
+    from app.cim import get_registry
+    for m in get_registry().models:
+        for q in (f'from datamodel:{m.name} certutil', f'| datamodel {m.tag} | search certutil'):
+            sql, params = compile_query(q)
+            assert_fts_is_in_scope(sql)
+            assert params == [m.tag, "certutil"]      # tag first, then the search term
+
+
+def test_the_datamodel_projection_carries_the_vector_without_exposing_it():
+    sql, params = sql_of('from datamodel:Web certutil')
+    assert ", raw, search_tsv FROM events" in sql              # s0 carries it…
+    assert "SELECT * FROM s0 WHERE (search_tsv @@ plainto_tsquery('simple', %s))" in sql
+    assert params == ["web", "certutil"]
+    final = sql.rsplit(") SELECT ", 1)[-1]
+    assert "search_tsv" not in final and "raw" not in final    # …but neither is an output column
 
 
 def test_the_base_projection_carries_the_vector_too():
@@ -242,15 +532,6 @@ def test_the_base_projection_carries_the_vector_too():
     assert "SELECT * FROM s0 WHERE (search_tsv @@" in sql
     assert params == ["x", "certutil"]
     assert "search_tsv" not in sql.rsplit(") SELECT ", 1)[-1]
-
-
-def test_an_explicit_projection_re_emits_every_carried_column():
-    # `fields`/`rename` write out a column list, so they are the two stages that can drop
-    # a carried name by simply not mentioning it. Projecting only `raw` is what made
-    # `| fields vendor | search certutil` a 42703 at execution.
-    for q in ('vendor=x | fields vendor', 'vendor=x | rename vendor as v'):
-        sql, _ = sql_of(q)
-        assert f", {', '.join(_PASSTHRU_COLS)} FROM s0" in sql
 
 
 @pytest.mark.parametrize("q", [
@@ -307,8 +588,8 @@ def test_values_and_list_arrays_are_capped():
 # parameters, i.e. every LOQL query that reaches the modulo. Modulo is documented
 # (docs/LOQL.md, "where/eval expressions") and no test had ever compiled one, because the
 # guard everyone reached for (`sql.count("%s") == len(params)`) reports a happy `1 == 1`
-# for it. `assert_bindable` asserts both halves so a new emitter cannot pick the blind
-# one by accident.
+# for it. `assert_bindable`
+# asserts both halves so a new emitter cannot pick the blind one by accident.
 
 def test_modulo_emits_the_doubled_placeholder_escape():
     sql, params = sql_of('a=1 | eval odd = bytes_total % 2')
@@ -323,6 +604,47 @@ def test_two_modulos_in_one_expression_stay_escaped():
     sql, params = sql_of('* | eval x = bytes_total % 7 | eval y = src_port % 3')
     assert sql.count("%%") == 2
     assert_bindable(sql, params)
+
+
+def test_a_literal_percent_from_the_cim_registry_is_doubled_too(monkeypatch, tmp_path):
+    """The OTHER emitter of a bare `%`, and the one no analyst types: the data-model
+    projection is inline SQL built from models.yaml, so a `const:` field carrying a `%`
+    puts one straight into s0's SELECT list.
+
+    It fails exactly the way the modulo did, and worse: psycopg refuses the WHOLE
+    statement (`incomplete placeholder: '%'`), so it takes the membership tag and every
+    later binding with it — every query against that data model, not just one that
+    happened to use an operator. A jsonb key cannot carry a `%` (`cim.sql._KEY_RE`
+    rejects it) and neither does any whitelisted named expression, so `const:` is the
+    reachable route and this is the test that walks it.
+    """
+    path = tmp_path / "models.yaml"
+    path.write_text('version: 1\nmodels:\n  - name: X\n    tag: x\n'
+                    '    membership: [{vendor: [acme]}]\n'
+                    '    fields:\n'
+                    '      - {name: pct, const: "100%"}\n'
+                    '      - {name: user, column: user_name}\n', encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    sql, params = compile_query('from datamodel:X user="alice"')
+    assert "'100%%' AS pct" in sql                    # doubled where it is emitted
+    assert params == ["x", "alice"]                   # …so every binding after it holds
+    assert_bindable(sql, params)                      # the half `count("%s")` is blind to
+
+
+def test_the_view_ddl_keeps_the_single_percent_the_registry_wrote(tmp_path):
+    """The asymmetry, pinned on purpose. `db.init_cim` executes the view DDL with NO
+    parameters, and psycopg only scans a statement for placeholders when it is binding
+    some — so doubling there would not be harmless symmetry, it would put a literal
+    `100%%` in the view's output. The escape belongs to the parameterized path alone."""
+    from app.cim import registry as cim_registry
+    from app.cim.sql import create_view_ddl
+    path = tmp_path / "models.yaml"
+    path.write_text('version: 1\nmodels:\n  - name: X\n    tag: x\n'
+                    '    membership: [{vendor: [acme]}]\n'
+                    '    fields: [{name: pct, const: "100%"}]\n', encoding="utf-8")
+    ddl = create_view_ddl(cim_registry.load(path).by_name("X"))
+    assert "'100%' AS " + '"pct"' in ddl
+    assert "%%" not in ddl
 
 
 @pytest.mark.parametrize("q, both", [
@@ -376,6 +698,10 @@ _BINDABLE_CORPUS = [
     '* | stats count, dc(user_name) as u, values(app) as a, list(message) as l by vendor',
     '* | timechart span=5m count by severity', '* | bin span=1d _time as day',
     '* | top 5 url by user_name', '* | rare action',
+    'from datamodel:Web certutil', '| datamodel Web | search certutil',
+    'from datamodel:Authentication user="alice" | stats count by user',
+    '| datamodel Web | eval m = status % 8 | top 3 url',
+    '| datamodel Industrial | eval m = dest_port % 8',
 ]
 
 
@@ -494,14 +820,19 @@ def test_reserved_labels_keep_params_aligned(q):
 # ── every name a stage emits has to still be in scope where it is read ────────
 # Quoting a label correctly is worthless if the column it names is GONE by the time the
 # next stage references it. `self.cols` is what the compiler resolves a bare name against,
-# and the invariant over it that only fails at EXECUTION is a green compile followed by
-# SQLSTATE 42703 / 42702, rewritten by run.py into "query failed" — which reads as the
-# analyst's mistake. The result order was held as finished SQL frozen at `| sort` time, so
-# `| sort -bytes_total | fields - bytes_total` put a dangling `ORDER BY bytes_total` in the
-# final tail AND in `dedup`'s inner ORDER BY. Same shape as `search_tsv` vanishing from
-# `_BASE_SELECT` one round earlier. The structural helpers below re-derive the invariant
-# from the emitted SQL, so a NEW stage gets it for free instead of needing its own
-# hand-written case.
+# and two invariants over it are the ones that only fail at EXECUTION — a green compile,
+# then SQLSTATE 42703 / 42702 rewritten by run.py into "query failed", which reads as the
+# analyst's mistake:
+#   * a reference to a column a LATER stage removed or renamed. The result order was held
+#     as finished SQL frozen at `| sort` time, so `| sort -bytes_total | fields - bytes_total`
+#     put a dangling `ORDER BY bytes_total` in the final tail AND in `dedup`'s inner
+#     ORDER BY. Same shape as `search_tsv` vanishing from `_cim_select`/`_BASE_SELECT`
+#     one round earlier, and as `date_bin(…, event_time, …)` after `| fields vendor`.
+#   * two columns answering to ONE name. `SELECT *, … AS vendor` over a relation that
+#     already has `vendor` is accepted inside the CTE and ambiguous at the first reference
+#     to it — and `| eval vendor = lower(vendor)` is an ordinary normalization, not a typo.
+# The structural helpers below re-derive both from the emitted SQL, so a NEW stage gets
+# them for free instead of needing its own hand-written case.
 
 _SELECT_HEAD_RE = re.compile(r"^SELECT (?:DISTINCT ON \(.*?\) )?")
 _ORDER_BY_RE = re.compile(r" ORDER BY (.*?)(?: LIMIT \d+)?$")
@@ -566,11 +897,11 @@ def assert_every_name_is_in_scope(sql: str) -> None:
 
     The two clauses get DIFFERENT scopes, because SQL gives them different scopes. A
     SELECT list may only read its source: `top`'s `count(*) AS count` cannot be reached
-    from the same select list. An ORDER BY may additionally name one of its own SELECT's
-    output labels — PostgreSQL resolves a bare ORDER BY name against the output list
-    FIRST — and `top` relies on it (`… count(*) AS count … ORDER BY count DESC`). Holding
-    ORDER BY to the stricter rule would have failed every `top`/`rare` query for being
-    correct.
+    from the same select list, which is why `_add_column` re-projects instead of appending.
+    An ORDER BY may additionally name one of its own SELECT's output labels — PostgreSQL
+    resolves a bare ORDER BY name against the output list FIRST — and `top` relies on it
+    (`… count(*) AS count … ORDER BY count DESC`). Holding ORDER BY to the stricter rule
+    would have failed every `top`/`rare` query for being correct.
     """
     bodies = cte_bodies(sql)
     for name, body in bodies.items():
@@ -607,14 +938,23 @@ _SCOPE_CORPUS = [
     '* | timechart span=1h count | fields count',
     '* | timechart span=1h count by severity | rename count as n',
     '* | stats count by vendor | sort -count | fields vendor, count',
-    '* | eval t = _time | where t > "-24h"',
+    '* | eval vendor = lower(vendor)',                           # replaces, never duplicates
+    '* | eval vendor = lower(vendor) | sort -vendor | head 3',
+    '* | eval t = _time | where t > "-24h"',                      # a copied stamp stays a stamp
     '* | fields - raw',                          # a carried name is not a column to remove…
     '* | stats count as raw by vendor',          # …and stops being reserved once dropped
     '* | bin span=1h _time',
+    '* | bin span=1h event_time',
     '* | bin span=5m _time as day | sort -day | dedup vendor',
-    '* | bin span=1h _time | stats count by _time',
+    '* | bin span=1h _time | stats count by _time',   # the bucket, not the raw stamp
     '* | bin span=1h _time | sort -_time | head 3',
+    '* | timechart span=1h count | sort -_time',      # `_time` is timechart's OWN column
+    '* | timechart span=1h count | rename _time as bucket | dedup bucket',
+    '* | timechart span=1h count by severity | fields _time, count',
     '* | fields - _time',
+    '| datamodel Web | sort -status | rename status as code',
+    '| datamodel Authentication | eval user = lower(user) | dedup user',
+    '| datamodel Endpoint | bin span=5m _time | sort -_time | head 3',
 ]
 
 
@@ -647,7 +987,7 @@ def test_the_helper_allows_an_order_by_on_the_selects_own_label():
     assert_every_name_is_in_scope(fine)                # no assertion is raised
 
     # the SELECT LIST keeps the strict rule, because SQL does: a select list cannot read
-    # its own labels.
+    # its own labels, which is why `_add_column` re-projects rather than appending.
     with pytest.raises(AssertionError, match="final SELECT reads 'percent'"):
         assert_every_name_is_in_scope(fine.replace("SELECT action, count FROM s1",
                                                    "SELECT action, percent FROM s1"))
@@ -660,6 +1000,7 @@ def test_the_helper_allows_an_order_by_on_the_selects_own_label():
     ('a=1 | sort -bytes_total | fields - bytes_total | head 3', 'bytes_total'),
     ('* | stats count by vendor | sort -count | fields vendor', 'count'),
     ('* | eval e = eventName | sort -e | fields vendor', 'e'),
+    ('| datamodel Web | sort -status | fields url', 'status'),
 ])
 def test_sorting_by_a_field_that_fields_removes_is_a_compile_error(q, gone):
     # the analyst NAMED this key, so there is no honest way to drop the clause: the rows
@@ -718,38 +1059,261 @@ def test_an_order_no_one_asked_for_by_name_is_dropped_rather_than_refused(q, cte
     assert_bindable(sql, params)
 
 
-def test_eval_of_a_new_name_takes_the_cheap_append_form():
-    # an ordinary new field rides the `SELECT *`, which is what keeps `raw`/`search_tsv`
-    # in scope through the stage for free.
+@pytest.mark.parametrize("q, label", [
+    ('* | eval severity = 1', '%s AS severity'),
+    ('* | eval vendor = lower(vendor)', 'lower(vendor) AS vendor'),
+    ('* | eval x = 1 | eval x = 2', '%s AS x'),
+    ('* | bin span=1h event_time', "timestamptz) AS event_time"),
+    ('* | bin span=1h _time as vendor', "timestamptz) AS vendor"),
+    ('| datamodel Authentication | eval user = lower(user)', 'lower("user") AS "user"'),
+])
+def test_eval_and_bin_replace_a_column_they_name_instead_of_duplicating_it(q, label):
+    # `SELECT *, … AS vendor` over a relation that already has `vendor` leaves two columns
+    # of that name and the next reference is 42702. Overwriting a field is the ordinary
+    # use, so the projection is written out with that one column swapped, not appended.
+    sql, params = sql_of(q)
+    assert label in sql
+    # the LAST stage to emit the label is the one that collided — `| eval x = 1 | eval x = 2`
+    # appends legitimately in s1 (`x` is new there) and must replace in s2.
+    emitters = [b for b in cte_bodies(compile_query(q)[0]).values() if label in b]
+    assert not emitters[-1].startswith("SELECT *,"), \
+        f"the colliding stage still used the append form: {emitters[-1]}"
+    assert_every_name_is_in_scope(compile_query(q)[0])
+    assert_bindable(sql, params)
+
+
+def test_eval_of_a_new_name_still_takes_the_cheap_append_form():
+    # the replacement projection is for a COLLISION; an ordinary new field stays `SELECT *`.
     sql, _ = sql_of('* | eval mb = bytes_total / 1048576')
     assert "SELECT *, ((bytes_total)::double precision / %s) AS mb" in sql
 
 
-def test_bucketing_still_works_wherever_the_time_column_survived():
+@pytest.mark.parametrize("q, name, stage", [
+    ('* | rename vendor as product', 'product', 'rename'),
+    ('* | rename vendor as a, product as a', 'a', 'rename'),
+    ('* | fields vendor, vendor', 'vendor', 'fields'),
+    ('* | stats count as vendor by vendor', 'vendor', 'stats'),
+    ('* | stats count by vendor, vendor', 'vendor', 'stats'),
+    ('* | top 5 count', 'count', 'top'),
+    ('* | top 5 percent', 'percent', 'top'),
+    ('* | rare 5 action by action', 'action', 'top'),
+    ('* | timechart span=1h count as _time', '_time', 'timechart'),
+])
+def test_a_stage_that_would_answer_to_one_name_twice_is_refused(q, name, stage):
+    # PostgreSQL accepts the duplicate LABEL inside the CTE and then fails the first
+    # reference to it — including `top`'s own `ORDER BY count`, inside the very same CTE.
+    with pytest.raises(LoqlError) as e:
+        compile_query(q)
+    assert repr(name) in e.value.message and e.value.message.startswith(stage)
+    assert "ambiguous" in e.value.message
+
+
+@pytest.mark.parametrize("q, stage", [
+    ('* | fields vendor | bin span=1h _time', 'bin'),
+    ('* | fields vendor | timechart span=1h count', 'timechart'),
+    ('* | stats count by vendor | timechart span=1h count', 'timechart'),
+    ('* | top 5 action | bin span=1h _time', 'bin'),
+    ('| datamodel Web | fields url | timechart span=1h count', 'timechart'),
+])
+def test_bucketing_needs_the_time_column_to_still_be_in_scope(q, stage):
     # `date_bin(…, event_time, …)` names an events column against the CURRENT stage's
-    # output, so the shapes that keep it have to stay compilable: `SELECT *` stages carry
-    # `event_time`, and an explicit projection can name it by its alias.
+    # output, not against `events` — and `| fields vendor` threw it away two stages ago.
+    with pytest.raises(LoqlError) as e:
+        compile_query(q)
+    assert e.value.message.startswith(stage) and "_time" in e.value.message
+
+
+def test_bucketing_still_works_wherever_the_time_column_survived():
+    # the guard must not cost the ordinary shapes: `SELECT *` stages keep event_time, and
+    # a data model projects it second, exactly as the cim_<tag> view does.
     for q in ('* | where vendor="x" | timechart span=1h count',
               '* | dedup src_ip | bin span=5m _time',
               '* | eval n = 1 | timechart span=1h count by severity',
-              '* | fields vendor, _time | timechart span=1h count'):
+              '* | fields vendor, _time | timechart span=1h count',
+              '| datamodel Endpoint | bin span=5m _time'):
         assert_bindable(*compile_query(q))
 
 
-# ── a carried column is a name no stage may LABEL ─────────────────────────────
-# `raw` and `search_tsv` ride along on every row-level projection and are output by none,
-# which is exactly why they are absent from `self.cols` — the only list a duplicate-name
-# check can see. Every row-level projection appends them anyway (`_passthru`, or the `*`
-# in `SELECT *, … AS x`), so a stage that LABELS one of those names emits it twice,
-# compiles clean, and dies at the next reference with 42702 `column reference "raw" is
-# ambiguous` — an execution-time failure that run.py reports as "query failed", i.e. as
-# the analyst's mistake. `_reject_carried` is the guard that makes it a positioned 400.
+# ── `_time` is s0's vocabulary, not every stage's ─────────────────────────────
+# The fourth instance of the same defect, and the one that reached furthest: `_ALIASES`
+# ({_time: event_time, _raw: message}) describes the `events` TABLE, but it was applied
+# verbatim — `_ALIASES.get(name, name)` — by `_resolve`, `fields`, `rename`, `sort`,
+# `dedup` and `_is_time`, at every stage, against whatever relation happened to be in
+# scope. Two stages move that ground, and it broke in opposite directions on each.
+
+@pytest.mark.parametrize("q, expect", [
+    ('* | timechart span=1h count | sort -_time', 'ORDER BY _time DESC NULLS LAST LIMIT 1000'),
+    ('* | timechart span=1h count | fields _time', 'SELECT _time FROM s1'),
+    ('* | timechart span=1h count | rename _time as bucket', 'SELECT _time AS bucket, count'),
+    ('* | timechart span=1h count | dedup _time', 'DISTINCT ON (_time)'),
+    ('* | timechart span=1h count | bin span=1d _time', "%s::interval, _time, 'epoch'"),
+])
+def test_timechart_owns_the_name_time_and_later_stages_can_read_it(q, expect):
+    # `timechart` OUTPUTS a column called `_time`. Rewriting the name to `event_time` —
+    # which timechart itself replaced — refused every one of these as `unknown field
+    # '_time'`: a compile error naming a column the analyst can see in their own results.
+    sql, params = sql_of(q)
+    assert expect in sql
+    assert "event_time" not in sql.split("FROM s0", 1)[1]     # the alias never fires again
+    assert_every_name_is_in_scope(compile_query(q)[0])
+    assert_bindable(sql, params)
+
+
+def test_a_bin_beside_the_raw_stamp_keeps_later_references_on_the_bucket():
+    # the direction that raised NOTHING. `| bin span=1h _time` ADDS the bucket next to
+    # `event_time`, so both names are live — and the blind alias sent every later `_time`
+    # to the unbinned one. This grouped by the microsecond timestamp, returned one row per
+    # event under a column called `_time`, and reported no error at all.
+    sql, _ = sql_of('* | bin span=1h _time | stats count by _time')
+    assert "date_bin(%s::interval, event_time, 'epoch'::timestamptz) AS _time" in sql
+    assert "SELECT _time AS _time, count(*) AS count FROM s1 GROUP BY _time" in sql
+    assert "GROUP BY event_time" not in sql
+
+    # …and the same for the other stages that resolve a name
+    assert "ORDER BY _time DESC" in sql_of('* | bin span=1h _time | sort -_time')[0]
+    assert "SELECT _time, vendor" in sql_of('* | bin span=1h _time | fields _time, vendor')[0]
+    assert "DISTINCT ON (_time)" in sql_of('* | bin span=1h _time | dedup _time')[0]
+
+
+def test_the_alias_still_resolves_wherever_nothing_has_shadowed_it():
+    # the fix is "the live column first, THEN the alias" — not "drop the alias". On s0
+    # there is no `_time` column, so `_time`/`_raw` still mean `event_time`/`message`.
+    assert "event_time > (now() - interval '24 hours')" in sql_of('_time > "-24h"')[0]
+    assert "SELECT event_time, message, raw, search_tsv FROM s0" in sql_of('* | fields _time, _raw')[0]
+    assert "event_time AS ts" in sql_of('* | rename _time as ts')[0]
+    assert "ORDER BY event_time DESC" in sql_of('* | sort -_time')[0]
+    assert "DISTINCT ON (event_time)" in sql_of('* | dedup _time')[0]
+
+
+def test_removing_the_time_field_by_its_alias_actually_removes_it():
+    # `| fields - _time` compared `_time` against `self.cols`, matched nothing, and removed
+    # no column — a stage that silently did nothing, which is how it stayed unnoticed.
+    sql, _ = sql_of('* | fields - _time')
+    assert "SELECT id, vendor," in sql and "event_time" not in sql.split("FROM s0", 1)[1]
+    # and it is a real removal, so the sort guard sees it
+    with pytest.raises(LoqlError) as e:
+        compile_query('* | sort -_time | fields - _time')
+    assert "'event_time'" in e.value.message and "fields list" in e.value.message
+
+
+@pytest.mark.parametrize("q, cte", [
+    ('* | timechart span=1h count | where _time > "-24h"', 's2'),
+    ('* | stats count by _time | where _time > "-24h"', 's2'),
+    ('* | bin span=1h _time as b | where b > "-24h"', 's2'),
+])
+def test_a_bucket_a_stage_produced_is_still_a_timestamp(q, cte):
+    # `_is_time` decided type from the NAME `event_time`, so a comparison against a bucket
+    # a stage produced fell through to the numeric path: `(_time)::double precision`, i.e.
+    # SQLSTATE 42846 at execution. Making the name resolution scope-aware without this
+    # would have traded a compile error for a runtime one.
+    sql, params = sql_of(q)
+    assert "(now() - interval '24 hours')" in sql
+    assert "::double precision" not in sql
+    assert_bindable(sql, params)
+
+
+# `time_cols` is metadata OVER `self.cols`, so it decays the same way the column list and
+# the result order do — and `_add_column` was the one stage that replaces a column without
+# touching it. `| eval` therefore left it stale in both directions, both only at execution:
+# a name kept its timestamp marking after being overwritten with text, and a genuine
+# timestamptz copied to a new name never got one. Same defect as the frozen ORDER BY and
+# the blind `_ALIASES`: a fact resolved against a scope an earlier stage has since moved.
+
+@pytest.mark.parametrize("q", [
+    '* | eval t = _time | where t > "-24h"',
+    '* | eval t = event_time | where t > "-24h"',
+    '* | eval t = _time | stats count by t | where t > "-24h"',   # and survives the `by` carry
+    '* | timechart span=1h count | eval t = _time | where t > "-24h"',
+    '| datamodel Authentication | eval t = _time | where t > "-24h"',
+])
+def test_an_eval_that_copies_a_timestamp_column_keeps_it_time_typed(q):
+    # the value is the SAME one the source column held, exactly as a `stats by` key is —
+    # so the copy compares as a timestamp. Unmarked it fell through to the numeric path and
+    # emitted `(t)::double precision`, i.e. SQLSTATE 42846 at execution.
+    sql, params = sql_of(q)
+    assert "(now() - interval '24 hours')" in sql
+    assert "::double precision" not in sql
+    assert_bindable(sql, params)
+
+
+@pytest.mark.parametrize("q, stage", [
+    ('* | eval event_time = vendor | timechart span=1h count', 'timechart'),
+    ('* | eval event_time = 1 | bin span=1h _time', 'bin'),
+    ('* | bin span=1h _time | eval _time = vendor | timechart span=1d count', 'timechart'),
+])
+def test_an_eval_that_overwrites_the_timestamp_is_refused_at_the_next_bucketing(q, stage):
+    # the other direction, and the one that raised the uglier error: the name stayed marked
+    # time-typed, so the bucket emitted `date_bin(interval, event_time, …)` over a text or
+    # numeric column — 42883 `function date_bin(interval, text, …) does not exist`, at
+    # execution, naming a function the analyst never wrote.
+    with pytest.raises(LoqlError) as e:
+        compile_query(q)
+    assert e.value.message.startswith(f"{stage} needs the _time field")
+    assert "overwrote" in e.value.message           # …and says which of the two ways it went
+
+
+def test_only_a_copy_of_the_stamp_is_time_typed_not_an_expression_over_it():
+    # `_num` casts every arithmetic operand to double precision, so the RESULT of one is a
+    # number however it started. Marking it time-typed would put the 42846 back, one stage
+    # further along.
+    sql, params = sql_of('* | eval t = _time | eval u = t + 0 | where u > 5')
+    assert "((u)::double precision > %s)" in sql
+    assert_bindable(sql, params)
+
+
+# ── one passthrough list, shared across the CIM boundary ──────────────────────
+# `raw` and `search_tsv` ride along on every row-level projection, and a CIM field may not
+# take either name — the LOQL data-model projection appends them AFTER the model's fields,
+# so a field called `search_tsv` compiles to two columns of that name and the next bareword
+# search is 42702. The guard (`cim.sql._RESERVED_FIELDS`) and the projection
+# (`compiler._PASSTHRU_SQL`) were two hand-maintained lists and drifted the moment
+# `search_tsv` was added to one of them. They are now one list, read in one direction:
+# `app.cim` never imports `app.loql`, so the vocabulary lives on the CIM side.
+
+def test_the_carried_columns_are_read_from_the_cim_side_not_restated():
+    from app.cim import sql as cim_sql
+    from app.loql import compiler
+    assert compiler._PASSTHRU_COLS is cim_sql.PASSTHROUGH_COLUMNS
+    assert compiler._CIM_PASSTHROUGH is cim_sql.CIM_PASSTHROUGH_COLUMNS
+    assert compiler._PASSTHRU_SQL == ", ".join(cim_sql.PASSTHROUGH_COLUMNS)
+
+
+def test_every_carried_column_is_a_name_no_cim_field_can_take():
+    # the invariant the drift broke, asserted over the LIST rather than over `search_tsv`:
+    # a third passthrough added tomorrow is reserved by construction, not by remembering.
+    from app.cim import sql as cim_sql
+    for col in cim_sql.PASSTHROUGH_COLUMNS + cim_sql.IDENTITY_COLUMNS:
+        assert col in cim_sql._RESERVED_FIELDS, f"{col} is carried but not reserved"
+    assert "search_tsv" in cim_sql._RESERVED_FIELDS
+
+
+def test_the_conditional_passthroughs_are_disjoint_from_the_reserved_ones():
+    # the OTHER pairing that could drift the same way. `CIM_PASSTHROUGH_COLUMNS` is the
+    # "append it if no field claimed the name" list; `_RESERVED_FIELDS` is everything a
+    # projection emits UNCONDITIONALLY. A name in both would be emitted twice — reserved so
+    # no field can claim it, therefore never skipped, therefore appended after it is
+    # already there. Both projections now ask "is this name already projected?" of their
+    # own output, so this holds structurally; asserted because the lists are still typed
+    # by hand and a reviewer cannot see the overlap by reading either one.
+    from app.cim import sql as cim_sql
+    overlap = set(cim_sql.CIM_PASSTHROUGH_COLUMNS) & cim_sql._RESERVED_FIELDS
+    assert not overlap, f"{sorted(overlap)} is both always-projected and appended-if-free"
+
+
+# The guard above closes the REGISTRY door: no CIM field may be called `raw`/`search_tsv`,
+# because the data-model projection appends them after the model's own fields. The pipeline
+# is the other door into the same collision, and it was still open — `self.cols` does not
+# list the carried columns (that is what "carried" means), so `_set_cols`'s one-name-one-
+# column check is blind to exactly these two names, and every stage that LABELS one emitted
+# it twice. Two guards, one `PASSTHROUGH_COLUMNS`, so a third passthrough closes both.
 
 @pytest.mark.parametrize("q, stage", [
     ('* | fields {c}', 'fields'),                 # a schema-on-read miss, aliased back to it
     ('* | fields vendor, {c}', 'fields'),
     ('* | eval {c} = 1', 'eval'),
     ('* | rename vendor as {c}', 'rename'),
+    ('* | bin span=1h _time as {c}', 'bin'),
+    ('| datamodel Web | eval {c} = 1', 'eval'),
 ])
 @pytest.mark.parametrize("col", _PASSTHRU_COLS)
 def test_no_stage_may_label_a_column_the_pipeline_is_still_carrying(q, stage, col):
@@ -760,10 +1324,10 @@ def test_no_stage_may_label_a_column_the_pipeline_is_still_carrying(q, stage, co
     assert "pick another label" in e.value.message            # …and how to get past it
 
 
-def test_the_carried_columns_are_the_one_thing_the_column_list_cannot_see():
-    # why this needed a guard of its own rather than a line in the ordinary duplicate check:
-    # that check compares against `self.cols`, and neither carried name is in it. This is
-    # the SQL the compiler emitted for `| fields raw`.
+def test_the_carried_columns_are_the_one_thing_set_cols_cannot_see():
+    # why this needed a guard of its own rather than a line in `_set_cols`: the duplicate
+    # that catches `| rename vendor as product` compares against `self.cols`, and neither
+    # carried name is in it. This is the SQL the compiler emitted for `| fields raw`.
     broken = ("WITH s0 AS (\n  SELECT vendor, raw, search_tsv FROM events\n),\n"
               "s1 AS (\n  SELECT (raw ->> %s) AS raw, raw, search_tsv FROM s0\n)\n"
               "SELECT raw FROM s1 LIMIT 1000")
@@ -771,36 +1335,75 @@ def test_the_carried_columns_are_the_one_thing_the_column_list_cannot_see():
         assert_every_name_is_in_scope(broken)
 
 
-def test_removing_a_carried_name_is_the_no_op_it_always_was():
-    # `| fields - raw` names something that is not a column, so there is nothing to remove
-    # and nothing to reject — the guard is about LABELS, not about mentions.
-    sql, params = compile_query('* | fields - raw')
+@pytest.mark.parametrize("q", [
+    '* | stats count as raw by vendor',
+    '* | stats count by vendor | eval search_tsv = 1',
+    '* | top 5 action | rename count as raw',
+    '* | timechart span=1h count | rename count as raw',
+    '* | fields - raw',        # not a column, so removing it is the same no-op it always was
+])
+def test_a_carried_name_is_reserved_only_while_it_is_still_being_carried(q):
+    # the guard is keyed on `raw_avail`, not on the name: an aggregation throws the event
+    # row away, `_passthru` goes empty, and nothing is emitted beside the label any more.
+    # Reserving the names unconditionally would refuse these five for a collision that the
+    # emitted SQL does not contain.
+    sql, params = compile_query(q)
     assert_every_name_is_in_scope(sql)
     assert_bindable(sql, params)
 
 
-# ── `_time` is s0's vocabulary ────────────────────────────────────────────────
-# `_ALIASES` ({_time: event_time, _raw: message}) describes the `events` TABLE, and s0 is
-# where it is meant to fire. Every stage that resolves a name — `_resolve`, `fields`,
-# `rename`, `sort`, `dedup` — has to agree on that, because the label one stage writes is
-# what the next one reads back.
+def test_both_sides_of_the_cim_boundary_project_one_shape(monkeypatch, tmp_path):
+    # `| datamodel X` and `SELECT * FROM cim_x` are two doors into the same registry, and
+    # the analyst should not be able to tell which they came in by. The model below claims
+    # `vendor` — the case where the two projections have to make the SAME skip decision.
+    from app.cim import registry as cim_registry
+    from app.cim.sql import create_view_ddl
+    path = tmp_path / "models.yaml"
+    path.write_text("version: 1\nmodels:\n  - name: X\n    tag: x\n"
+                    "    membership: [{vendor: [acme]}]\n"
+                    "    fields: [{name: vendor, column: message}, {name: dest, column: dst_ip}]\n",
+                    encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    view = create_view_ddl(cim_registry.load(path).by_name("X")).splitlines()[1]
+    sql, _ = compile_query('| datamodel X')
+    # NAMES, not SQL text: the view quotes every label unconditionally and the compiler
+    # quotes only what Postgres would re-parse, which is the same column either way.
+    view_cols = output_names({}, view)
+    assert view_cols == ["id", "event_time", "vendor", "dest",
+                         "product", "log_type", "severity", "message", "raw"]
+    # the view is a destination and stops at `raw`; the pipeline carries `search_tsv` too
+    assert output_names({}, sql.splitlines()[1].strip()) == view_cols + ["search_tsv"]
 
-def test_the_time_alias_resolves_to_the_events_column_at_every_stage_that_reads_a_name():
-    # one alias, five call sites: a stage that spelled it differently would emit a label
-    # its successor cannot find.
-    assert "event_time > (now() - interval '24 hours')" in sql_of('_time > "-24h"')[0]
-    assert "SELECT event_time, message, raw, search_tsv FROM s0" in sql_of('* | fields _time, _raw')[0]
-    assert "event_time AS ts" in sql_of('* | rename _time as ts')[0]
-    assert "ORDER BY event_time DESC" in sql_of('* | sort -_time')[0]
-    assert "DISTINCT ON (event_time)" in sql_of('* | dedup _time')[0]
+
+@pytest.mark.parametrize("field", ["search_tsv", "raw", "id", "event_time", "cim_models"])
+def test_a_model_that_claims_a_carried_column_never_compiles(monkeypatch, tmp_path, field):
+    # the registry is data: this is what a `fields:` edit to models.yaml gets, and it has
+    # to be the clean 400 the compiler promises rather than an ambiguous column at run time.
+    path = tmp_path / "models.yaml"
+    path.write_text("version: 1\nmodels:\n  - name: X\n    tag: x\n"
+                    "    membership: [{vendor: [acme]}]\n"
+                    f"    fields: [{{name: {field}, column: message}}]\n", encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    with pytest.raises(LoqlError) as e:
+        compile_query('| datamodel X')
+    assert "CIM registry is unavailable" in e.value.message
+    assert f"{field!r} is reserved" in e.value.message
 
 
-def test_an_expression_over_the_stamp_is_a_number_not_a_stamp():
-    # `_num` casts every arithmetic operand to double precision, so the RESULT of one is a
-    # number however it started — and the comparison after it must follow the numeric path.
-    sql, params = sql_of('* | eval t = _time | eval u = t + 0 | where u > 5')
-    assert "((u)::double precision > %s)" in sql
-    assert_bindable(sql, params)
+def test_a_model_field_that_is_merely_a_passthrough_name_is_still_allowed(monkeypatch, tmp_path):
+    # `vendor`/`product`/… are NOT reserved — a model may claim one, and the projection then
+    # skips its own passthrough instead of emitting the name twice. That asymmetry is the
+    # reason the two lists are separate constants rather than one.
+    path = tmp_path / "models.yaml"
+    path.write_text("version: 1\nmodels:\n  - name: X\n    tag: x\n"
+                    "    membership: [{vendor: [acme]}]\n"
+                    "    fields: [{name: vendor, column: message}]\n", encoding="utf-8")
+    _registry_from(monkeypatch, path)
+    sql, params = compile_query('| datamodel X')
+    assert "message AS vendor" in sql and params == ["x"]
+    assert_every_name_is_in_scope(sql)
+    assert sql.rstrip().endswith("SELECT id, event_time, vendor, product, log_type, "
+                                 "severity, message FROM s0 LIMIT 1000")
 
 
 # ── the execution boundary: what run.py actually sends to PostgreSQL ──────────
@@ -886,7 +1489,7 @@ def test_the_timeout_is_set_with_a_statement_that_can_take_a_parameter(monkeypat
 
 @pytest.mark.parametrize("q", [
     'vendor=acme', 'vendor=acme | stats count by user_name',
-    'certutil', '* | top 5 url',
+    'from datamodel:Web certutil', '| datamodel DNS | top 5 query',
     '* | head 5 | eval x = bytes_total % src_port',   # a `%%` with ZERO parameters
 ])
 def test_no_parameterized_statement_is_a_utility_statement(monkeypatch, q):
@@ -922,12 +1525,26 @@ def test_the_timeout_is_transaction_local(monkeypatch):
     assert sent[0][0].endswith(", true)")
 
 
+def test_a_compile_failure_that_is_not_a_loql_error_still_becomes_one(monkeypatch):
+    # compile_query is called before the execution guard, and api.py catches only
+    # LoqlError — so the boundary re-wraps here too, belt and braces with `_cim_model`.
+    from app.loql import run as loql_run
+
+    def boom(*a, **kw):
+        raise RuntimeError("the registry exploded\nwith a second line")
+
+    monkeypatch.setattr(loql_run, "compile_query", boom)
+    with pytest.raises(LoqlError) as e:
+        loql_run.run_query('vendor=acme')
+    assert "the registry exploded with a second line" in e.value.message
+    assert "\n" not in e.value.message
+
+
 def test_a_loql_error_from_the_compiler_passes_through_unchanged():
     from app.loql import run as loql_run
     with pytest.raises(LoqlError) as e:
-        loql_run.run_query('* | sort -eventName')
-    # not re-wrapped as "query failed: …", which is the execution guard's wording
-    assert e.value.message.startswith("cannot sort by unknown field")
+        loql_run.run_query('| datamodel Nope')
+    assert e.value.message.startswith("unknown data model")     # not re-wrapped
 
 
 # ── integration (real DB; skipped unless DB_DSN is set) ───────────────────────
@@ -959,3 +1576,46 @@ def test_loql_end_to_end(clean_db):
 
     r4 = run_query('vendor=acme | top 2 user_name')
     assert r4["fields"][:2] == ["user_name", "count"] and len(r4["rows"]) <= 2
+
+
+@pytest.mark.integration
+def test_the_statements_that_had_never_executed(clean_db):
+    """Every assertion here is about a query RUNNING at all.
+
+    Each of these compiled cleanly and then died at execution, which is exactly why a
+    green unit suite never saw them — and the integration job that would have has been
+    reporting green while running zero tests. The failures were, in order: SQLSTATE 42601
+    (`SET LOCAL statement_timeout = $1` — a utility statement cannot take a bind
+    parameter, so NOTHING here ran), 42703 (`column "search_tsv" does not exist` — the
+    data-model projection dropped the vector the lifted search predicate matches on),
+    psycopg's `incomplete placeholder: '%'`, and 42883 (`operator does not exist: double
+    precision % integer`).
+    """
+    from app.loql import run_query
+    from app.models import NormalizedEvent
+    db = clean_db
+    now = datetime.now(timezone.utc)
+    events = [NormalizedEvent(
+        event_time=now - timedelta(minutes=i), vendor="acme", product="idp",
+        log_type="authentication",                      # -> the Authentication CIM model
+        action="failure", user_name=f"u{i}", host_name="h1", bytes_total=100 * (i + 1),
+        raw={"tool": "certutil" if i == 0 else "curl"}) for i in range(4)]
+    with db.pool().connection() as conn:
+        db.insert_events(conn, events, 1)
+        conn.commit()
+
+    # FIX 1 — the timeout statement. If this returns at all, set_config bound its
+    # parameter; the old `SET LOCAL … = %s` failed to PARSE and took every query with it.
+    assert run_query('vendor=acme', limit=10, timeout_ms=30_000)["count"] == 4
+
+    # FIX 2 — full text over a data model, both documented spellings, plus the base path.
+    assert run_query('from datamodel:Authentication certutil')["count"] == 1
+    assert run_query('| datamodel Authentication | search certutil')["count"] == 1
+    assert run_query('vendor=acme | search certutil')["count"] == 1
+    assert run_query('| datamodel Authentication | fields user | search curl')["count"] == 3
+
+    # FIX 3 — modulo: escaped for psycopg AND numeric-typed for PostgreSQL.
+    r = run_query('vendor=acme | eval odd = bytes_total % 200 | fields user_name, odd'
+                  ' | sort -odd')
+    assert r["count"] == 4 and {float(row["odd"]) for row in r["rows"]} == {0.0, 100.0}
+    assert run_query('* | head 4 | eval x = bytes_total % src_port')["count"] == 4  # binds nothing

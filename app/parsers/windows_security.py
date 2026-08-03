@@ -10,7 +10,7 @@ Accepts the two shapes analysts produce without extra tooling:
 The security-relevant detail (target account, logon type, source IP) lives in the
 human-readable ``Message`` for both shapes, so we resolve top-level fields by
 candidate name and extract the rest from the message text. The full record is
-kept in ``raw``.
+kept in ``raw``, plus one added key: the normalized ``event_id`` (see ``parse``).
 """
 from __future__ import annotations
 
@@ -44,6 +44,20 @@ def _g(rec: dict, *names: str) -> Optional[Any]:
         v = low.get(n.lower())
         if v not in (None, ""):
             return v
+    return None
+
+
+def _event_id(rec: dict) -> Optional[int]:
+    """The numeric Event ID under whichever name this export used.
+
+    Each candidate is coerced individually rather than taking the first non-empty
+    one: an export that carries a non-numeric ``Id`` (a record GUID) alongside a
+    real ``EventID`` would otherwise resolve to nothing at all.
+    """
+    for name in ("id", "event id", "eventid", "event_id"):
+        eid = to_int(_g(rec, name))
+        if eid is not None:
+            return eid
     return None
 
 
@@ -82,7 +96,7 @@ def _iter_records(content: str) -> Iterator[dict]:
 def parse(content: str) -> Iterator[NormalizedEvent]:
     for rec in _iter_records(content):
         msg = str(_g(rec, "message", "description") or "")
-        event_id = to_int(_g(rec, "id", "event id", "eventid"))
+        event_id = _event_id(rec)
 
         user = _last(_ACCT.findall(msg))
         domain = _last(_DOMAIN.findall(msg))
@@ -90,6 +104,26 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             user = f"{domain}\\{user}"
         src_ip = clean_ip(m.group(1)) if (m := _SRCADDR.search(msg)) else None
         summary = next((ln.strip() for ln in re.split(r"[\r\n]", msg) if ln.strip()), None)
+
+        raw = dict(rec)
+        if event_id is not None:
+            # Write the resolved id back under one canonical key. Every export shape
+            # spells it differently — Get-WinEvent JSON says "Id", Export-Csv and Event
+            # Viewer say "EventID" or "Event ID" — and Postgres' `raw ->> 'event_id'` is
+            # byte-exact, so CIM membership (and any rule keying on the id) matches
+            # nothing unless one agreed spelling exists. The vendor's own key is copied
+            # through untouched; this only *adds* "event_id" beside it (or canonicalizes
+            # it in place, in the rare export that already uses that exact spelling).
+            #
+            # Stored as an int, not a string: a CSV cell may arrive padded or spaced
+            # ("04688 "), and jsonb renders the number as the canonical digit string
+            # "4688" — exactly what the registry's integer membership values become.
+            #
+            # ACCEPTED CONSEQUENCE (one-time migration, pre-1.0): app.normalize.dedup_hash
+            # hashes json.dumps(evt.raw, sort_keys=True), so adding this key changes the
+            # identity of every Windows Security event. A file ingested before this change
+            # re-inserts on re-upload instead of deduping via events_dedup_idx.
+            raw["event_id"] = event_id
 
         yield NormalizedEvent(
             event_time=parse_ts(_g(rec, "timecreated", "date and time", "date", "time created")),
@@ -103,5 +137,5 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             host_name=_g(rec, "machinename", "computername", "computer"),
             rule_name=f"Event {event_id}" if event_id else _g(rec, "providername", "source"),
             message=first(summary, _g(rec, "providername", "source")),
-            raw=rec,
+            raw=raw,
         )

@@ -5,15 +5,30 @@ stats, batch tracking, and retention purge."""
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import ipaddress
+import logging
+import re
 import secrets
+import time
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Sequence
 
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
+# These imports do NOT parse models.yaml. `registry.get_registry()` is lazy and caches
+# on first call, so after `import app.db` the registry cache is still empty and a
+# malformed models.yaml has not been detected — this module used to claim the opposite.
+# Validation is an explicit startup step instead (`validate_cim_registry`, called by the
+# app lifespan before anything is served), and the write path degrades rather than
+# raising. See the "CIM registry" section below for why that split is the only shape
+# that cannot lose an event.
+from .cim import sql as cim_sql
+from .cim.match import cim_models_for
+from .cim.registry import _REGISTRY_PATH as _REGISTRY_FILE, get_registry, load as load_registry
+from .cim.spec import CimRegistry
 from .config import settings
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
@@ -22,17 +37,20 @@ from .risk import ENTITY_COLUMN, weight_case_sql
 from .severity import max_severity
 from .util import hash_api_key, to_port
 
+log = logging.getLogger("logocean")
+
 _pool: Optional[ConnectionPool] = None
 _SCHEMA = (Path(__file__).resolve().parent.parent / "schema.sql").read_text(encoding="utf-8")
 
 _INSERT = """
 INSERT INTO events (event_time, vendor, product, log_type, severity, action,
     src_ip, dst_ip, src_port, dst_port, protocol, app, user_name, host_name,
-    rule_name, bytes_total, message, raw, search_tsv, batch_id, dedup_hash)
+    rule_name, bytes_total, message, raw, search_tsv, cim_models, batch_id, dedup_hash)
 VALUES (%(event_time)s, %(vendor)s, %(product)s, %(log_type)s, %(severity)s, %(action)s,
     %(src_ip)s::inet, %(dst_ip)s::inet, %(src_port)s, %(dst_port)s, %(protocol)s, %(app)s,
     %(user_name)s, %(host_name)s, %(rule_name)s, %(bytes_total)s, %(message)s,
-    %(raw)s, to_tsvector('simple', %(tsv)s), %(batch_id)s, %(dedup_hash)s)
+    %(raw)s, to_tsvector('simple', %(tsv)s), %(cim_models)s::text[],
+    %(batch_id)s, %(dedup_hash)s)
 ON CONFLICT (dedup_hash, event_time) DO NOTHING
 """
 
@@ -49,12 +67,93 @@ def pool() -> ConnectionPool:
     return _pool
 
 
+def split_statements(script: str) -> list[str]:
+    """Cut a SQL script into executable statements. Pure — no database, so the split
+    itself is unit-testable.
+
+    psycopg sends one statement per `execute`, so schema.sql has to be cut on `;`.
+
+    CORRECTING THE RECORD. An earlier version of this docstring said the naive
+    `script.split(";")` had been silently truncating this schema — a `;` inside a `--`
+    comment cutting the comment in half and leaving bare SQL text at the head of the next
+    chunk, after which every table "was never created". That never happened. Both
+    implementations yield the SAME 77 executable statements over today's schema.sql, and
+    the executable SQL (comments stripped) is IDENTICAL. No table has ever gone missing
+    here, and nothing downstream should be read as evidence that one did.
+
+    Being exact about it, because the near-miss is the reason the scanner earns its keep:
+    the two are NOT byte-identical. schema.sql has a `;` inside a `--` comment in two
+    places (the api_keys and alerts headers), and there the naive split does cut the
+    comment in half — the tail is simply re-attached to the front of the next chunk
+    instead of the back of the previous one. It stays harmless only because both
+    semicolons happen to be the LAST character on their line, so the orphaned tail starts
+    at a newline and the following line still opens with `--`. That is a property of how
+    those two sentences were typed, not of the schema. Write "-- note: use a; not b" with
+    the semicolon mid-line and the tail ` not b` lands as bare text at the head of the
+    next chunk, which then fails to parse — and it would fail in the integration job
+    only, historically the least trustworthy job in this repo.
+
+    So the scanner is a guard against the next hand edit rather than a repair of a past
+    one. It tracks the two contexts where a `;` is not a terminator: inside a
+    single-quoted literal (including the `''` escape) and inside a `--` line comment.
+    Chunks with no executable text (only comments) are dropped rather than sent as empty
+    queries.
+
+    KNOWN GAPS — none of them reachable from today's schema.sql, all of them cheap to
+    hit with an ordinary edit:
+
+    * `$$ … $$` / `$tag$ … $tag$` dollar quoting is not tracked, so a function body or a
+      DO block containing a `;` would be cut apart. The schema declares neither.
+    * `/* … */` block comments are not tracked either (and nothing anywhere in the repo
+      mentioned this before): a `;` inside one terminates a statement, and the `--` and
+      `'` scanning inside such a comment is not suppressed. The schema uses only `--`.
+    * `E'…'` escape-string literals treat `\\'` as an escaped quote where this scanner
+      sees the literal ending. The schema has no `E''` strings.
+
+    Any of the three is a reason to reach for a real parser rather than to extend this
+    one; until then, keep schema.sql inside the subset above.
+    """
+    stmts: list[str] = []
+    buf: list[str] = []
+    has_code = False
+    in_str = in_comment = False
+    i, n = 0, len(script)
+    while i < n:
+        ch = script[i]
+        if in_comment:
+            in_comment = ch != "\n"
+            buf.append(ch)
+        elif in_str:
+            buf.append(ch)
+            if ch == "'":
+                if script[i + 1:i + 2] == "'":     # '' is an escaped quote, not the end
+                    buf.append("'")
+                    i += 1
+                else:
+                    in_str = False
+        elif script[i:i + 2] == "--":
+            in_comment = True
+            buf.append(ch)
+        elif ch == ";":
+            if has_code:
+                stmts.append("".join(buf).strip())
+            buf, has_code = [], False
+        else:
+            if ch == "'":
+                in_str = True
+            has_code = has_code or not ch.isspace()
+            buf.append(ch)
+        i += 1
+    if has_code:
+        stmts.append("".join(buf).strip())
+    return stmts
+
+
 def init_schema() -> None:
     """Run schema.sql (split into statements; no functions/DO blocks present)."""
     with pool().connection() as conn:
-        for stmt in (s.strip() for s in _SCHEMA.split(";")):
-            if stmt:
-                conn.execute(stmt)
+        for stmt in split_statements(_SCHEMA):
+            conn.execute(stmt)
         conn.commit()
 
 
@@ -72,9 +171,124 @@ def ensure_partitions(conn, months: Iterable[tuple[int, int]]) -> None:
 
 
 # --------------------------------------------------------------------------- #
+#  CIM registry: startup validation, and a write path that cannot lose an event #
+# --------------------------------------------------------------------------- #
+# `_row` derives `events.cim_models` from the registry, and `registry.get_registry()`
+# parses models.yaml LAZILY — nothing loads it at import. Two rules follow, and together
+# they are the whole design:
+#
+#  1. STARTUP VALIDATES, AND REFUSES TO BOOT. `validate_cim_registry()` is called by the
+#     app lifespan before anything is served, UNCONDITIONALLY — including under
+#     CIM_ENABLED=false, because that flag gates the `cim_<tag>` VIEWS only and never the
+#     per-row stamp. models.yaml ships with the repo, so a registry that will not parse
+#     is a deploy error; failing at boot with the YAML author's own message is the honest
+#     response, and it is the only signal that arrives before any data is at stake.
+#
+#  2. THE WRITE PATH DEGRADES AND NEVER RAISES. If the registry breaks after boot — an
+#     operator edits the YAML and calls `cim.reload()`, a test clears the cache — then
+#     `_cim_tags` stores the event with `cim_models = NULL` and records the failure
+#     instead of aborting the insert. That is not a nicety. `streaming._flush` catches
+#     every exception out of the write and DISCARDS the buffered batch, so a `_row` that
+#     raises turns one bad YAML file into permanent, silent loss of every syslog and API
+#     event for as long as it stays broken. An untagged row is visible (/health, the log,
+#     `cim_write_state`) and repairable (`backfill_cim`); a dropped event is neither.
+#
+# The trade this reverses was argued the other way before: an event stored with the
+# wrong tags is "silent, durable corruption", so the write path should fail loudly. The
+# first half is true, which is why the failure is counted and surfaced; the conclusion
+# was not, because the loud failure lands in a caller that answers it by throwing the
+# events away.
+
+_cim_write_state: dict[str, Any] = {"failures": 0, "error": None, "since": None}
+
+
+def cim_write_state() -> dict[str, Any]:
+    """How the ingest-time CIM stamp is faring — the snapshot /health reports.
+
+    `failures` counts EVENTS stored without their model tags since the last reset (not
+    incidents), `error` is the most recent message and `since` the first occurrence. Any
+    non-zero count means rows in the store are untagged, every data model under-reports
+    them, and a `backfill_cim` is owed once models.yaml is fixed.
+    """
+    return dict(_cim_write_state)
+
+
+def reset_cim_write_state() -> None:
+    """Clear the degraded-write counters (after fixing the registry; used by tests)."""
+    _cim_write_state.update(failures=0, error=None, since=None)
+
+
+def _cim_tags(evt: NormalizedEvent,
+              tags: Optional[Iterable[str]] = None) -> Optional[list[str]]:
+    """`cim_models_for(evt)`, downgraded to NULL when the registry cannot be evaluated.
+
+    `match.tags_for` never raises on a malformed EVENT; it does raise on a malformed
+    REGISTRY, which is exactly the failure that must not reach the caller — see rule 2
+    above. Logged in full the first time and then every thousandth event, so a registry
+    broken for an hour costs a bounded number of log lines instead of one per event.
+
+    `tags` is this event's ALREADY-RESOLVED membership, threaded in by
+    `pipeline.write_stream` so the registry walk happens once per ingested event instead
+    of twice (the detection `datamodels:` gate wants the same value as the event streams).
+    `cim_models_for` only canonicalizes it — no registry is touched — so a threaded value
+    cannot reach the degrade branch below, which is correct: the walk it would have
+    failed in already happened, in the pipeline.
+
+    NOTE the deliberate asymmetry with the pipeline. When the pipeline's own resolution
+    raises it threads `None` rather than an empty set, so the event arrives here
+    unresolved, this function re-derives it, and the failure lands in `_cim_write_state`.
+    That is the ONLY thing keeping /health's untagged counter honest: a pipeline that
+    boxed its own failure would hand over a confident `frozenset()` and every row would
+    go in untagged while the counter read zero.
+    """
+    try:
+        return cim_models_for(evt, tags=tags)
+    except Exception as exc:                  # noqa: BLE001 — storing beats discarding
+        first = _cim_write_state["failures"] == 0
+        _cim_write_state["failures"] += 1
+        _cim_write_state["error"] = f"{type(exc).__name__}: {exc}"
+        if first:
+            _cim_write_state["since"] = dt.datetime.now(dt.timezone.utc)
+            log.exception(
+                "CIM membership could not be derived; events are being STORED WITH NO "
+                "cim_models rather than dropped. Every data model under-reports until "
+                "app/cim/models.yaml is fixed and db.backfill_cim() has re-derived the "
+                "affected rows")
+        elif _cim_write_state["failures"] % 1000 == 0:
+            log.error("CIM membership still unavailable: %d events stored untagged (%s)",
+                      _cim_write_state["failures"], _cim_write_state["error"])
+        return None
+
+
+def validate_cim_registry() -> CimRegistry:
+    """Parse + validate app/cim/models.yaml eagerly. Raises on a malformed registry.
+
+    This is rule 1 above, and it is the ONLY eager load in the process: everything else
+    (`_row`, `init_cim`, the LOQL `datamodel:` compiler, `detection.engine._cim`) reaches
+    the registry through the lazy cached `get_registry()`. Calling it from the lifespan
+    turns a broken YAML file into a startup failure that names the offending line,
+    instead of the two failures it used to become — an insert that raised inside `_row`
+    and surfaced to an uploader as "Ingest failed", and, on the live path, every syslog
+    and API event silently discarded while /health still answered "ok".
+    """
+    reg = get_registry()
+    log.info("CIM registry v%s validated: %d models (%s)",
+             reg.version, len(reg.models), ", ".join(reg.tags))
+    return reg
+
+
+# --------------------------------------------------------------------------- #
 #  Ingest                                                                      #
 # --------------------------------------------------------------------------- #
-def _row(evt: NormalizedEvent, batch_id: int) -> dict[str, Any]:
+def _row(evt: NormalizedEvent, batch_id: int,
+         tags: Optional[Iterable[str]] = None) -> dict[str, Any]:
+    """The bind parameters for one `events` row.
+
+    `tags` is this event's already-resolved CIM membership (see `_cim_tags`); omitting it
+    derives membership here exactly as before, which is what every caller outside
+    `insert_events` does — `backfill_cim`, the tests, and any ingest path that never ran
+    detection.
+    """
     return {
         "event_time": evt.event_time, "vendor": evt.vendor, "product": evt.product,
         "log_type": evt.log_type, "severity": evt.severity, "action": evt.action,
@@ -85,19 +299,510 @@ def _row(evt: NormalizedEvent, batch_id: int) -> dict[str, Any]:
         "protocol": evt.protocol, "app": evt.app,
         "user_name": evt.user_name, "host_name": evt.host_name, "rule_name": evt.rule_name,
         "bytes_total": evt.bytes_total, "message": evt.message,
-        "raw": Jsonb(evt.raw), "tsv": tsv_text(evt), "batch_id": batch_id,
-        "dedup_hash": dedup_hash(evt),
+        "raw": Jsonb(evt.raw), "tsv": tsv_text(evt),
+        # CIM membership is derived here, in Python, on the same footing as the
+        # full-text vector one line up: `search_tsv` <- tsv_text(evt) and
+        # `cim_models` <- cim_models_for(evt). NULL (not '{}') for an event that
+        # belongs to no model, so the GIN index stays proportional to tagged rows —
+        # `backfill_cim` re-derives through the SAME function to keep a corrected row
+        # byte-identical to a freshly ingested one. Wrapped by `_cim_tags` so a
+        # registry that broke after startup costs the tags and never the event.
+        "cim_models": _cim_tags(evt, tags),
+        "batch_id": batch_id, "dedup_hash": dedup_hash(evt),
     }
 
 
-def insert_events(conn, events: list[NormalizedEvent], batch_id: int) -> None:
+def insert_events(conn, events: list[NormalizedEvent], batch_id: int,
+                  cim_tags: Optional[Sequence[Optional[Iterable[str]]]] = None) -> None:
+    """Insert a chunk of events within the caller's transaction.
+
+    `cim_tags` is the chunk's already-resolved CIM membership, INDEX-ALIGNED with
+    `events`: `cim_tags[i]` belongs to `events[i]`, and `None` at a position means "not
+    resolved" — that row derives its own membership in `_row`, exactly as every row does
+    when the argument is omitted entirely. `pipeline.write_stream` passes it so the
+    registry is walked once per event rather than twice (once for the detection
+    `datamodels:` gate, once here); it probes for this parameter with `inspect.signature`
+    and falls back to the three-argument call, so an older build or a test double is
+    still correct, just slower.
+
+    A length mismatch is a ValueError rather than a silent truncation or a shifted
+    alignment. It can only ever be a caller bug, and the cheap failure modes it would
+    otherwise take — `zip` stopping at the shorter list, or every row after a missing one
+    inheriting its neighbour's tags — are both invisible in the stored data.
+    """
     if not events:
         return
+    if cim_tags is not None and len(cim_tags) != len(events):
+        raise ValueError(
+            f"cim_tags has {len(cim_tags)} entries for {len(events)} events; it must be "
+            "index-aligned with `events` (None at a position means 'derive this one')")
     months = {(e.event_time.year, e.event_time.month) for e in events if e.event_time}
     ensure_partitions(conn, months)
-    rows = [_row(e, batch_id) for e in events]
+    rows = [_row(e, batch_id, None if cim_tags is None else cim_tags[i])
+            for i, e in enumerate(events)]
     with conn.cursor() as cur:
         cur.executemany(_INSERT, rows)
+
+
+# --------------------------------------------------------------------------- #
+#  CIM data models: view DDL, registry stamp, membership backfill              #
+# --------------------------------------------------------------------------- #
+# `events.cim_models` is filled per row by `_row` above. What is left for the
+# database is (a) one `cim_<tag>` view per model, rebuilt from the registry on every
+# startup, and (b) correcting HISTORY after a models.yaml edit — rows ingested under
+# the old rule keep the old tags until `backfill_cim` re-derives them. `backfill_cim`
+# is the operator entry point that replaces the `python -m app.cli cim-rebuild`
+# command the registry header used to advertise but which never existed.
+#
+# Every SQL string below is either a module constant or the return value of a pure
+# function, so the DB-free unit tests can assert on the emitted text on a machine with
+# no PostgreSQL — which is where this code is written and where CI runs its fast job.
+
+# Exactly the shape `sql.view_name` emits ("cim_" + a validated tag). Nothing outside
+# this pattern is ever dropped by the reconciler.
+_CIM_VIEW_RE = re.compile(r"^cim_[a-z][a-z0-9_]*$")
+
+# The views are created unqualified, so they land in `current_schema()`; look for them
+# only there rather than across the whole search_path. `\_` escapes LIKE's single-char
+# wildcard, so this matches `cim_dns` but not `cimxdns`.
+_CIM_VIEW_SCAN = ("SELECT viewname FROM pg_views "
+                  "WHERE schemaname = current_schema() AND viewname LIKE %s")
+_CIM_VIEW_LIKE = r"cim\_%"
+
+_CIM_STAMP_UPSERT = """
+INSERT INTO cim_meta (id, registry_version, model_tags, membership_hash, applied_at)
+VALUES (true, %(version)s, %(tags)s::text[], %(hash)s, now())
+ON CONFLICT (id) DO UPDATE SET
+    registry_version = EXCLUDED.registry_version,
+    model_tags       = EXCLUDED.model_tags,
+    membership_hash  = EXCLUDED.membership_hash,
+    applied_at       = EXCLUDED.applied_at
+"""
+_CIM_BACKFILL_STAMP = ("UPDATE cim_meta SET backfilled_at = now(), "
+                       "backfill_hash = %(hash)s WHERE id = true")
+
+# The eleven columns `cim.match` reads, plus the id/event_time key and the stored
+# value. Selecting `raw` is NOT optional: a row fetched without it matches no `raw:`
+# term and raises nothing, which would quietly un-tag every Windows, Sysmon and Zeek
+# event in the store.
+_CIM_BACKFILL_COLS = ("id, event_time, vendor, product, log_type, severity, action, "
+                      "protocol, app, user_name, host_name, raw, cim_models")
+
+# `event_time` is in the predicate purely so the planner can prune to the one
+# partition that holds the row; `id` alone would probe the index of every partition.
+_CIM_UPDATE = ("UPDATE events SET cim_models = %(tags)s::text[] "
+               "WHERE id = %(id)s AND event_time = %(event_time)s")
+
+
+def cim_membership_fingerprint(registry: Optional[CimRegistry] = None) -> str:
+    """A stable digest of the registry's MEMBERSHIP rules. Pure — no database.
+
+    Canonicalized before hashing (values within a term, terms within a clause, clauses
+    within a model, models by tag) so it changes when the rule set changes and *not*
+    when someone merely reorders models.yaml — otherwise every cosmetic edit would
+    look like "history is stale" and provoke a pointless full-table backfill.
+
+    `fields:` are deliberately excluded: a field edit only changes the views, which
+    :func:`init_cim` rebuilds on the next boot, whereas a membership edit invalidates
+    the `cim_models` value stored on every row already in the table. This digest
+    answers exactly one question — is a backfill due?
+    """
+    reg = registry if registry is not None else get_registry()
+    models = []
+    for m in sorted(reg.models, key=lambda mm: mm.tag):
+        clauses = sorted(
+            "&".join(sorted(
+                f"{t.source.kind}:{t.source.name}:{t.source.paths!r}:{sorted(t.values)!r}"
+                for t in c.terms))
+            for c in m.clauses)
+        models.append(m.tag + "=" + "|".join(clauses))
+    return hashlib.sha256("\n".join(models).encode("utf-8")).hexdigest()
+
+
+def _orphan_cim_views(existing: Iterable[str], keep: Iterable[str]) -> list[str]:
+    """The `cim_*` views present in the database that the current registry no longer
+    defines. Pure + DB-free so the diff itself is unit-testable.
+
+    Only names this module could have created are returned (`^cim_[a-z][a-z0-9_]*$`,
+    i.e. exactly what `sql.view_name` emits). A relation with a stranger name that
+    merely starts with `cim` is left for a human — a startup path should never delete
+    something it cannot prove it owns. Note the flip side: `cim_` IS a reserved
+    namespace here, so an operator must not name their own view `cim_something`.
+    """
+    wanted = set(keep)
+    return sorted(n for n in set(existing)
+                  if n not in wanted and _CIM_VIEW_RE.match(n))
+
+
+def _drop_orphan_cim_views(conn, keep: Iterable[str]) -> list[str]:
+    """Drop the model views of models that have been removed from the registry.
+
+    Deliberately WITHOUT CASCADE. An operator may have built a view, matview or
+    dependent grant on top of `cim_authentication`, and CASCADE would delete it with
+    no trace. RESTRICT makes such a drop fail instead — so each orphan runs inside its
+    own savepoint and a blocked one is logged and left in place rather than aborting
+    startup for the whole application.
+    """
+    rows = conn.execute(_CIM_VIEW_SCAN, (_CIM_VIEW_LIKE,)).fetchall()
+    orphans = _orphan_cim_views((r["viewname"] for r in rows), keep)
+    dropped: list[str] = []
+    for name in orphans:
+        try:
+            with conn.transaction():          # savepoint: rolls back only this drop
+                # `name` came from pg_views and matched _CIM_VIEW_RE, so it is a bare
+                # lower-case identifier — same gate purge_older_than applies before it
+                # interpolates a partition name.
+                conn.execute(f"DROP VIEW IF EXISTS {name}")
+            dropped.append(name)
+            log.info("dropped orphaned CIM view %s (its model left the registry)", name)
+        except Exception as exc:              # noqa: BLE001 — a dependent object, usually
+            log.warning("could not drop orphaned CIM view %s; something depends on it "
+                        "(no CASCADE by design): %s", name, exc)
+    return dropped
+
+
+def _stamp_cim(conn, reg: CimRegistry) -> None:
+    """Record which registry the views were built from — the durable half of drift
+    detection. `backfilled_at`/`backfill_hash` are untouched here on purpose: they
+    belong to :func:`backfill_cim` and must keep pointing at the registry that the
+    stored history was derived under, even once a newer one is live on the views."""
+    conn.execute(_CIM_STAMP_UPSERT,
+                 {"version": reg.version, "tags": [m.tag for m in reg.models],
+                  "hash": cim_membership_fingerprint(reg)})
+
+
+def _cim_ddl_groups(registry: CimRegistry) -> list[tuple[str, str, list[str]]]:
+    """``(tag, view_name, [drop, create])`` per model — exactly the statements
+    :func:`cim.sql.ddl_statements` emits, in the same order, grouped so each model can be
+    applied on its own. Pure + DB-free, like every other SQL builder in this section.
+
+    The MODEL, not the statement, is the unit of retry: a DROP that fails leaves the old
+    view in place, and the CREATE that follows would then fail too (SQLSTATE 42P07,
+    "relation already exists") because these views are deliberately DROP + CREATE rather
+    than CREATE OR REPLACE — REPLACE cannot change a projection list, which is precisely
+    what a `fields:` edit does.
+    """
+    return [(m.tag, cim_sql.view_name(m),
+             [cim_sql.drop_view_ddl(m), cim_sql.create_view_ddl(m)])
+            for m in registry.models]
+
+
+def init_cim(registry: Optional[CimRegistry] = None) -> dict[str, Any]:
+    """Apply the CIM registry to the database: rebuild the per-model views, drop the
+    views of models that no longer exist, and stamp which registry was applied.
+
+    Idempotent and safe on every startup. Returns `views` (rebuilt), `failed`
+    (`[{"view", "error"}]`) and `dropped` (orphans reclaimed); it does NOT raise when a
+    single model's DDL fails.
+
+    PER-MODEL TRANSACTIONS, NOT ONE. This used to run the whole statement list in a
+    single transaction, and that made one operator-owned object a permanent, silent
+    outage for the entire read surface: docs/CIM.md presents `cim_<tag>` as the query
+    surface, so an analyst writes `CREATE VIEW my_logons AS SELECT * FROM
+    cim_authentication`, and from the next startup on the `DROP VIEW cim_authentication`
+    fails with SQLSTATE 2BP01 (dependent_objects_still_exist), the transaction rolls
+    back, and NONE of the eleven views refresh — on every restart, for ever. The fix is
+    the one `_drop_orphan_cim_views` already applies to exactly this hazard: give each
+    model its own transaction, log what blocked it, and keep going. CASCADE would
+    "solve" it by deleting the analyst's view without a word, which is why it is not used
+    here either.
+
+    What a failed group costs: that model's view keeps whatever definition it already had
+    (stale after a `fields:` edit, absent if it never built) while every other model
+    refreshes. Atomicity across models is what is traded away, and it bought nothing —
+    the views are read-side only, so a half-refreshed set is not a half-migrated
+    database, and the previous behaviour did not roll back to a working state either, it
+    rolled back to no refresh at all.
+
+    The `cim_meta` stamp is still written after a partial pass, deliberately: it records
+    the registry's MEMBERSHIP fingerprint, which drives `backfill_due` for the
+    `events.cim_models` column, and that column is stamped in Python at ingest with no
+    dependence on whether a view built. `failed` is how a view problem is reported.
+
+    `events.cim_models` and its GIN index are NOT created here — they are declared
+    statically in schema.sql (see the CIM section there) and applied by init_schema,
+    which must therefore run first.
+    """
+    reg = registry if registry is not None else get_registry()
+    keep = [cim_sql.view_name(m) for m in reg.models]
+    applied: list[str] = []
+    failed: list[dict[str, str]] = []
+    with pool().connection() as conn:
+        for _tag, view, stmts in _cim_ddl_groups(reg):
+            try:
+                # Outermost `transaction()` here, so each model commits on its own; a
+                # failure rolls back this model's DROP and nothing else.
+                with conn.transaction():
+                    for stmt in stmts:
+                        conn.execute(stmt)
+                applied.append(view)
+            except Exception as exc:          # noqa: BLE001 — logged, reported, not fatal
+                # psycopg's error alone does not name the model, and the two causes need
+                # different actions: a dependent object is the operator's to remove, a
+                # bad expression is a models.yaml defect.
+                detail = " ".join(str(exc).split())
+                failed.append({"view": view, "error": detail})
+                log.error(
+                    "CIM view %s could not be rebuilt, so it keeps its previous "
+                    "definition while the other models refresh. If this is SQLSTATE "
+                    "2BP01, an object of yours depends on it (drop or rebuild that "
+                    "object; this startup will never CASCADE it away). Error: %s",
+                    view, detail)
+        dropped = _drop_orphan_cim_views(conn, keep)
+        _stamp_cim(conn, reg)
+        conn.commit()
+    log.info("CIM registry v%s applied: %d/%d model views rebuilt, %d failed, "
+             "%d orphan(s) dropped",
+             reg.version, len(applied), len(keep), len(failed), len(dropped))
+    return {"registry_version": reg.version, "views": applied, "failed": failed,
+            "dropped": dropped, "membership_hash": cim_membership_fingerprint(reg)}
+
+
+# The on-disk registry's membership fingerprint, memoized on the file's CONTENT hash.
+# Parsing + validating models.yaml costs ~88ms; hashing its 27KB costs ~0.5ms. Keyed on
+# content rather than mtime/size deliberately: an mtime key silently misses a same-size
+# edit inside the clock's granularity, and a missed edit here reports "no restart needed"
+# when one is — the exact dishonesty this function exists to remove. Content hashing has
+# no such window, so the fast path is also the correct one.
+_registry_disk_cache: tuple[str, str] | None = None      # (content sha256, membership fp)
+
+
+def reset_registry_disk_cache() -> None:
+    """Forget the memoized on-disk fingerprint.
+
+    Needed only when the LOADER is swapped rather than the file — i.e. by tests that
+    monkeypatch `db.load_registry` to simulate an edit. A real edit changes the file's
+    content hash and invalidates the entry on its own, which is the whole point of keying
+    on content.
+    """
+    global _registry_disk_cache
+    _registry_disk_cache = None
+
+
+def registry_drift(registry: Optional[CimRegistry] = None) -> dict[str, Any]:
+    """Has models.yaml been edited since this process loaded it? Pure — no database.
+
+    `get_registry()` parses and caches for the PROCESS LIFETIME, so between an operator's
+    edit and the restart the live rule and the file on disk are two different things.
+    This re-reads the file (`registry.load` is deliberately non-caching) and compares
+    membership fingerprints, which is what makes that window visible instead of green.
+
+    Returns `disk_hash`, `restart_required` and `disk_error`. A file that will not parse
+    is NOT an exception here: the running process is still healthy — it is serving the
+    registry it loaded at boot — and the admin page that reports this is exactly where
+    someone needs to be told the file is broken. So `restart_required` is None ("cannot
+    tell") and `disk_error` carries the message.
+
+    Called on every /admin and /datamodels render, so the expensive half is memoized on
+    the file's content hash (see `_registry_disk_cache`) and an unedited file costs one
+    read and one sha256. The error path is deliberately NOT memoized — a broken file is
+    the state an operator is actively fixing, and re-reading it is how the page starts
+    working again the moment they do.
+    """
+    global _registry_disk_cache
+    reg = registry if registry is not None else get_registry()
+    live = cim_membership_fingerprint(reg)
+    try:
+        raw = _REGISTRY_FILE.read_bytes()
+        content = hashlib.sha256(raw).hexdigest()
+        cached = _registry_disk_cache
+        if cached is not None and cached[0] == content:
+            disk = cached[1]
+        else:
+            disk = cim_membership_fingerprint(load_registry())
+            _registry_disk_cache = (content, disk)
+    except Exception as exc:  # noqa: BLE001 — reported, never raised; see the docstring
+        log.warning("could not re-read app/cim/models.yaml to check for registry drift: %s",
+                    exc)
+        return {"disk_hash": None, "restart_required": None,
+                "disk_error": f"{type(exc).__name__}: {exc}"}
+    return {"disk_hash": disk, "restart_required": disk != live, "disk_error": None}
+
+
+def cim_status(registry: Optional[CimRegistry] = None) -> dict[str, Any]:
+    """What the database believes about the CIM registry, plus whether history is stale
+    and whether the process is running the registry that is actually on disk.
+
+    Two DIFFERENT questions, reported separately because they have different answers and
+    different fixes:
+
+    * `restart_required` — models.yaml on disk no longer matches the registry this
+      process loaded at boot. Fix: restart. (`get_registry()` caches for the process
+      lifetime; nothing re-reads the file.)
+    * `backfill_due` — the rows already in `events` were tagged under a different
+      membership rule than the one on disk. Fix: `backfill_cim`, AFTER the restart.
+
+    `backfill_due` is measured against the ON-DISK rule, not the cached one, and that is
+    the whole point of this function's shape. Against the cached registry an edit made
+    before the restart is INVISIBLE — stamped-old vs cached-old compares equal, so the
+    page says history is current while the file says otherwise. Worse, a backfill run in
+    that window re-derives under the old cached rule and stamps `backfill_hash` with the
+    old fingerprint, turning `backfill_due` False and reporting history current under a
+    rule that has never been applied to a single row. Comparing against disk keeps it
+    True until the restart-then-backfill sequence has actually happened.
+
+    If models.yaml cannot be re-read, both fall back to the live registry (and
+    `registry_drift` explains why in `registry_disk_error`) — a broken file on disk must
+    not take away the diagnostics on the page that reports it.
+    """
+    reg = registry if registry is not None else get_registry()
+    current = cim_membership_fingerprint(reg)
+    drift = registry_drift(reg)
+    # The rule history SHOULD be measured against: the file, when it is readable.
+    target = drift["disk_hash"] or current
+    with pool().connection() as conn:
+        row = conn.execute("SELECT * FROM cim_meta WHERE id = true").fetchone()
+    out: dict[str, Any] = dict(row) if row else {}
+    out["current_version"] = reg.version
+    out["current_hash"] = current
+    out["current_tags"] = [m.tag for m in reg.models]
+    out["backfill_due"] = out.get("backfill_hash") != target
+    out["restart_required"] = drift["restart_required"]
+    out["registry_disk_error"] = drift["disk_error"]
+    return out
+
+
+def _cim_backfill_query(since: Optional[dt.datetime] = None,
+                        until: Optional[dt.datetime] = None) -> tuple[str, dict[str, Any]]:
+    """``(sql, params)`` for ONE backfill chunk — pure, so a DB-free test can assert on
+    the emitted text. The caller adds `_after` (the keyset resume cursor) and `_limit`.
+
+    Keyset pagination on `id` rather than OFFSET: `id` is generated by one identity
+    sequence on the partitioned parent, so it is globally monotonic and every chunk is
+    an index range scan whose cost does not grow with how far in the run we are.
+    Optional `since`/`until` bound the run to a time range, which also lets the planner
+    prune whole partitions.
+    """
+    where = ["id > %(_after)s"]
+    p: dict[str, Any] = {}
+    if since is not None:
+        where.append("event_time >= %(_since)s")
+        p["_since"] = since
+    if until is not None:
+        where.append("event_time < %(_until)s")
+        p["_until"] = until
+    sql = (f"SELECT {_CIM_BACKFILL_COLS} FROM events "
+           f"WHERE {' AND '.join(where)} ORDER BY id LIMIT %(_limit)s")
+    return sql, p
+
+
+def backfill_cim(*, chunk: int = 2000, start_id: int = 0,
+                 max_rows: Optional[int] = None,
+                 since: Optional[dt.datetime] = None,
+                 until: Optional[dt.datetime] = None,
+                 registry: Optional[CimRegistry] = None,
+                 progress: Optional[Callable[[dict[str, Any]], None]] = None,
+                 ) -> dict[str, Any]:
+    """Re-derive `events.cim_models` for rows already in the store — the operator step
+    that corrects HISTORY after a membership edit in models.yaml.
+
+    READ-AND-UPDATE IN PYTHON, not a set-based ``UPDATE … WHERE <membership_sql>``.
+    `sql.membership_sql` stays runnable and is the readable spec, but executing it here
+    would make it a SECOND evaluator, and the two are already documented as differing
+    in three places (`match` strips whitespace where `lower(col)` does not; jsonb `#>>`
+    can subscript into an array where the Python walker only descends objects; a
+    container value renders as JSON text under `->>` and as no-value here). A row
+    corrected by SQL could therefore disagree with the identical row corrected at
+    ingest, for no reason an operator could ever see. One evaluator — `cim.match` —
+    is the whole point of Decision 1, and it costs one round trip per chunk to honour.
+
+    CHUNKED AND RESUMABLE, because `events` retains three years of partitions and an
+    unqualified UPDATE over it would hold one transaction (and its locks and its WAL)
+    open for the duration. Every chunk is one keyset-paginated SELECT plus one
+    executemany, committed before the next chunk starts, so an interrupted run loses at
+    most one chunk and resumes with ``start_id=<the returned last_id>``. Rows whose
+    tags are unchanged are not written at all, which makes a re-run after a no-op edit
+    nearly free instead of rewriting every heap tuple in the table.
+
+    Returns the counts plus `last_id` (the resume cursor) and `done` — False only when
+    the run stopped on the caller's `max_rows` bound rather than on the data. The
+    `cim_meta` backfill stamp is advanced only by a run that was unbounded AND
+    completed; a partial pass must never claim that history is current.
+
+    `progress` is called with a copy of the running counters (including `last_id`) after
+    every COMMITTED chunk, and it exists for exactly one reason: the resume cursor is
+    only useful to someone who can see it before the run returns. `main._cim_backfill_job`
+    passes a sink that publishes it, so the shutdown handler can print a real
+    `start_id=` — it used to print the `last_id` of the RESULT, which is None for the
+    entire time a run is in flight and therefore always rendered as 0, the one value
+    guaranteed to be wrong.
+    """
+    reg = registry if registry is not None else get_registry()
+    chunk = max(1, int(chunk))
+    full_pass = (int(start_id) == 0 and max_rows is None
+                 and since is None and until is None)
+    # RESTART FIRST, THEN BACKFILL. A run started while models.yaml has been edited but
+    # not yet loaded re-derives every row under the OLD cached rule — a full-table scan
+    # that changes nothing and then stamps `backfill_hash` with the old fingerprint.
+    # `cim_status` measures `backfill_due` against the file, so it stays True and the
+    # operator is not lied to; this says so at the moment the time is being wasted.
+    # Warned, not refused: the caller may legitimately be passing an explicit `registry`.
+    if registry_drift(reg)["restart_required"]:
+        log.warning(
+            "CIM backfill is running under the registry this process loaded at BOOT, but "
+            "app/cim/models.yaml has changed since. Rows will be re-derived under the old "
+            "rule. Restart LogOcean first, then run the backfill")
+    select_sql, base = _cim_backfill_query(since, until)
+    cursor_id = int(start_id)
+    scanned = updated = unchanged = chunks = 0
+    done = True
+    started = time.monotonic()
+    with pool().connection() as conn:
+        while True:
+            budget = chunk if max_rows is None else min(chunk, max_rows - scanned)
+            if budget <= 0:
+                done = False                  # stopped on the bound, not on the data
+                break
+            rows = conn.execute(select_sql,
+                                dict(base, _after=cursor_id, _limit=budget)).fetchall()
+            if not rows:
+                break
+            scanned += len(rows)
+            chunks += 1
+            cursor_id = int(rows[-1]["id"])   # ORDER BY id, so the last row is the max
+            writes = []
+            for r in rows:
+                tags = cim_models_for(r, reg)  # a stored row IS an EventLike mapping
+                if tags != r["cim_models"]:    # both sorted + NULL-for-none: comparable
+                    writes.append({"id": r["id"], "event_time": r["event_time"],
+                                   "tags": tags})
+            unchanged += len(rows) - len(writes)
+            if writes:
+                with conn.cursor() as cur:
+                    cur.executemany(_CIM_UPDATE, writes)
+                updated += len(writes)
+            conn.commit()                     # bounded WAL + a resumable cursor
+            log.info("CIM backfill: scanned=%d updated=%d unchanged=%d last_id=%d",
+                     scanned, updated, unchanged, cursor_id)
+            if progress is not None:
+                # After the commit, never before: `last_id` is only a valid resume
+                # cursor once the work up to it is durable.
+                try:
+                    progress({"scanned": scanned, "updated": updated,
+                              "unchanged": unchanged, "chunks": chunks,
+                              "last_id": cursor_id})
+                except Exception:             # noqa: BLE001 — a progress sink is
+                    log.warning("CIM backfill progress callback failed",  # diagnostics;
+                                exc_info=True)             # it must never abort the run
+            if len(rows) < budget:
+                break                         # short page -> the range is exhausted
+        if done and full_pass:
+            stamped = conn.execute(
+                _CIM_BACKFILL_STAMP,
+                {"hash": cim_membership_fingerprint(reg)}).rowcount
+            conn.commit()
+            if not stamped:
+                # No cim_meta row means init_cim has never run, so the model VIEWS do
+                # not exist either. Say so rather than seeding a row that would claim
+                # they had been applied.
+                log.warning("CIM backfill completed but could not record the stamp: "
+                            "cim_meta is empty - run db.init_cim() first")
+    result = {"scanned": scanned, "updated": updated, "unchanged": unchanged,
+              "chunks": chunks, "last_id": cursor_id, "done": done,
+              "full_pass": full_pass, "registry_version": reg.version,
+              "seconds": round(time.monotonic() - started, 2)}
+    log.info("CIM backfill finished: %s", result)
+    return result
 
 
 # --------------------------------------------------------------------------- #

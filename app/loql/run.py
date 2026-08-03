@@ -58,8 +58,14 @@ def run_query(query, *, limit: int = 1000, max_rows: int = 100_000,
     from ..config import settings
 
     lim = max(1, min(int(limit), int(max_rows)))
-    sql, params = compile_query(query, base_where=base_where, base_params=base_params,
-                                default_limit=lim, max_agg_elems=settings.loql_max_agg_elems)
+    try:
+        sql, params = compile_query(query, base_where=base_where, base_params=base_params,
+                                    default_limit=lim,
+                                    max_agg_elems=settings.loql_max_agg_elems)
+    except LoqlError:
+        raise
+    except Exception as exc:  # noqa: BLE001 — the compiler's contract is ONE exception type
+        raise LoqlError(f"query failed to compile: {_clean(exc)}")
     # set_config takes TEXT; 0 is PostgreSQL's own spelling for "no timeout", and a
     # negative value is out of range, so it clamps to 0 rather than erroring server-side.
     timeout = str(max(0, int(timeout_ms)))
@@ -69,9 +75,6 @@ def run_query(query, *, limit: int = 1000, max_rows: int = 100_000,
             with conn.transaction():
                 with conn.cursor(row_factory=dict_row) as cur:
                     cur.execute(_TIMEOUT_SQL, (timeout,))
-                    # `params` is passed even when it is EMPTY: psycopg only un-escapes a
-                    # doubled `%%` (the modulo operator's emission) when it is given a
-                    # parameter sequence, so `cur.execute(sql)` would ship `%%` literally.
                     cur.execute(sql, params)
                     fields = [d.name for d in cur.description] if cur.description else []
                     rows = cur.fetchmany(int(max_rows))

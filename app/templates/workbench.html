@@ -91,6 +91,7 @@
       Verdict:
       {% if result.matched %}<span class="badge critical">MATCH</span>{% else %}<span class="badge open">no match</span>{% endif %}
       <span class="muted">· logsource {{ 'ok' if result.logsource_ok else 'mismatch' }}</span>
+      {% if result.datamodels %}<span class="muted">· datamodel {{ 'ok' if result.datamodel_ok else 'mismatch' }}</span>{% endif %}
     </p>
     <table class="results">
       <tr><th>Selection</th><th>Result</th></tr>
@@ -98,6 +99,12 @@
       <tr><td><code>{{ name }}</code></td><td>{% if ok %}<span class="badge open">true</span>{% else %}<span class="badge high">false</span>{% endif %}</td></tr>
       {% endfor %}
       <tr><td><code>logsource</code></td><td>{% if result.logsource_ok %}<span class="badge open">true</span>{% else %}<span class="badge high">false</span>{% endif %}</td></tr>
+      {% if result.datamodels %}
+      {# The whole diagnostic value is the side-by-side: "you bound to web, this event
+         is network". Only shown for a bound rule — an unbound one is match-all. #}
+      <tr><td><code>datamodels</code></td><td>{% if result.datamodel_ok %}<span class="badge open">true</span>{% else %}<span class="badge high">false</span>{% endif %}
+        <span class="muted">rule binds {{ result.datamodels|join(', ') }} · event is {{ result.event_datamodels|join(', ') or 'no model' }}</span></td></tr>
+      {% endif %}
     </table>
     <p class="muted">condition: <code>{{ result.condition }}</code>
       {% if result.techniques %}· techniques: {{ result.techniques|join(', ') }}{% endif %}</p>

@@ -7,14 +7,13 @@ description: >-
   from the engineering / SCADA zone. TUNE THE CIDRs: set `ot_zone` to your control
   network(s); this ships with the sample lab range 10.60.0.0/16 as a placeholder.
 level: high
+# Bound to the CIM Industrial data model instead of a hand-copied protocol list. The
+# list this replaced named five protocols; the model is the canonical nine of
+# app/ot.py:OT_PROTOCOLS, so a BACnet, IEC-104, OPC-UA or PROFINET write from the IT
+# zone -- silently invisible to this rule before -- is now caught, and the list has
+# one home instead of two that can drift apart.
+datamodels: ics
 detection:
-  ot_write:
-    log_type:
-      - modbus
-      - dnp3
-      - s7comm
-      - cip
-      - enip
   is_write_or_control:
     - action:
         - write-coils
@@ -36,7 +35,7 @@ detection:
     src_ip|cidr:
       - 10.60.0.0/16          # <-- same OT zone(s) as ot_zone
       - 10.50.0.0/16          # <-- engineering / SCADA zone(s) permitted to write
-  condition: ot_write and is_write_or_control and ot_zone and not from_ot_zone
+  condition: is_write_or_control and ot_zone and not from_ot_zone
 tags:
   - attack.t0855
   - attack.t0886

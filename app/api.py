@@ -104,7 +104,13 @@ async def api_query(body: dict, key: dict = Depends(require_api_key)):
     """Run a LOQL query (``{"query": "...", "limit": N}``) and return the result set.
 
     LOQL compiles to parameterized SQL under guardrails (statement timeout + row cap),
-    so a malformed/hostile query is a clean 400 (never SQL injection or a 500)."""
+    so a malformed/hostile query is a clean 400 (never SQL injection or a 500).
+
+    That includes the CIM source (``| datamodel Authentication`` /
+    ``from datamodel:Authentication``): the model name is resolved at compile time
+    against the registry, so an unknown or misplaced data model raises ``LoqlError``
+    before a connection is taken and surfaces here as a 400 naming the known models —
+    never an empty 200, which is what a silently-unresolved model would look like."""
     raw = body.get("query") if isinstance(body, dict) else None
     if raw is not None and not isinstance(raw, str):
         raise HTTPException(status_code=400, detail="'query' must be a string")

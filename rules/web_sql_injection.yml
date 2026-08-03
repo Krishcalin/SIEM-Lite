@@ -6,11 +6,13 @@ fidelity: high
 data_source: [web, zeek, suricata]
 references:
   - https://attack.mitre.org/techniques/T1190/
+# Bound to the CIM Web data model instead of a hand-rolled `log_type: [access, http]`
+# gate: SQL injection is a property of an HTTP request, not of the product that logged
+# it. The registry also calls a PAN URL-filtering log, a Meraki `urls` record, a
+# FortiGate `webfilter` event and a CEF proxy log Web -- all invisible to this rule
+# before, all covered now, and the next web source onboards as a registry edit.
+datamodels: web
 detection:
-  http:
-    log_type:
-      - access
-      - http
   sqli:
     - message|contains:
         - "union select"
@@ -27,7 +29,7 @@ detection:
         - "%27%20or%20"
         - "or%201=1"
     - message|re: "(?i)('|%27|\")\\s*(or|and)\\s*('|%27|\")?\\d+\\s*=\\s*\\d+"
-  condition: http and sqli
+  condition: sqli
 tags:
   - attack.t1190
   - attack.initial_access

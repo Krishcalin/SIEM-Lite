@@ -12,6 +12,10 @@ Supported subset
 - ``logsource``: matched against our normalized ``vendor`` / ``product`` /
   ``log_type`` (Sigma ``product``/``service`` are mapped; our own ``vendor`` /
   ``log_type`` keys may be used directly for precise control).
+- ``datamodels`` (LogOcean extension): bind the rule to CIM data models
+  (:mod:`app.cim`) instead of to a vendor — ``datamodels: web`` fires on every
+  event the registry calls Web, whatever product emitted it. A string or a list;
+  several models mean ANY of them; omitted means unbound, i.e. match-all.
 - ``detection`` selections: a map (AND of field:value), a list of maps (OR), or a
   list of bare strings (keywords searched across all fields).
 - value lists = OR (any); the ``|all`` modifier turns a list into AND.
@@ -34,9 +38,11 @@ import base64
 import ipaddress
 import logging
 import re
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 import yaml
 
@@ -375,6 +381,320 @@ def _logsource_matches(ls: dict, flat: dict) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+#  CIM data-model gate                                                        #
+# --------------------------------------------------------------------------- #
+# `logsource:` names the source that produced an event; `datamodels:` names what the
+# event *is*. Binding to the second is the point of the CIM layer: one Web rule
+# covers Apache, nginx, Zeek http, a PAN URL-filtering log and a proxy, and onboarding
+# the next web source is a registry edit rather than an edit to every web rule.
+#
+# Membership is evaluated in Python against the event itself, never read back from
+# `events.cim_models`: detection runs INLINE in `pipeline.write_stream`, which
+# evaluates each event as it streams and only INSERTs in chunks — the row does not
+# exist yet. `app.cim.match` is the single evaluator for both paths.
+_GATE_CACHE_MAX = 512
+_LOG_KEYS_MAX = 512
+
+# How long a FAILED resolution is honoured before the next caller tries again — see
+# `_cim`, which owns the argument for why failure is retried at all and why on a clock.
+_CIM_RETRY_SECONDS = 30.0
+_CIM_UNAVAILABLE = "cim-unavailable"      # `_log_once` key, dropped again on recovery
+_clock = time.monotonic                   # the retry clock, swapped out by tests.
+                                          # MONOTONIC: a wall-clock step (ntp, a VM
+                                          # resume) must not park the retry in the
+                                          # far future or fire it in a tight loop.
+
+_cim_lock = threading.Lock()              # guards the six globals below, together
+_cim_resolved = False                     # resolved SUCCESSFULLY — the (registry,
+_cim_registry: Any = None                 # tags_for) handle is then reused for every
+_cim_tags_for: Any = None                 # event: never per event, never per rule.
+_cim_retry_at: Optional[float] = None     # `_clock()` deadline for the next attempt
+_cim_generation = 0                       # bumped by `reset_cim_cache` — see `_gate`
+_gate_cache: dict[tuple, "_Gate"] = {}    # (rule id, names) -> resolved binding
+_logged: set[str] = set()                 # keys already reported by `_log_once` — the
+                                          # ONE global here that is NOT lock-guarded
+
+
+def _log_once(key: str, msg: str, *args, exc_info: bool = False) -> None:
+    """Log ``msg`` the first time ``key`` is seen, and never again.
+
+    The gate runs per event, so a rule bound to a misspelled model would otherwise
+    emit one identical line for every event in the stream — a broken rule must be
+    loud once, not a denial of service on the log.
+
+    Bounded for the same reason ``_gate_cache`` is: the keys carry ``rule.id``, which
+    arrives straight from pasted YAML via ``main.rules_test`` and ``workbench.evaluate``,
+    so an unbounded set here is a slow leak driven by whatever an analyst pastes. Past
+    the cap the whole set is dropped — a key that recurs afterwards costs one extra
+    line, which is the cheap side of the trade.
+
+    ``_logged`` is the one CIM global NOT guarded by ``_cim_lock``, deliberately. Every
+    operation used on it — ``in``, ``add``, ``len``, ``clear``, ``discard`` — is a single
+    atomic operation on a builtin set, so a race here cannot corrupt it; it can only
+    duplicate or drop ONE log line. That is not worth a critical section on a path that
+    runs per event per rule, and taking the lock here would deadlock anyway: ``_cim``
+    reports its own failure through this function while holding it.
+    """
+    if key in _logged:
+        return
+    if len(_logged) >= _LOG_KEYS_MAX:
+        _logged.clear()
+    _logged.add(key)
+    log.error(msg, *args, exc_info=exc_info)
+
+
+def _cim() -> tuple[Any, Any]:
+    """``(registry, tags_for)`` for the CIM layer, resolved once — ``(None, None)``
+    if it is unavailable.
+
+    Imported lazily and defensively on purpose. ``app.cim.match`` runs a contract
+    self-check at import and ``registry.load()`` parses ``models.yaml``; either can
+    raise, and neither may be allowed to stop ingest. A CIM failure must cost exactly
+    the rules that bind to a data model, so it is caught here and turned into "no
+    registry" — every other rule keeps firing.
+
+    SUCCESS is permanent; FAILURE is not.
+        ``_cim_resolved`` is set only on the success path, so a resolution that failed
+        is not process-lifetime state. It used to be — the flag was set after the
+        ``except`` arm too — which meant one unlucky moment (a ``models.yaml`` caught
+        mid-write, a failed ``registry.reload()`` leaving the singleton empty, a
+        transient ``MemoryError``) switched every datamodel-bound rule off until
+        someone restarted the process. Nothing in the app calls
+        :func:`reset_cim_cache`, so "until someone restarts" was literal.
+
+    Why a clock, and why 30 s.
+        The obvious alternative — retry on every call — is the trap on the other side:
+        ``registry.load()`` measures ~200 ms on the shipped 11-model ``models.yaml``,
+        and it runs UNDER this lock, so a permanently broken registry would stall the
+        whole detection path for 200 ms per event. A retry budget counted in CALLS
+        avoids that but is rate-dependent in both directions: the same budget is
+        seconds of recovery latency at 10k events/s and hours of it on a quiet box.
+        A flat wall of ``_CIM_RETRY_SECONDS`` is rate-INdependent on both axes — it
+        bounds the cost of a broken registry at one attempt per 30 s, whatever the
+        event rate. Not exponential: there is nothing here to overload by retrying, so
+        the only thing a growing interval would buy is a longer outage after the cause
+        has cleared.
+
+        TWO WALLS IN SERIES, so read the recovery latency as their sum.
+        ``registry.get_registry()`` keeps a negative cache of its own on the same
+        ``_FAILURE_TTL_SECONDS = 30`` idea, for the same reason at a different layer
+        (its caller on the degraded write path is ``db._cim_tags``, i.e. one call per
+        EVENT). The two are independent and neither knows about the other, so an attempt
+        from here usually does NOT reach ``registry.load()`` at all — it is answered
+        from that negative entry in O(1), which makes the cost claim above conservative
+        rather than optimistic. The recovery latency is what compounds: this wall is
+        armed a few hundred ms BEFORE the registry's (``now`` is sampled before the
+        load), so the first retry past 30 s lands while the registry's entry is still
+        warm, is refused, and re-arms this one. A fixed ``models.yaml`` is therefore
+        picked up in **30–60 s**, not 30. That is bounded and self-correcting, and
+        collapsing it would mean one module reaching into the other's private cache
+        across a lock boundary — see :func:`reset_cim_cache`, which is the supported way
+        to skip the wait and which only works when paired with ``registry.reload()``.
+
+    Both transitions are logged, once each: the failure through :func:`_log_once` (it
+    repeats every 30 s, and one line is the point), the recovery at WARNING because
+    "the bound rules are live again" is exactly what the operator watching the first
+    line is waiting for. The key is dropped on recovery so a SECOND outage is loud too.
+
+    Thread safety. Concurrent FIRST callers are the normal case, not an exotic one:
+    ingest runs ``INGEST_WORKERS`` writers that each reach this through
+    ``pipeline.write_stream`` -> ``evaluate_event`` -> :func:`cim_tags`, alongside
+    ``/upload``, ``/api/ingest``, ``/rules/test`` and the workbench. In a SERVED process
+    the window is small: ``main._require_cim_registry()`` — which runs first in the
+    lifespan, before the database is touched, and is not gated by ``CIM_ENABLED``
+    (that flag gates ``main._init_cim``'s ``cim_<tag>`` views only) — has already forced
+    ``db.validate_cim_registry()`` -> ``registry.get_registry()``, the one eager load in
+    the process, and refuses to boot if it raises. So ``get_registry()`` below is a cache
+    hit and only the lazy import is cold. The processes that pay a whole
+    ``registry.load()`` here are the ones that never run that lifespan: the test suite,
+    and anything importing the engine directly.
+
+    The check, the resolution and the publication of ``_cim_resolved`` therefore all
+    happen INSIDE ``_cim_lock``, and the flag is set LAST. Not double-checked outside
+    the lock: the flag and the two handles are three separate globals, so a fast path
+    that reads the flag unlocked has to argue about which stores a concurrent writer
+    has already made visible — and the failure mode of getting that wrong is not a slow
+    path, it is ``(None, None)``, which :func:`_gate` turns into a dead gate. This
+    construction has nothing to argue about. An uncontended lock is ~100 ns against a
+    per-event evaluation orders of magnitude larger, and a contended one blocks the
+    caller for exactly the load it was about to need.
+    """
+    global _cim_resolved, _cim_registry, _cim_tags_for, _cim_retry_at
+    with _cim_lock:
+        if _cim_resolved:
+            return _cim_registry, _cim_tags_for
+        now = _clock()
+        if _cim_retry_at is not None and now < _cim_retry_at:
+            return None, None             # still inside the wall from the last failure
+        try:
+            from ..cim.match import tags_for
+            from ..cim.registry import get_registry
+            reg, tags_fn = get_registry(), tags_for
+        except Exception:  # noqa: BLE001 — a broken registry is a dead gate, not a
+            _cim_registry = _cim_tags_for = None                    # dead pipeline
+            _cim_retry_at = now + _CIM_RETRY_SECONDS
+            _log_once(_CIM_UNAVAILABLE,
+                      "CIM registry unavailable - every datamodel-bound detection rule "
+                      "is disabled; retrying in %.0fs", _CIM_RETRY_SECONDS, exc_info=True)
+            return None, None
+        if _cim_retry_at is not None:     # this attempt was a RETRY, and it worked
+            _logged.discard(_CIM_UNAVAILABLE)          # ...so say so if it breaks again
+            log.warning("CIM registry resolved after an earlier failure - "
+                        "datamodel-bound detection rules are live again")
+            _cim_retry_at = None
+        _cim_registry, _cim_tags_for = reg, tags_fn
+        # Published only now: until this line every other thread waits on the lock
+        # rather than reading half-resolved state. Deliberately NOT in a `finally` —
+        # a BaseException (KeyboardInterrupt, MemoryError) is not "the registry is
+        # broken", so it leaves the flag unset and the next caller tries again.
+        _cim_resolved = True
+        return _cim_registry, _cim_tags_for
+
+
+def reset_cim_cache() -> None:
+    """Forget the resolved registry, the per-rule gates and the once-only log keys.
+
+    Call after ``app.cim.registry.reload()``: a SUCCESSFUL resolution above is permanent
+    (a failed one is retried on a clock), so an edited ``models.yaml`` is otherwise
+    invisible until restart. Tests use it to swap registries between cases.
+
+    AFTER ``reload()``, and not instead of it. This clears THIS module's half of the
+    state — the resolved handles, the gates, and ``_cim_retry_at``, so the next call
+    re-resolves immediately instead of waiting out the wall. It cannot clear the
+    registry's own negative cache, which is private to ``app.cim.registry`` and is what
+    ``get_registry()`` will answer the re-resolution from. Called ALONE against a
+    registry that is currently failing, this therefore buys nothing: the immediate
+    retry is served the remembered exception and simply re-arms the wall.
+    ``registry.reload()`` is the call that drops that entry and re-reads the file, which
+    is why it comes first and why "reload, then reset" is the whole sequence.
+
+    Everything the reset invalidates is dropped in ONE critical section, under the lock
+    :func:`_cim` and :func:`_gate` write through. ``_gate_cache`` in particular MUST be
+    cleared in here rather than after: a gate resolved against the pre-reset registry can
+    be in flight while this runs, and clearing outside the lock let that thread write it
+    back AFTER the clear — the stale binding then outlives the registry it was resolved
+    against, which is the permanent-state failure this whole reset exists to prevent.
+    ``_cim_generation`` is what makes that write recognisable to the thread holding it.
+
+    ``clear_plan_cache()`` stays outside: it is another module's own cache, guarded by
+    nothing of ours, and holding ``_cim_lock`` across an import to reach it would invert
+    the lock order this file is careful about.
+    """
+    global _cim_resolved, _cim_registry, _cim_tags_for, _cim_retry_at, _cim_generation
+    with _cim_lock:                       # same lock as `_cim`, for the same reason
+        _cim_resolved, _cim_registry, _cim_tags_for = False, None, None
+        _cim_retry_at = None              # "try again NOW" — of OUR wall; the registry's
+                                          # own negative entry is dropped by `reload()`
+        _cim_generation += 1              # invalidates gates already in flight
+        _gate_cache.clear()
+        _logged.clear()
+    try:
+        from ..cim.match import clear_plan_cache
+        clear_plan_cache()
+    except Exception:  # noqa: BLE001 — nothing to clear if the layer never loaded
+        pass
+
+
+def cim_tags(evt: Any) -> frozenset[str]:
+    """The CIM model tags ``evt`` belongs to — ``app.cim.match.tags_for`` in a box
+    that never raises.
+
+    ``evt`` is a :class:`~app.models.NormalizedEvent` or a stored ``events`` row read
+    back as a mapping (both carry the nine membership columns and ``raw``). Resolve it
+    ONCE per event and hand the result to :func:`match_rule`; walking the registry per
+    rule would repeat the same work for every rule in the pack.
+    """
+    reg, tags_for = _cim()
+    if reg is None:
+        return frozenset()
+    try:
+        return frozenset(tags_for(evt, reg))
+    except Exception:  # noqa: BLE001 — see `_cim`: bound rules die, the rest run
+        _log_once("cim-eval-failed",
+                  "CIM membership evaluation failed - every datamodel-bound detection "
+                  "rule is disabled", exc_info=True)
+        return frozenset()
+
+
+@dataclass(frozen=True)
+class _Gate:
+    """One rule's ``datamodels:`` binding, resolved against the registry.
+
+    ``dead`` is the failure mode that matters: a name that resolves to no model is a
+    rule defect, and the rule is switched off rather than allowed to fall through to
+    match-all — a typo must never silently widen a detection to every event.
+    """
+    tags: frozenset[str]
+    dead: bool
+
+
+def _gate(rule: "Rule") -> _Gate:
+    """``rule``'s binding, resolved once and memoized (names -> model tags).
+
+    ``_gate_cache`` is read and written under ``_cim_lock`` — the same lock as the
+    resolution it is derived from, and for the same reason. The generation stamp is what
+    the two short critical sections buy: a reset can land in the UNLOCKED middle of this
+    function, between the registry this gate was resolved against and the write below,
+    and without the stamp that write puts a binding from a discarded registry back into a
+    cache that nothing but a restart will clear again.
+
+    The stamp is read BEFORE :func:`_cim`, never after, so it can only be too strict: a
+    reset anywhere in the window makes this call skip its memoization and resolve once
+    more next time. Two uncontended acquisitions (~100 ns each) against a registry walk
+    is the right side of that trade, and the hit path takes only one.
+    """
+    key = (rule.id, tuple(rule.datamodels))
+    with _cim_lock:
+        hit = _gate_cache.get(key)
+        if hit is not None:
+            return hit
+        generation = _cim_generation
+    reg, _ = _cim()                       # takes `_cim_lock` itself — never held here
+    if reg is None:
+        # There is no registry to resolve against, so this is not an answer about the
+        # rule — it is the absence of one, and `_cim` has already logged why. Return
+        # the dead gate WITHOUT memoizing it: `_gate_cache` is only ever written from a
+        # real registry, so nothing about a failed resolution can outlive the failure.
+        # Memoizing here is what turns a transient outage into permanent state, because
+        # the cache is otherwise cleared only by `reset_cim_cache()` or by overflow.
+        return _Gate(frozenset(), True)
+    resolved, unknown = [], []
+    for name in rule.datamodels:
+        model = reg.by_name(name)                      # display name OR tag
+        (resolved.append(model.tag) if model is not None else unknown.append(name))
+    if unknown:
+        _log_once(f"unknown-datamodel:{key}",
+                  "detection rule %s binds to unknown CIM data model(s) %s - the "
+                  "rule is disabled (known models: %s)",
+                  rule.id, ", ".join(unknown), ", ".join(reg.tags))
+    gate = _Gate(frozenset(), True) if unknown else _Gate(frozenset(resolved), False)
+    with _cim_lock:
+        if generation == _cim_generation:              # nothing reset underneath us
+            # A rule pack contributes one entry per rule; only the workbench, where
+            # every edit is a fresh (id, names) pair, can grow this without bound.
+            if len(_gate_cache) >= _GATE_CACHE_MAX:
+                _gate_cache.clear()
+            _gate_cache[key] = gate
+    return gate
+
+
+def datamodels_match(rule: "Rule", tags: Iterable[str]) -> bool:
+    """Does ``rule``'s ``datamodels:`` binding admit an event carrying ``tags``?
+
+    * **No binding** -> ``True``. An unbound rule is match-all, which is what keeps
+      every rule written before this gate existed behaving exactly as it did.
+    * **Several models** -> ANY of them, following the engine's own convention that a
+      value list is an OR. ``datamodels: [web, ids]`` reads "this fires on web *or*
+      IDS events"; requiring both is not a thing an analyst asks for.
+    * **An unresolvable name** -> ``False``, for this rule only (see :class:`_Gate`).
+    """
+    if not rule.datamodels:
+        return True
+    gate = _gate(rule)
+    return not gate.dead and not gate.tags.isdisjoint(tags)
+
+
+# --------------------------------------------------------------------------- #
 #  Rule model + loading                                                       #
 # --------------------------------------------------------------------------- #
 @dataclass
@@ -385,6 +705,10 @@ class Rule:
     description: str
     logsource: dict
     detection: dict
+    # The CIM binding — model names or tags this rule reads (`datamodels_match`).
+    # EMPTY means unbound, i.e. match-all, so a rule that predates the gate is
+    # unaffected by it and pays nothing for it.
+    datamodels: list[str] = field(default_factory=list)
     tactics: list[str] = field(default_factory=list)
     techniques: list[str] = field(default_factory=list)
     atlas_techniques: list[str] = field(default_factory=list)
@@ -444,6 +768,9 @@ def rule_from_dict(d: dict, source: str) -> Rule:
         description=str(d.get("description") or ""),
         logsource=d.get("logsource") or {},
         detection=d.get("detection") or {},
+        # `datamodel:` (singular) is accepted because binding to ONE model is the
+        # common case and reads better; `datamodels:` is canonical.
+        datamodels=as_str_list(d.get("datamodels") or d.get("datamodel")),
         tactics=tactics, techniques=techniques,
         atlas_techniques=parse_atlas_tags(d.get("tags")),
         fidelity=norm_fidelity(d.get("fidelity")),
@@ -475,9 +802,32 @@ def load_rules(rules_dir) -> list[Rule]:
     return rules
 
 
-def match_rule(rule: Rule, flat: dict) -> bool:
+def match_rule(rule: Rule, flat: dict, evt: Any = None,
+               tags: Optional[Iterable[str]] = None) -> bool:
+    """Does ``rule`` fire on this event? Both source gates, then the condition.
+
+    ``flat`` is the Sigma view of the event (:func:`flatten_event`). ``evt`` is the
+    event ITSELF — a ``NormalizedEvent`` or a stored ``events`` row — which the CIM
+    gate needs because membership reads jsonb keys byte-exact while ``flat`` has
+    lower-cased and dot-joined them. ``tags`` is that event's already-resolved
+    membership (:func:`cim_tags`); pass it when evaluating many rules against one
+    event so the registry is walked once instead of once per rule.
+
+    ``logsource`` and ``datamodels`` are ANDed: both are narrowing filters, and a rule
+    that declares both means "this kind of event, from that source". Logsource is
+    tested first only because it is the cheaper of the two.
+
+    With neither ``evt`` nor ``tags``, ``flat`` stands in for the event: its nine
+    normalized columns resolve, but no ``raw:`` membership term can, so a bound rule
+    may under-match. Every caller inside LogOcean passes one of them.
+    """
     if not _logsource_matches(rule.logsource, flat):
         return False
+    if rule.datamodels:
+        if tags is None:
+            tags = cim_tags(evt if evt is not None else flat)
+        if not datamodels_match(rule, tags):
+            return False
     det = rule.detection
     sel = {name: _eval_selection(flat, body)
            for name, body in det.items() if name != "condition"}
@@ -505,14 +855,33 @@ class DetectionEngine:
     def __init__(self, rules: Optional[list[Rule]] = None):
         self.rules: list[Rule] = rules or []
 
-    def evaluate_event(self, evt: NormalizedEvent) -> list[Rule]:
+    def evaluate_event(self, evt: NormalizedEvent,
+                       tags: Optional[frozenset[str]] = None) -> list[Rule]:
+        """Every enabled rule that fires on ``evt``.
+
+        ``tags`` is the event's already-resolved CIM membership. It exists because the
+        same walk is wanted twice per ingested event — here for the ``datamodels:`` gate
+        as the event streams, and again in ``db._row`` when the chunk flushes — so
+        ``pipeline.write_stream`` resolves it once and threads it to both consumers.
+
+        Omitting it keeps the original behaviour exactly: membership is resolved lazily
+        below, at most once per event, and not at all when no enabled rule binds to a data
+        model — so a rule pack that uses none of this still pays nothing.
+
+        The threaded value is resolved against the DEFAULT cached registry, which is the
+        same object :func:`_cim` holds in any production process. The two can only differ
+        after a ``registry.reload()`` without a matching ``reset_cim_cache()``, and then
+        the caller's value is the fresher of the two.
+        """
         flat = flatten_event(evt)
         out: list[Rule] = []
         for r in self.rules:
             if not r.enabled:
                 continue
             try:
-                if match_rule(r, flat):
+                if r.datamodels and tags is None:
+                    tags = cim_tags(evt)
+                if match_rule(r, flat, evt, tags):
                     out.append(r)
             except Exception:  # noqa: BLE001 — one bad rule must not sink the rest
                 log.warning("detection rule %s failed to evaluate", r.id, exc_info=True)

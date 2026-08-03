@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Data models — LogOcean{% endblock %}
+{% block body %}
+<h1>CIM data models</h1>
+<p class="muted">A data model is a vendor-agnostic schema plus a <b>membership rule</b> that
+   decides which events belong to it. Membership is evaluated in Python at ingest and stored
+   in <code>events.cim_models</code>, so a detection binds to <code>datamodels: web</code>
+   instead of listing every vendor that speaks HTTP — onboarding a new source becomes a
+   registry edit in <code>app/cim/models.yaml</code>, not a code change. Registry
+   <b>v{{ registry_version or '—' }}</b>, {{ models|length }} models.</p>
+
+{# The registry error comes FIRST and outside the enabled/init chain on purpose. It is
+   the strictly worst case — no registry means no views, no fields AND no tagging — and
+   it is independent of CIM_ENABLED, which gates only the views. While it sat in the
+   chain below, `{% if not enabled %}` matched first and a broken models.yaml under
+   CIM_ENABLED=false rendered as nothing worse than "the views are switched off". #}
+{% if registry_error %}
+<div class="alert err"><b>The CIM registry could not be loaded.</b>
+  <code>{{ registry_error }}</code>. This is worse than a missing view: nothing below is
+  the live rule, and until it is fixed every ingested event is stored with no
+  <code>cim_models</code> at all — detections bound to <code>datamodels:</code> do not
+  fire and <code>from datamodel:</code> returns nothing. Fix
+  <code>app/cim/models.yaml</code> and restart, then run the membership backfill from
+  <a href="/admin">Admin</a> to re-tag whatever was stored meanwhile.</div>
+{% elif not enabled %}
+<div class="alert err">The CIM model views are disabled (<code>CIM_ENABLED=false</code>).
+  Membership is still stamped on every ingested event, so detections and
+  <code>from datamodel:</code> searches work — only the <code>cim_&lt;tag&gt;</code> views
+  are absent.</div>
+{% elif init.error %}
+<div class="alert err">The model views could not be built at startup:
+  <code>{{ init.error }}</code>. Ingest and detection are unaffected —
+  <code>SELECT * FROM cim_&lt;tag&gt;</code> is what is missing. Fix
+  <code>app/cim/models.yaml</code> and restart.</div>
+{% elif not init.applied %}
+<div class="alert err">The model views have not been applied in this process (startup did
+  not reach <code>db.init_cim()</code>). The membership stamp below may be from an
+  earlier run.</div>
+{% endif %}
+
+{% if status.backfill_due %}
+<div class="alert err">Membership has changed since the last full backfill, so events
+  stored before the edit still carry their old tags and every model under-reports.
+  Run the backfill from <a href="/admin">Admin</a>.</div>
+{% endif %}
+
+<div class="cards">
+  <div class="card"><div class="num">{{ models|length }}</div><div class="lbl">data models</div></div>
+  <div class="card"><div class="num">{{ init.views|length if init.applied else '—' }}</div><div class="lbl">views applied</div></div>
+  <div class="card"><div class="num">{{ status.registry_version or '—' }}</div><div class="lbl">registry stamped in db</div></div>
+  <div class="card"><div class="num">{{ status.backfilled_at | ist('%Y-%m-%d') if status.backfilled_at else '—' }}</div><div class="lbl">history backfilled</div></div>
+</div>
+
+<section>
+  <h2>Querying a model</h2>
+  <p>Every model is addressable three ways — by display name or by tag, case-insensitively.
+     Inside a model the vocabulary is the model's own field names (below), not the
+     <code>events</code> columns they come from.</p>
+  <table>
+    <tr><th>Where</th><th>Syntax</th><th>What it does</th></tr>
+    <tr><td>LOQL</td><td><code>from datamodel:Authentication action=failure | stats count by user</code></td>
+        <td>Search the model instead of a vendor. <code>| datamodel Authentication</code> is the same query.</td></tr>
+    <tr><td>Sigma rule</td><td><code>datamodels: web</code></td>
+        <td>Bind a rule to the model. Narrows with <code>logsource:</code>; several models mean any of them.</td></tr>
+    <tr><td>SQL</td><td><code>SELECT * FROM cim_authentication</code></td>
+        <td>One view per model, rebuilt from the registry on every startup.</td></tr>
+  </table>
+</section>
+
+<section>
+  <h2>Models</h2>
+  <p class="muted">
+    {% if counting %}Member counts cover the last {{ count_days }} day(s). The whole sweep
+      shares one time budget, so an em dash means the store was too slow to count that
+      model right now — not that it is empty.
+      <a class="btn" href="/datamodels">Hide counts</a>
+    {% elif count_days %}Counting members is one aggregate per model over the whole
+      <code>events</code> table, so it is off by default.
+      <a class="btn" href="/datamodels?counts=1">Count members ({{ count_days }}d)</a>
+    {% else %}Member counting is disabled (<code>CIM_COUNT_DAYS=0</code>).{% endif %}
+  </p>
+
+  {% for m in models %}
+  <h3>{{ m.name }}
+    <span class="badge {{ 'pending' if m.awaiting else 'done' }}">{{ m.tag }}</span>
+    <span class="muted">v{{ m.version }} · {{ m.fields|length }} fields ·
+      {{ m.clauses|length }} membership clause(s) · <code>{{ m.view }}</code>
+      {% if counting %}· {{ "{:,}".format(m.count) if m.count is not none else '—' }} member(s) in {{ count_days }}d{% endif %}</span>
+  </h3>
+  <p>{{ m.description }}</p>
+  {% if m.awaiting %}
+  <div class="alert">
+    <b>Awaiting a source.</b> {{ m.awaiting }} The model is defined and ready — it starts
+    filling the moment a matching source is onboarded. Nothing is broken.
+  </div>
+  {% endif %}
+
+  <div class="grid2">
+    <div>
+      <p class="muted"><b>Membership</b> — an event joins when <b>any</b> clause matches</p>
+      <table>
+        <tr><th>#</th><th>All of</th></tr>
+        {% for c in m.clauses %}
+        <tr>
+          <td class="muted nowrap">{{ loop.index }}</td>
+          <td><code>{{ c | join(' AND ') }}</code></td>
+        </tr>
+        {% else %}<tr><td colspan="2" class="muted">No membership rule — this model matches nothing.</td></tr>{% endfor %}
+      </table>
+    </div>
+    <div>
+      <p class="muted"><b>Fields</b> — the names to query by</p>
+      <table>
+        <tr><th>Field</th><th>Source</th><th>Meaning</th></tr>
+        {% for f in m.fields %}
+        <tr>
+          <td class="nowrap"><b>{{ f.name }}</b></td>
+          <td class="nowrap muted"><code>{{ f.source }}</code></td>
+          <td class="msg muted">{{ f.description or '—' }}</td>
+        </tr>
+        {% else %}<tr><td colspan="3" class="muted">No fields mapped.</td></tr>{% endfor %}
+      </table>
+    </div>
+  </div>
+  {% else %}
+  <p class="muted">The registry defines no models.</p>
+  {% endfor %}
+</section>
+{% endblock %}

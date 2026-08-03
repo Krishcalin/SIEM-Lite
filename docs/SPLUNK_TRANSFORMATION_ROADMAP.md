@@ -13,19 +13,22 @@
 
 ## Executive summary — not a rewrite, a backbone upgrade then breadth
 
-LogOcean already owns the hard SIEM primitives: agentless collectors, ~31 parsers + auto-detect,
+LogOcean already owns the hard SIEM primitives: agentless collectors, 29 parsers + auto-detect,
 a native Sigma-subset detection engine, correlation, kill-chain stitching, cases, SOAR-lite
 playbooks with auto-revert, decayed entity-risk UEBA, threat-intel matching, and an 8-framework
 compliance map — all pure-Python on one Postgres. Reaching Splunk parity is **not a rewrite**; it
 is building the **two backbones every Splunk feature secretly depends on**, then broadening
 onboarding and layering enrichment, risk, statistics, orchestration, reporting, and scale on top.
 
-- **Backbone 1 — LOQL:** a composable piped `filter | stats | eval | where | timechart` language
-  that compiles to **parameterized SQL** over the partitioned event store. Search, dashboards, data
-  models, RBA, acceleration, federation and unbypassable RBAC all hang off it.
-- **Backbone 2 — CIM-equivalent normalization:** split the flat `NormalizedEvent` into versioned
-  domain models (Authentication, Network, Web, DNS, Endpoint, Change, Malware, IDS, Email,
-  Vulnerability) so detections bind to a **data model, not a vendor**.
+- **Backbone 1 — LOQL** *(shipped, `ec1ed09` — `app/loql/`, `docs/LOQL.md`)*: a composable piped
+  `filter | stats | eval | where | timechart` language that compiles to **parameterized SQL** over
+  the partitioned event store. Search, dashboards, data models, RBA, acceleration, federation and
+  unbypassable RBAC all hang off it.
+- **Backbone 2 — CIM-equivalent normalization** *(shipped — `app/cim/`, `docs/CIM.md`)*: a versioned
+  data-model layer over the flat `NormalizedEvent` (Authentication, Network, Web, DNS, Endpoint,
+  Change, Malware, IDS, **Industrial/OT**, Email, Vulnerability) so detections bind to a **data
+  model, not a vendor**. Membership is a plain, GIN-indexed `events.cim_models text[]` stamped in
+  Python at ingest, plus one `cim_<tag>` view per model.
 - **Then:** onboarding breadth (EDR/cloud/flow/vuln + the 10 named sources) → asset/identity +
   enrichment fabric → Risk-Based Alerting → statistical UEBA → real SOAR → reporting/metrics →
   scale, multi-tenancy & chain-of-custody.
@@ -103,27 +106,48 @@ Effort tags: **S / M / L / XL**.
 schema, because search, dashboards, data models, RBA, acceleration, federation and RBAC all depend
 on these two substrates. Make ingest crash-safe and the shared store un-starvable.
 
-- **[XL] LOQL** — piped search/transform DSL compiling to **parameterized SQL CTE chains**
-  (filter/stats/eval/where/rename/fields/sort/head/dedup/top/rare/timechart/bin); the single point
-  where per-role row filters & field masks are later injected. Stages that can't map to SQL run as a
-  bounded Python post-processor. *(Splunk: SPL)*
-- **[L] Window verbs** — eventstats / streamstats / transaction via Postgres window functions
+- **[XL] LOQL — SHIPPED** (`ec1ed09`, `app/loql/`, `docs/LOQL.md`) — piped search/transform DSL
+  compiling to **parameterized SQL CTE chains**
+  (search/where/eval/fields/rename/sort/head/dedup/stats/top/rare/bin/timechart/**datamodel**); the
+  single point where per-role row filters & field masks are later injected. Reached via
+  `POST /api/v1/query`. *(Splunk: SPL)*
+  *Open:* stages that can't map to SQL as a bounded Python post-processor; a UI search box.
+- **[L] Window verbs — OPEN** — eventstats / streamstats / transaction via Postgres window functions
   (gap-and-islands with `LAG`). *(Splunk: eventstats/streamstats/transaction)*
-- **[XL] CIM domain models** — versioned Authentication/Network/Web/DNS/Endpoint/Change/Malware/IDS/
-  Email/Vulnerability as generated columns + typed views + a YAML registry; `from datamodel:Authentication`.
-  *(Splunk: CIM + Data Models)*
-- **[M] CIM tag/eventtype layer** (pulled from Ph2) + rex/spath + macros — rules select by tag;
-  analysts carve never-parsed fields retroactively (ReDoS-guarded). *(Splunk: eventtypes/tags · rex/spath/macros)*
-- **[M] Durable ingest queue + ack** — Postgres staging spillover behind the fast path; synchronous
-  ack mode on the ingest API + syslog-TCP; recover unprocessed rows on restart. *(Splunk: HEC ack / persistentQueue)*
-- **[S] Query guardrails + index strategy + perf spike** — `statement_timeout`, row/time caps,
-  running-query registry + kill; jsonb GIN/BRIN/expression indexes + partition pruning; a published
-  EPS & bytes/event benchmark that gates Phase 2. *(Splunk: Workload Mgmt · Job Inspector)*
+- **[XL] CIM domain models — SHIPPED** (`app/cim/`, `docs/CIM.md`) — eleven versioned models
+  (Authentication/Network/Web/DNS/Endpoint/Change/Malware/IDS/**Industrial**/Email/Vulnerability)
+  from a YAML registry (`models.yaml`), addressable as `| datamodel X` / `from datamodel:X`, as
+  `datamodels:` on a detection rule, and as one `cim_<tag>` SQL view per model.
+  **Design correction vs the original plan:** membership is a **plain `events.cim_models text[]`
+  column, GIN-indexed and filled in Python at ingest — NOT generated columns.** PostgreSQL 16
+  freezes a generation expression at `ADD COLUMN` (rewriting one needs `ALTER COLUMN … SET
+  EXPRESSION`, PG17+, and docker-compose pins 16), so a generated column would have made every
+  future registry edit unreachable on an existing database; and detection needs membership *before*
+  the INSERT, since the engine evaluates per event while rows are flushed in chunks. Typed views
+  survive as planned. *(Splunk: CIM + Data Models)*
+- **[M] CIM tag/eventtype layer (pulled from Ph2) + rex/spath + macros — PARTIAL** — rules select by
+  data model today (`datamodels:`), which is the membership half. `tags:`/`eventtypes:` as separate
+  addressable objects, and rex/spath + macros for carving never-parsed fields retroactively
+  (ReDoS-guarded), are still open. *(Splunk: eventtypes/tags · rex/spath/macros)*
+- **[M] Durable ingest queue + ack — OPEN** — Postgres staging spillover behind the fast path;
+  synchronous ack mode on the ingest API + syslog-TCP; recover unprocessed rows on restart.
+  *(Splunk: HEC ack / persistentQueue)*
+- **[S] Query guardrails + index strategy + perf spike — PARTIAL** — shipped: per-query
+  `statement_timeout` + row/default-limit caps (`LOQL_TIMEOUT_MS` / `LOQL_MAX_ROWS` /
+  `LOQL_DEFAULT_LIMIT` / `LOQL_MAX_AGG_ELEMS`), and the jsonb GIN + expression + `cim_models` GIN
+  indexes with month-partition pruning. Open: a running-query registry + kill, BRIN, and the
+  published EPS & bytes/event benchmark that gates Phase 2. *(Splunk: Workload Mgmt · Job Inspector)*
 
-**Exit:** ad-hoc `stats/timechart/eventstats` over months of data via `/search` & `/api/v1/query`;
-≥8 CIM models populated by existing parsers; a detection binds to a model not a vendor; ingest
-survives a crash with no in-flight loss; no single query can exhaust the instance; sizing numbers
-published.
+**Exit criteria — honest status.**
+
+| Criterion | Status |
+|---|---|
+| Ad-hoc `stats`/`timechart` over months of data via `/api/v1/query` | **Met.** `eventstats` is not built, and `/search` still uses the filter form — LOQL has **no UI search box**, so it is reachable only through `POST /api/v1/query` (and the `/datamodels` member counts). |
+| **≥8 CIM models populated by existing parsers** | **Met — 9 of 11.** Measured over all 34 bundled samples (97 events): authentication 15 · network 32 · web 6 · dns 4 · endpoint 19 · change 17 · malware 5 · ids 6 · ics 11. **Email and Vulnerability are 0 by design** — no shipped parser emits mail or scanner telemetry; they populate when such a source onboards (Phase 2). 3 sample events belong to no model, all genuinely unclassifiable shapes. |
+| **A detection binds to a model, not a vendor** | **Met.** `rules/web_{sql_injection,path_traversal,command_injection,xss_attempt}.yml` bind `datamodels: web`; `rules/ot_it_to_ot_write.yml` binds `datamodels: ics`. Both conversions widened real coverage (proxy/URL-filter web logs; the full nine OT protocols). **Correlation rules are NOT datamodel-bound** — they filter in SQL via `db.correlate`, and the linter rejects a binding there. |
+| Ingest survives a crash with no in-flight loss | **Open.** No durable queue / ack. |
+| No single query can exhaust the instance | **Partly met.** Timeout + row caps are enforced per query; there is no running-query registry or kill. |
+| Sizing numbers published | **Open.** The EPS / bytes-per-event benchmark spike has not run. |
 
 ### Phase 2 — Onboarding Breadth & Content Packs
 **Goal:** win the "do you parse my stack?" evaluation. Secrets vault lands first.
@@ -294,11 +318,11 @@ customer-run forwarder (NXLog/WEF), stated plainly.
 | Source | Status | Mechanism | Plan | Eff. |
 |--------|:------:|-----------|------|:----:|
 | **AWS CloudTrail** | partial | S3-SQS pull (+ existing SigV4 LookupEvents) | Add SNS→SQS→S3 collector fetching gzip CloudTrail JSON via SigV4 — full management + data events, no throttle cap; then GuardDuty/SecurityHub/VPC-Flow/WAF/Config/Route53. | L |
-| **Active Directory** | partial | Push (NXLog/WEF/syslog) + optional WinRM/WEF pull | `windows_security.py` handles 4624/4625/4768/4769/4776… on push. Add GPO/LDAP (5136/5137) + Kerberos/NTLM fields into Auth/Change/Endpoint CIM; stage opt-in WinRM/WS-Man. | L |
+| **Active Directory** | partial | Push (NXLog/WEF/syslog) + optional WinRM/WEF pull | `windows_security.py` handles 4624/4625/4768/4769/4776… on push, and now writes the resolved id back as `raw["event_id"]` so those events reach Authentication / Endpoint (4688/4689) / Change (4720…/1102) in CIM — **see the one-time dedup note in `docs/CIM.md`**. Add GPO/LDAP (5136/5137) + Kerberos/NTLM fields; stage opt-in WinRM/WS-Man. | L |
 | **Microsoft O365** | have | O365 Management Activity API (OAuth2) | Harden to multi-workload fan-out (Exchange/SharePoint/AzureAD + DLP.All) → Auth/Change/Email/Web/Data CIM. | S |
 | **Microsoft Entra ID** | partial | MS Graph pull (OAuth2) + optional Event Hub | Sign-ins exist; add Graph collectors for directoryAudits, Identity-Protection risk detections/risky-users, provisioning + an `entra_audit` parser. | S |
-| **Palo Alto NGFW** | have | Native/CSV syslog push | Parsers cover TRAFFIC/THREAT/SYSTEM/CONFIG. Add per-subtype maps (url/wildfire/globalprotect/userid/hipmatch) + CIM binding. | S |
-| **Fortinet FortiGate** | have | key=value / CEF syslog push | Parser covers traffic/utm/event/anomaly. Confirm CEF variant + map to CIM + a Content Pack wrapper. | S |
+| **Palo Alto NGFW** | have | Native/CSV syslog push | Parsers cover TRAFFIC/THREAT/SYSTEM/CONFIG. **CIM binding done** — TRAFFIC→Network (read off the *type* in `raw`, so it is subtype-proof), THREAT vulnerability/spyware/flood/scan/packet→IDS, virus/wildfire→Malware, url→Web, SYSTEM `general` + CONFIG→Change. Still open: per-subtype maps (globalprotect/userid/hipmatch). | S |
+| **Fortinet FortiGate** | have | key=value / CEF syslog push | Parser covers traffic/utm/event/anomaly. **CIM binding done** — `type=traffic`→Network, `type=event` + login/logout→Authentication, webfilter→Web, virus→Malware. Still open: confirm the CEF variant + a Content Pack wrapper. | S |
 | **Cisco (ASA/FTD/IOS)** | partial | %ASA-/%IOS- syslog (have); FTD syslog (gap) + opt-in eStreamer | ASA/IOS at parity. Add an FTD syslog parser (connection/IDS/file/malware) + stage an agentless eStreamer eNcore SSL client-cert pull from FMC (opt-in). | L |
 | **Palo Alto Prisma Access (SASE)** | gap | Cortex Data Lake API pull + push cloud-log-forward | No CDL collector today; on-prem PAN parsers reused. Build a Cortex Data Lake collector (cursor by log time) + document the cloud-log-forwarding → syslog/HEC path. | M |
 | **CrowdStrike Falcon Pro** | gap | FDR (S3+SQS) & Event Streams (OAuth2 datafeed) | Parsers accept the shapes on push; no collector. Build (1) FDR long-poll SQS → gzip-NDJSON from S3 via SigV4; (2) Event Streams OAuth2 datafeed w/ offset + refresh → Endpoint CIM. Highest-value EDR gap. | L |
@@ -313,7 +337,7 @@ cluster in analytics language, RBA, asset/identity, real SOAR, statistical UEBA,
 
 | Pillar | P0 gaps (do first) | Phase |
 |--------|--------------------|:-----:|
-| Search & Analytics | SPL-equivalent language (LOQL) · stats/eval/where · CIM taxonomy | 1 |
+| Search & Analytics | ~~SPL-equivalent language (LOQL) · stats/eval/where · CIM taxonomy~~ **done**; window verbs · rex/spath/macros · a LOQL UI still open | 1 |
 | Ingest / Onboarding | CrowdStrike FDR+Streams · Microsoft Defender XDR · delivery ack | 1–2 |
 | ES / RBA / Asset-Identity | Risk index (`risk_events`) · risk incident rules · Asset & Identity framework · auto-enrichment | 3–4 |
 | SOAR / Response | Multi-step playbook DAG · HITL approval gate · ITSM two-way sync | 6 |
@@ -332,11 +356,12 @@ OpenSearch backend → deferred.
 
 ## The eight highest-leverage moves (start here)
 
-1. **LOQL minimal command set with a frozen parse-tree contract** and a strictly parameterized SQL
-   compiler that is the single RBAC/row-filter/field-mask enforcement point — the XL critical-path
-   item half the roadmap consumes.
-2. **CIM domain schema + the tag/eventtype binding layer** so detections bind to data models, not
-   vendors — sequence immediately after LOQL; don't parallelize a third XL foundation.
+1. ~~**LOQL minimal command set with a frozen parse-tree contract** and a strictly parameterized SQL
+   compiler that is the single RBAC/row-filter/field-mask enforcement point~~ — **SHIPPED**
+   (`ec1ed09`). The row-filter/field-mask injection point exists; the filters themselves are Phase 8.
+2. ~~**CIM domain schema + the tag/eventtype binding layer** so detections bind to data models, not
+   vendors~~ — **SHIPPED** for the membership half (11 models, `datamodels:` rule binding,
+   `from datamodel:` searches). The separate tag/eventtype objects remain open.
 3. **Ingest durability (ack/staging) + query-cost guardrails + job-kill** — protect the shared single
    Postgres from day one.
 4. **A single-Postgres performance + storage-sizing benchmark** (EPS, bytes/event, hunt latency with
@@ -376,8 +401,11 @@ OpenSearch backend → deferred.
   contract early; expand incrementally.
 - **Single-Postgres contention.** Analyst SQL + ingest fight the same instance. Query caps + kill from
   Phase 1; route search to a read replica once HA lands.
-- **Row-store economics unproven.** jsonb + generated columns + rollups = write amplification & weak
-  compression vs Splunk's ~15%. The sizing benchmark gates the thesis.
+- **Row-store economics unproven.** jsonb + derived columns (`search_tsv`, `cim_models`) + rollups =
+  write amplification & weak compression vs Splunk's ~15%. The sizing benchmark gates the thesis.
+  Note the CIM column is *cheaper* than the planned generated column (a short `text[]`, NULL when
+  empty, computed once in Python) but is not free, and it makes a membership edit a table-wide
+  `UPDATE` pass — hence `db.backfill_cim`'s chunked, resumable, skip-unchanged design.
 - **Hand-rolled crypto** (AES-GCM vault, SAML/OIDC). Vetted test vectors, constant-time compares,
   third-party review; prefer OIDC + SSO-proxy over in-core XML-DSig.
 - **Parser/TA breadth is a go/no-go.** Splunk's moat is SC4S + hundreds of TAs. Content Pack format +
