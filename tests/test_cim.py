@@ -1207,13 +1207,23 @@ def test_row_binds_null_not_empty_array_for_an_unmatched_event():
 
 
 def test_insert_names_cim_models_and_stays_placeholder_aligned():
-    """The guard that catches the next column added to one half only."""
+    """The guard that catches the next column added to one half only.
+
+    It has since earned its keep twice: the count moved 22 -> 27 when Phase 3 added
+    the five asset/identity context columns, and this test is what forced them to be
+    added to BOTH halves of the statement rather than to the column list alone.
+    """
     cols = re.search(r"INSERT INTO events \((.*?)\)", db._INSERT, re.S).group(1)
     columns = [c.strip() for c in cols.split(",")]
     params = re.findall(r"%\((\w+)\)s", db._INSERT)
     assert "cim_models" in columns
     assert "%(cim_models)s::text[]" in db._INSERT
-    assert len(columns) == len(params) == 22
+    # The registry context columns ride the same statement on the same terms.
+    for name in ("asset_id", "asset_criticality", "identity_id", "identity_priority",
+                 "context_tags"):
+        assert name in columns, name
+    assert "%(context_tags)s::text[]" in db._INSERT      # arrays need the cast
+    assert len(columns) == len(params) == 27
     assert set(params) == set(db._row(evt(), 1))
 
 

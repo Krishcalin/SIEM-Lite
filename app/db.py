@@ -25,6 +25,7 @@ from psycopg_pool import ConnectionPool
 # app lifespan before anything is served), and the write path degrades rather than
 # raising. See the "CIM registry" section below for why that split is the only shape
 # that cannot lose an event.
+from . import assets
 from .cim import sql as cim_sql
 from .cim.match import cim_models_for
 from .cim.registry import _REGISTRY_PATH as _REGISTRY_FILE, get_registry, load as load_registry
@@ -45,11 +46,15 @@ _SCHEMA = (Path(__file__).resolve().parent.parent / "schema.sql").read_text(enco
 _INSERT = """
 INSERT INTO events (event_time, vendor, product, log_type, severity, action,
     src_ip, dst_ip, src_port, dst_port, protocol, app, user_name, host_name,
-    rule_name, bytes_total, message, raw, search_tsv, cim_models, batch_id, dedup_hash)
+    rule_name, bytes_total, message, raw, search_tsv, cim_models,
+    asset_id, asset_criticality, identity_id, identity_priority, context_tags,
+    batch_id, dedup_hash)
 VALUES (%(event_time)s, %(vendor)s, %(product)s, %(log_type)s, %(severity)s, %(action)s,
     %(src_ip)s::inet, %(dst_ip)s::inet, %(src_port)s, %(dst_port)s, %(protocol)s, %(app)s,
     %(user_name)s, %(host_name)s, %(rule_name)s, %(bytes_total)s, %(message)s,
     %(raw)s, to_tsvector('simple', %(tsv)s), %(cim_models)s::text[],
+    %(asset_id)s, %(asset_criticality)s, %(identity_id)s, %(identity_priority)s,
+    %(context_tags)s::text[],
     %(batch_id)s, %(dedup_hash)s)
 ON CONFLICT (dedup_hash, event_time) DO NOTHING
 """
@@ -272,6 +277,84 @@ def _cim_tags(evt: NormalizedEvent,
         return None
 
 
+# --------------------------------------------------------------------------- #
+#  Asset & identity context (Phase 3): resolved onto every row at ingest       #
+# --------------------------------------------------------------------------- #
+_asset_write_state: dict[str, Any] = {"failures": 0, "error": None, "since": None}
+
+#: The five columns, all NULL. Named once so the degrade path and the "nothing
+#: declared" path cannot drift apart into two different shapes of empty.
+_NO_CONTEXT: dict[str, Any] = {"asset_id": None, "asset_criticality": None,
+                               "identity_id": None, "identity_priority": None,
+                               "context_tags": None}
+
+
+def asset_write_state() -> dict[str, Any]:
+    """How the ingest-time registry stamp is faring — the snapshot /health reports.
+
+    Non-zero `failures` means rows are in the store with NO business context: every
+    criticality-gated detection under-counts them and a `backfill_assets` is owed once
+    the registry is readable again.
+    """
+    return dict(_asset_write_state)
+
+
+def reset_asset_write_state() -> None:
+    _asset_write_state.update(failures=0, error=None, since=None)
+
+
+def _asset_context(evt: NormalizedEvent,
+                   resolution: Optional[Any] = None) -> dict[str, Any]:
+    """The five registry columns for one row, degraded to all-NULL on any failure.
+
+    Same contract as `_cim_tags` one screen up, for the same reason: this runs inside
+    the write path, so a registry that cannot be read must cost the event its CONTEXT
+    and never the event itself. A NULL here is honest — it says "unresolved", which is
+    exactly what `backfill_assets` later goes looking for — whereas letting the
+    exception out would fail the whole chunk.
+
+    `resolution` is an ALREADY-RESOLVED context, threaded in by `backfill_assets` so
+    it can pin one index for the entire run. Passing it also skips the `get_index()`
+    call, which matters when re-deriving millions of rows.
+
+    NOTE the asymmetry with `_cim_tags`: `assets.get_index()` already degrades to an
+    empty index internally rather than raising, so the common failure (database
+    briefly unreachable) never reaches the `except` below and never inflates the
+    counter. What lands here is a genuine defect in the resolver — which is precisely
+    what the counter should be reporting.
+    """
+    try:
+        res = resolution if resolution is not None else assets.resolve(
+            evt, assets.get_index())
+        if res.is_empty():
+            return dict(_NO_CONTEXT)
+        return {
+            "asset_id": res.asset_id,
+            "asset_criticality": res.asset_criticality,
+            "identity_id": res.identity_id,
+            "identity_priority": res.identity_priority,
+            # NULL rather than '{}' for a row with no labels, so the GIN index stays
+            # proportional to rows that actually carry context — the rule
+            # `cim_models` follows one column over.
+            "context_tags": list(res.context_tags) or None,
+        }
+    except Exception as exc:                  # noqa: BLE001 — storing beats discarding
+        first = _asset_write_state["failures"] == 0
+        _asset_write_state["failures"] += 1
+        _asset_write_state["error"] = f"{type(exc).__name__}: {exc}"
+        if first:
+            _asset_write_state["since"] = dt.datetime.now(dt.timezone.utc)
+            log.exception(
+                "asset/identity context could not be resolved; events are being STORED "
+                "WITH NO business context rather than dropped. Criticality-gated "
+                "detections under-report until this is fixed and db.backfill_assets() "
+                "has re-derived the affected rows")
+        elif _asset_write_state["failures"] % 1000 == 0:
+            log.error("asset context still unavailable: %d events stored without it (%s)",
+                      _asset_write_state["failures"], _asset_write_state["error"])
+        return dict(_NO_CONTEXT)
+
+
 def validate_cim_registry() -> CimRegistry:
     """Parse + validate app/cim/models.yaml eagerly. Raises on a malformed registry.
 
@@ -293,13 +376,19 @@ def validate_cim_registry() -> CimRegistry:
 #  Ingest                                                                      #
 # --------------------------------------------------------------------------- #
 def _row(evt: NormalizedEvent, batch_id: int,
-         tags: Optional[Iterable[str]] = None) -> dict[str, Any]:
+         tags: Optional[Iterable[str]] = None,
+         context: Optional[Any] = None) -> dict[str, Any]:
     """The bind parameters for one `events` row.
 
     `tags` is this event's already-resolved CIM membership (see `_cim_tags`); omitting it
     derives membership here exactly as before, which is what every caller outside
     `insert_events` does — `backfill_cim`, the tests, and any ingest path that never ran
     detection.
+
+    `context` is an already-resolved `assets.Resolution` (see `_asset_context`);
+    omitting it resolves here, against the cached registry index. Only
+    `backfill_assets` passes one, so that a whole re-derive runs against a single
+    pinned index instead of picking up a reload halfway through.
     """
     return {
         "event_time": evt.event_time, "vendor": evt.vendor, "product": evt.product,
@@ -326,6 +415,10 @@ def _row(evt: NormalizedEvent, batch_id: int,
         # byte-identical to a freshly ingested one. Wrapped by `_cim_tags` so a
         # registry that broke after startup costs the tags and never the event.
         "cim_models": _cim_tags(evt, tags),
+        # Business context from the asset/identity registry, on the same footing as
+        # `cim_models` above: derived here in Python, NULL when nothing resolves, and
+        # corrected for existing rows by `backfill_assets` rather than by a trigger.
+        **_asset_context(evt, context),
         "batch_id": batch_id, "dedup_hash": dedup_hash(evt),
     }
 
@@ -2357,3 +2450,393 @@ def secret_key_ids() -> dict[str, int]:
         rows = conn.execute(
             "SELECT key_id, count(*) AS n FROM secrets GROUP BY key_id").fetchall()
     return {r["key_id"]: r["n"] for r in rows}
+
+
+# --------------------------------------------------------------------------- #
+#  Asset & identity registry: CRUD, stamp, and the history backfill            #
+# --------------------------------------------------------------------------- #
+# `events.asset_id` / `asset_criticality` / `identity_id` / `identity_priority` /
+# `context_tags` are filled per row by `_row` above. What is left for the database is
+# (a) storing the registry itself, and (b) correcting HISTORY after an edit — rows
+# ingested under the old registry keep the old context until `backfill_assets`
+# re-derives them. Exactly the `backfill_cim` shape, one column-set over.
+
+_ASSET_COLS = ("display_name", "criticality", "category", "owner", "business_unit",
+               "environment", "watchlist", "enabled", "notes", "source", "updated_by")
+_IDENTITY_COLS = ("display_name", "priority", "department", "manager", "title",
+                  "email", "watchlist", "enabled", "notes", "source", "updated_by")
+
+
+def _upsert_sql(table: str, key: str, cols: tuple[str, ...]) -> str:
+    """`INSERT … ON CONFLICT (key) DO UPDATE` over a fixed column list.
+
+    Built from module constants only — never from caller input — so the identifiers
+    interpolated here cannot carry anything an operator typed. The VALUES are bound.
+    """
+    names = ", ".join(cols)
+    binds = ", ".join(f"%({c})s" for c in cols)
+    sets = ", ".join(f"{c} = EXCLUDED.{c}" for c in cols)
+    return (f"INSERT INTO {table} ({key}, {names}) VALUES (%({key})s, {binds}) "
+            f"ON CONFLICT ({key}) DO UPDATE SET {sets}, updated_at = now()")
+
+
+_ASSET_UPSERT = _upsert_sql("assets", "asset_id", _ASSET_COLS)
+_IDENTITY_UPSERT = _upsert_sql("identities", "identity_id", _IDENTITY_COLS)
+
+
+def _clean_labels(value: Any) -> list[str]:
+    """A category/watchlist list, lower-cased and de-duplicated.
+
+    Applied on WRITE so `context_tags` can never contain two spellings of one label —
+    a GIN-indexed array where 'PCI' and 'pci' are different values silently halves
+    every search that gates on it.
+    """
+    if not value:
+        return []
+    items = value if isinstance(value, (list, tuple, set)) else [value]
+    return sorted({str(v).strip().lower() for v in items if str(v or "").strip()})
+
+
+def upsert_asset(asset_id: str, *, aliases: Optional[Iterable[tuple[str, str]]] = None,
+                 **fields: Any) -> None:
+    """Create or update one asset and, when `aliases` is given, REPLACE its alias set.
+
+    Replace rather than merge, because an edit that removes an alias must actually
+    remove it — a merge would leave a decommissioned hostname resolving to the asset
+    forever, and the operator would have no way to retract it from the console.
+    Passing `aliases=None` leaves the existing set alone, which is what a
+    field-only edit wants.
+    """
+    aid = str(asset_id or "").strip()
+    if not aid:
+        raise ValueError("asset_id is required")
+    row = {"asset_id": aid}
+    for col in _ASSET_COLS:
+        row[col] = fields.get(col)
+    row["criticality"] = assets.normalize_level(row["criticality"] or "medium")
+    row["category"] = _clean_labels(row["category"])
+    row["watchlist"] = _clean_labels(row["watchlist"])
+    row["enabled"] = True if row["enabled"] is None else bool(row["enabled"])
+    row["source"] = str(row["source"] or "manual")
+    with pool().connection() as conn:
+        conn.execute(_ASSET_UPSERT, row)
+        if aliases is not None:
+            conn.execute("DELETE FROM asset_aliases WHERE asset_id = %s", (aid,))
+            _write_aliases(conn, "asset_aliases", "asset_id", aid, aliases,
+                           identity=False)
+        conn.commit()
+
+
+def upsert_identity(identity_id: str, *,
+                    aliases: Optional[Iterable[tuple[str, str]]] = None,
+                    **fields: Any) -> None:
+    """Create or update one identity; `aliases` replaces the set (see `upsert_asset`)."""
+    iid = str(identity_id or "").strip()
+    if not iid:
+        raise ValueError("identity_id is required")
+    row = {"identity_id": iid}
+    for col in _IDENTITY_COLS:
+        row[col] = fields.get(col)
+    row["priority"] = assets.normalize_level(row["priority"] or "medium")
+    row["watchlist"] = _clean_labels(row["watchlist"])
+    row["enabled"] = True if row["enabled"] is None else bool(row["enabled"])
+    row["source"] = str(row["source"] or "manual")
+    with pool().connection() as conn:
+        conn.execute(_IDENTITY_UPSERT, row)
+        if aliases is not None:
+            conn.execute("DELETE FROM identity_aliases WHERE identity_id = %s", (iid,))
+            _write_aliases(conn, "identity_aliases", "identity_id", iid, aliases,
+                           identity=True)
+        conn.commit()
+
+
+def _write_aliases(conn, table: str, key: str, owner_id: str,
+                   aliases: Iterable[tuple[str, str]], *, identity: bool) -> None:
+    """Insert a normalized alias set, refusing one already claimed by someone else.
+
+    THE CONFLICT IS AN ERROR, NOT A LAST-WRITE-WINS. Two assets claiming one hostname
+    is a data-quality problem in whatever the operator imported, and silently letting
+    the second import steal the alias would move every future event's context from one
+    asset to another with nothing in the UI to show for it. `ON CONFLICT DO NOTHING`
+    would be just as bad in the other direction — the alias would look accepted and
+    resolve to the wrong asset. So the row is inserted plainly and the unique
+    violation is translated into a message naming both sides.
+    """
+    for alias_type, alias_value in aliases:
+        kind = str(alias_type or "").strip().lower()
+        if not assets.alias_type_valid(kind, identity=identity):
+            raise ValueError(
+                f"unknown alias type {alias_type!r} — expected one of "
+                f"{', '.join(assets.IDENTITY_ALIAS_TYPES if identity else assets.ASSET_ALIAS_TYPES)}")
+        value = assets.norm_alias(kind, alias_value)
+        if not value:
+            raise ValueError(f"{kind} alias {alias_value!r} is not a valid {kind}")
+        held = conn.execute(
+            f"SELECT {key} AS owner FROM {table} "                       # nosec B608
+            "WHERE alias_type = %s AND alias_value = %s", (kind, value)).fetchone()
+        if held and str(held["owner"]) != owner_id:
+            raise ValueError(
+                f"{kind} alias {value!r} is already declared for {held['owner']!r}; "
+                "one identifier resolves to exactly one entry, so remove it there first")
+        conn.execute(
+            f"INSERT INTO {table} (alias_type, alias_value, {key}) "     # nosec B608
+            "VALUES (%s, %s, %s) ON CONFLICT (alias_type, alias_value) DO NOTHING",
+            (kind, value, owner_id))
+
+
+def delete_asset(asset_id: str) -> int:
+    with pool().connection() as conn:
+        n = conn.execute("DELETE FROM assets WHERE asset_id = %s", (asset_id,)).rowcount
+        conn.commit()                       # aliases go with it (ON DELETE CASCADE)
+    return n
+
+
+def delete_identity(identity_id: str) -> int:
+    with pool().connection() as conn:
+        n = conn.execute("DELETE FROM identities WHERE identity_id = %s",
+                         (identity_id,)).rowcount
+        conn.commit()
+    return n
+
+
+def list_assets(limit: int = 500, offset: int = 0, q: str = "") -> list[dict]:
+    """Assets with their aliases folded in, newest-critical first."""
+    where, params = "", {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if q:
+        where = ("WHERE a.asset_id ILIKE %(q)s OR a.display_name ILIKE %(q)s "
+                 "OR a.owner ILIKE %(q)s")
+        params["q"] = f"%{q}%"
+    sql = f"""
+        SELECT a.*, COALESCE(array_agg(al.alias_type || ':' || al.alias_value
+                              ORDER BY al.alias_type, al.alias_value)
+                     FILTER (WHERE al.alias_type IS NOT NULL), '{{}}') AS aliases
+        FROM assets a LEFT JOIN asset_aliases al ON al.asset_id = a.asset_id
+        {where}
+        GROUP BY a.asset_id
+        ORDER BY CASE a.criticality WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                                    WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+                 a.asset_id
+        LIMIT %(limit)s OFFSET %(offset)s"""
+    with pool().connection() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def list_identities(limit: int = 500, offset: int = 0, q: str = "") -> list[dict]:
+    where, params = "", {"limit": max(1, int(limit)), "offset": max(0, int(offset))}
+    if q:
+        where = ("WHERE i.identity_id ILIKE %(q)s OR i.display_name ILIKE %(q)s "
+                 "OR i.email ILIKE %(q)s")
+        params["q"] = f"%{q}%"
+    sql = f"""
+        SELECT i.*, COALESCE(array_agg(al.alias_type || ':' || al.alias_value
+                              ORDER BY al.alias_type, al.alias_value)
+                     FILTER (WHERE al.alias_type IS NOT NULL), '{{}}') AS aliases
+        FROM identities i LEFT JOIN identity_aliases al
+             ON al.identity_id = i.identity_id
+        {where}
+        GROUP BY i.identity_id
+        ORDER BY CASE i.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1
+                                 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END,
+                 i.identity_id
+        LIMIT %(limit)s OFFSET %(offset)s"""
+    with pool().connection() as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+# ---- staleness bookkeeping ------------------------------------------------- #
+_ASSET_STAMP_UPSERT = """
+INSERT INTO asset_meta (id, registry_hash, asset_count, identity_count, applied_at)
+VALUES (true, %(hash)s, %(assets)s, %(identities)s, now())
+ON CONFLICT (id) DO UPDATE SET
+    registry_hash  = EXCLUDED.registry_hash,
+    asset_count    = EXCLUDED.asset_count,
+    identity_count = EXCLUDED.identity_count,
+    applied_at     = EXCLUDED.applied_at
+"""
+_ASSET_BACKFILL_STAMP = ("UPDATE asset_meta SET backfilled_at = now(), "
+                         "backfill_hash = %(hash)s WHERE id = true")
+
+
+def stamp_asset_registry(index: Optional[Any] = None) -> str:
+    """Record the live registry fingerprint on `asset_meta`. Returns the fingerprint.
+
+    Called after every registry write and at startup — the RECORD half of the row.
+    Never touches `backfill_hash`: the registry may legitimately move ahead of the
+    rows derived under it, and claiming otherwise would report an edit as applied to
+    history it has not reached.
+    """
+    idx = index if index is not None else assets.get_index()
+    with pool().connection() as conn:
+        conn.execute(_ASSET_STAMP_UPSERT,
+                     {"hash": idx.fingerprint, "assets": len(idx.assets),
+                      "identities": len(idx.identities)})
+        conn.commit()
+    return idx.fingerprint
+
+
+def asset_status() -> dict[str, Any]:
+    """Registry counts, the stored stamp, and whether a backfill is owed.
+
+    `backfill_due` compares `backfill_hash` against the fingerprint of the registry AS
+    IT IS NOW — recomputed from the live tables, not against the stored
+    `registry_hash`. The distinction is the whole point: `registry_hash` is refreshed
+    only when the registry is loaded, so between an operator's edit and the next
+    reload it still holds the OLD value, and a stored-vs-stored comparison would
+    answer "history is current" for exactly as long as the edit had been ignored.
+    `cim_status` documents the identical trap.
+    """
+    idx = assets.get_index()
+    live = idx.fingerprint
+    with pool().connection() as conn:
+        row = conn.execute("SELECT * FROM asset_meta WHERE id = true").fetchone()
+    stamped = str(row["backfill_hash"]) if row and row["backfill_hash"] else None
+    return {
+        "assets": len(idx.assets),
+        "identities": len(idx.identities),
+        "aliases": len(idx.asset_alias) + len(idx.identity_alias),
+        "registry_hash": live,
+        "applied_at": row["applied_at"] if row else None,
+        "backfilled_at": row["backfilled_at"] if row else None,
+        "backfill_hash": stamped,
+        # Nothing declared -> nothing to backfill. Without this an empty registry
+        # would report a permanent "backfill owed" on a fresh install.
+        "backfill_due": bool(idx.assets or idx.identities) and stamped != live,
+    }
+
+
+# ---- the history backfill -------------------------------------------------- #
+# The four fields the resolver reads, plus the id/event_time key and the five stored
+# columns so a row whose context is already correct can be skipped without a write.
+_ASSET_BACKFILL_COLS = ("id, event_time, host_name, src_ip, dst_ip, user_name, "
+                        "asset_id, asset_criticality, identity_id, identity_priority, "
+                        "context_tags")
+
+_ASSET_UPDATE = ("UPDATE events SET asset_id = %(asset_id)s, "
+                 "asset_criticality = %(asset_criticality)s, "
+                 "identity_id = %(identity_id)s, "
+                 "identity_priority = %(identity_priority)s, "
+                 "context_tags = %(context_tags)s::text[] "
+                 "WHERE id = %(id)s AND event_time = %(event_time)s")
+
+
+def _asset_backfill_query(since: Optional[dt.datetime] = None,
+                          until: Optional[dt.datetime] = None) -> tuple[str, dict]:
+    """``(sql, params)`` for ONE backfill chunk — pure, so a DB-free test can assert on
+    the emitted text. The caller adds `_after` (the keyset cursor) and `_limit`.
+
+    Keyset pagination on `id`, exactly as `_cim_backfill_query` does and for the same
+    reason: `id` comes from one identity sequence on the partitioned parent, so it is
+    globally monotonic and each chunk is an index range scan whose cost does not grow
+    with how far into the run we are.
+    """
+    where = ["id > %(_after)s"]
+    p: dict[str, Any] = {}
+    if since is not None:
+        where.append("event_time >= %(_since)s")
+        p["_since"] = since
+    if until is not None:
+        where.append("event_time < %(_until)s")
+        p["_until"] = until
+    sql = (f"SELECT {_ASSET_BACKFILL_COLS} FROM events "        # nosec B608 — constants
+           f"WHERE {' AND '.join(where)} ORDER BY id LIMIT %(_limit)s")
+    return sql, p
+
+
+def backfill_assets(*, chunk: int = 2000, start_id: int = 0,
+                    max_rows: Optional[int] = None,
+                    since: Optional[dt.datetime] = None,
+                    until: Optional[dt.datetime] = None,
+                    index: Optional[Any] = None,
+                    progress: Optional[Callable[[dict[str, Any]], None]] = None,
+                    ) -> dict[str, Any]:
+    """Re-derive the registry columns on rows already in the store — the operator step
+    that corrects HISTORY after an asset or identity is added, edited or retired.
+
+    ONE INDEX FOR THE WHOLE RUN. The index is resolved once, up front, and threaded
+    into every chunk. A reload halfway through would otherwise make the first half of
+    a backfill disagree with the second, and the stamp written at the end would name a
+    fingerprint that describes neither.
+
+    THROUGH `assets.resolve`, NOT A SQL EQUIVALENT — the same rule `backfill_cim`
+    follows. A set-based `UPDATE … FROM asset_aliases` would be faster and would be a
+    SECOND resolver: it would have to re-implement candidate extraction, the
+    most-specific-CIDR rule and the subject precedence, and any drift between the two
+    would show up as a corrected row differing from an identically-shaped freshly
+    ingested one, for no reason visible to anybody.
+
+    CHUNKED AND RESUMABLE: one keyset-paginated SELECT plus one executemany per chunk,
+    committed before the next starts, so an interrupted run loses at most a chunk and
+    resumes with ``start_id=<the returned last_id>``. Rows whose context is unchanged
+    are not written at all, which makes a re-run after a no-op edit nearly free rather
+    than rewriting every heap tuple it touches.
+    """
+    idx = index if index is not None else assets.get_index()
+    chunk = max(1, int(chunk))
+    full_pass = (int(start_id) == 0 and max_rows is None
+                 and since is None and until is None)
+    select_sql, base = _asset_backfill_query(since, until)
+    cursor_id = int(start_id)
+    scanned = updated = unchanged = chunks = 0
+    done = True
+    started = time.monotonic()
+
+    with pool().connection() as conn:
+        while True:
+            budget = chunk if max_rows is None else min(chunk, max_rows - scanned)
+            if budget <= 0:
+                done = False              # stopped on the bound, not on the data
+                break
+            rows = conn.execute(select_sql,
+                                dict(base, _after=cursor_id, _limit=budget)).fetchall()
+            if not rows:
+                break
+            scanned += len(rows)
+            chunks += 1
+            cursor_id = int(rows[-1]["id"])
+            writes = []
+            for r in rows:
+                res = assets.resolve(r, idx)      # a stored row IS event-like
+                new = _asset_context(r, res)
+                current = {"asset_id": r["asset_id"],
+                           "asset_criticality": r["asset_criticality"],
+                           "identity_id": r["identity_id"],
+                           "identity_priority": r["identity_priority"],
+                           "context_tags": r["context_tags"]}
+                if new != current:
+                    writes.append({**new, "id": r["id"],
+                                   "event_time": r["event_time"]})
+            unchanged += len(rows) - len(writes)
+            if writes:
+                with conn.cursor() as cur:
+                    cur.executemany(_ASSET_UPDATE, writes)
+                updated += len(writes)
+            conn.commit()                 # bounded WAL + a resumable cursor
+            log.info("asset backfill: scanned=%d updated=%d unchanged=%d last_id=%d",
+                     scanned, updated, unchanged, cursor_id)
+            if progress is not None:
+                # After the commit, never before: `last_id` is only a valid resume
+                # cursor once the work up to it is durable.
+                try:
+                    progress({"scanned": scanned, "updated": updated,
+                              "unchanged": unchanged, "chunks": chunks,
+                              "last_id": cursor_id})
+                except Exception:         # noqa: BLE001 — a progress sink is
+                    log.warning("asset backfill progress callback failed",
+                                exc_info=True)      # diagnostics; never aborts the run
+            if len(rows) < budget:
+                break                     # short page -> the range is exhausted
+        if done and full_pass:
+            stamped = conn.execute(_ASSET_BACKFILL_STAMP,
+                                   {"hash": idx.fingerprint}).rowcount
+            conn.commit()
+            if not stamped:
+                # No asset_meta row means the registry has never been stamped. Say so
+                # rather than seeding one that would claim history was current.
+                log.warning("asset backfill completed but could not record the stamp: "
+                            "asset_meta is empty - call db.stamp_asset_registry() first")
+    result = {"scanned": scanned, "updated": updated, "unchanged": unchanged,
+              "chunks": chunks, "last_id": cursor_id, "done": done,
+              "full_pass": full_pass, "fingerprint": idx.fingerprint,
+              "seconds": round(time.monotonic() - started, 2)}
+    log.info("asset backfill finished: %s", result)
+    return result

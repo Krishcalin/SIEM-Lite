@@ -42,7 +42,12 @@ _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_not
            "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
            "response_actions", "collectors", "sessions", "users", "audit_log", "iocs",
            "saved_searches", "cim_meta", "secrets", "content_packs", "custom_parsers",
-           "custom_rules")
+           "custom_rules",
+           # The Phase-3 registry. `asset_meta` carries the backfill stamp, so leaving
+           # it behind would make one test's "history is current" the starting state of
+           # the next. The alias tables are listed before their parents only for
+           # readability — TRUNCATE ... CASCADE handles the FKs either way.
+           "asset_aliases", "identity_aliases", "assets", "identities", "asset_meta")
 
 # Exactly the shape `app.cim.sql.view_name` emits, matched independently of that module
 # on purpose: this is the broom the CIM tests are swept up with, so it must not share a

@@ -158,28 +158,44 @@ on these two substrates. Make ingest crash-safe and the shared store un-starvabl
   `cryptography` package — the stdlib has no AES and a hand-rolled AEAD was judged the wrong
   risk; without it the vault disables itself and credentials fall back to environment
   variables. See [docs/VAULT.md](VAULT.md). *(Splunk: SOAR Assets credential store)*
-- **[L] CrowdStrike FDR + Event Streams** — SQS/S3 gzip-NDJSON pull (reuse SigV4) + OAuth2 long-lived
-  datafeed → Endpoint CIM. The #1 EDR onboarding gap. *(Splunk: CrowdStrike FDR / Event Streams TAs)*
-- **[L] Microsoft Defender XDR** — Graph Security + M365 Defender (Endpoint/Identity/Office/Cloud
-  Apps) → Endpoint/Auth/Email CIM (reuse MS OAuth2). *(Splunk: M365 Defender / Graph Security TAs)*
-- **[L] AWS breadth** — CloudTrail SQS/S3 (full data events) + GuardDuty/Security Hub/VPC Flow/WAF/
-  Config/Route53. *(Splunk: Splunk_TA_aws)*
-- **[M] Flow + vuln + Prisma Access + FTD** — NetFlow/IPFIX/sFlow decoder; Qualys/Tenable/Rapid7 →
-  Vulnerability CIM; Cortex Data Lake collector; Cisco Firepower/FTD parser (+ opt-in eStreamer).
-  *(Splunk: Stream · vuln TAs · CDL · Firepower TA)*
-- **[M] Ingest Actions + Content Packs + HEC shim** — data-not-code drop/mask/route/sample with
-  audit; one versioned bundle (parser + CIM map + tags + rules + compliance) with export/import; a
-  Splunk-HEC-wire endpoint so existing senders repoint unchanged. *(Splunk: Ingest Actions · TA/Splunkbase · HEC)*
+- **[L] CrowdStrike FDR + Event Streams** — ✅ **DONE.** SQS/S3 gzip-NDJSON pull with a hand-rolled
+  SigV4 signer (pinned to AWS's published `get-vanilla` vector) + an OAuth2 datafeed resumed by
+  per-partition offset, plus the Incidents API. Receipt handles are acked on the NEXT poll, after
+  ingest, so a crash cannot delete a notification whose data was never stored.
+  *(Splunk: CrowdStrike FDR / Event Streams TAs)*
+- **[L] Microsoft Defender XDR** — ✅ **DONE.** Graph `alerts_v2` + M365 incidents, routed on
+  `serviceSource` into Endpoint / Authentication / Email — the alert that finally populated the Email
+  model. A truncated page walk parks its `@odata.nextLink` and holds the watermark, so a backfill
+  past the page cap cannot skip alerts. *(Splunk: M365 Defender / Graph Security TAs)*
+- **[L] AWS breadth** — ✅ **DONE.** CloudTrail via S3/SQS at full fidelity (data events included),
+  plus GuardDuty, Security Hub (ASFF), Config and Route 53 Resolver.
+  *(Splunk: Splunk_TA_aws)*
+- **[M] Flow + vuln + Prisma Access + FTD** — ✅ **DONE.** A stdlib-`struct` NetFlow v5/v9/IPFIX
+  decoder over UDP and IPFIX-over-TCP, with a bounded template cache; Qualys/Tenable/Rapid7, which
+  took the Vulnerability CIM model from 0 to 10 members; a Cortex Data Lake collector; and a Cisco
+  FTD parser that delegates Lina lines to `cisco_asa` rather than discarding them. eStreamer is NOT
+  built. *(Splunk: Stream · vuln TAs · CDL · Firepower TA)*
+- **[M] Ingest Actions + Content Packs + HEC shim** — ✅ **DONE.** drop/mask/route/sample on the one
+  path every source shares, reusing the Sigma condition grammar (no eval); versioned packs with
+  export/import, digest-addressed; and a HEC-wire endpoint so a forwarder repoints by changing only
+  a URL. *(Splunk: Ingest Actions · TA/Splunkbase · HEC)*
 
-**Exit:** all 10 named sources onboard agentlessly at full fidelity; GuardDuty/Defender/NetFlow/vuln
-land in CIM; ingest can drop/mask/route with an audit trail; any source ships & upgrades as one
-Content Pack; existing HEC senders work unchanged.
+**Exit:** ✅ **MET.** All 10 named sources onboard agentlessly at full fidelity;
+GuardDuty/Defender/NetFlow/vuln land in CIM; ingest can drop/mask/route with an audit trail; any
+source ships & upgrades as one Content Pack; existing HEC senders work unchanged. **All 11 CIM
+models are populated** for the first time (Vulnerability 0 → 10, Email 0 → 1). Not built: Cisco
+eStreamer, and VPC Flow / WAF arrive through the generic paths rather than dedicated collectors.
 
 ### Phase 3 — Asset, Identity & Enrichment Fabric
 **Goal:** give every event business + security context (schema + ingest hook defined back in Phase 1).
 
-- **[L] Asset & Identity registry + alias resolution** — criticality/category/owner/watchlist;
-  deterministic merge of email/UPN/SAM/hostname/IP to one canonical entity. *(Splunk: ES Asset & Identity)*
+- **[L] Asset & Identity registry + alias resolution** — ✅ **DONE (slice 1).** Declared assets and
+  identities in their own tables, deliberately separate from the observational `entities` baseline;
+  alias resolution over hostname/FQDN/IP/CIDR/MAC and email/UPN/SAM, with exact-beats-containment and
+  most-specific-CIDR both deterministic. Context is resolved onto every event at ingest
+  (`asset_id`, `asset_criticality`, `identity_id`, `identity_priority`, GIN-indexed `context_tags`)
+  and corrected for history by `db.backfill_assets`, which re-derives through the SAME resolver.
+  See [docs/ASSETS.md](ASSETS.md). *(Splunk: ES Asset & Identity)*
 - **[M] Automatic enrichment + query-time lookups** — denormalize asset/identity onto events at
   ingest & via LOQL join; analyst-managed lookup tables (`inputlookup/outputlookup`). *(Splunk: automatic lookups · KV Store)*
 - **[M] GeoIP/ASN · reverse-DNS · WHOIS** — offline enrichment framework (side-loaded MaxMind +

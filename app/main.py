@@ -22,7 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import (api, auth, cim, collectors, compliance, contentpack, coverage,
+from . import (api, assets, auth, cim, collectors, compliance, contentpack, coverage,
                custom_parser, db, ingest, ingest_actions, killchain_runtime, navigator,
                notify, ot, saved, sourcehealth, streaming, vault, workbench)
 from .copilot import client as copilot
@@ -218,6 +218,18 @@ async def lifespan(app: FastAPI):
     cim.registry.reload()
     compliance.apply_pack_overlay()            # pack compliance controls -> the MAP
     _init_cim()                                # CIM model views (needs events.cim_models)
+    # Asset & identity registry (Phase 3). Loaded HERE, after init_schema, for the same
+    # reason the CIM reload above is: the tables have to exist. `get_index()` would
+    # lazily load it on the first event anyway, but doing it explicitly means the stamp
+    # is written and /health can answer "is a backfill owed?" before anything is
+    # ingested rather than after. Never fatal — `reload()` keeps the previous index (an
+    # empty one at boot) and logs, so an unreachable registry costs events their
+    # context and never the boot.
+    try:
+        db.stamp_asset_registry(assets.reload())
+    except Exception:                          # noqa: BLE001
+        log.warning("asset registry could not be stamped at startup; events will "
+                    "store no business context until it loads", exc_info=True)
     if settings.auth_enabled and db.count_users() == 0:
         pw = settings.admin_password or secrets.token_urlsafe(12)
         db.create_user(settings.admin_user, auth.hash_password(pw), "admin")
@@ -614,11 +626,34 @@ def health():
         degraded = degraded + [
             "ingest_actions: " + "; ".join(actions["load_errors"][:3]) +
             " — that rule is NOT filtering anything"]
+
+    # Asset & identity registry. Two separate failures, and only one of them is an
+    # error: `failures` means events are being STORED WITH NO business context (a
+    # resolver defect), while `backfill_due` means the registry has moved ahead of
+    # stored history — expected right after an edit, and the operator's cue to run
+    # the backfill. Both are invisible in the data itself: an event with no context
+    # looks exactly like an event about an undeclared host.
+    try:
+        registry = db.asset_status()
+    except Exception:                          # noqa: BLE001 — /health must answer
+        registry = {"error": "unavailable"}
+    ctx_state = db.asset_write_state()
+    if ctx_state.get("failures"):
+        degraded = degraded + [
+            f"asset context: {ctx_state['failures']} event(s) stored with NO business "
+            f"context ({ctx_state.get('error')}) — criticality-gated detections "
+            "under-report them until db.backfill_assets() re-derives those rows"]
+    if registry.get("backfill_due"):
+        degraded = degraded + [
+            "asset registry: the declared registry has changed since events were last "
+            "derived under it — run db.backfill_assets() so stored history matches"]
+
     return {"status": "degraded" if degraded else "ok",
             "degraded": degraded or None,
             "ingest_queue": q.stats.as_dict() if q else None,
             "netflow": fr.status() if fr else None,
             "ingest_actions": actions,
+            "asset_registry": {**registry, "write_state": ctx_state},
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
             "reverts": rv.stats() if rv else None,

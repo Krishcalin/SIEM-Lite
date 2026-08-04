@@ -500,3 +500,139 @@ CREATE TABLE IF NOT EXISTS secrets (
 );
 -- Rotation scans by key_id: "which rows are still under the previous key?"
 CREATE INDEX IF NOT EXISTS secrets_key_id_idx ON secrets (key_id);
+
+-- ============================================================================
+--  Asset & Identity registry (Phase 3, slice 1): declared business context.
+-- ============================================================================
+-- DELIBERATELY SEPARATE FROM `entities`. That table is OBSERVATIONAL — one row per
+-- actor seen in the data, auto-created at ingest, whose `first_seen` is exactly what
+-- UEBA's "new entity" anomaly reads. These tables are DECLARED: what an operator says
+-- about a host or a person. Folding the two together would let an import rewrite a
+-- baseline a detection depends on, and would make "is this asset declared?"
+-- unanswerable, because every observed value would also be a row.
+--
+-- The two are joined at resolution time, never in storage.
+
+CREATE TABLE IF NOT EXISTS assets (
+    asset_id      text PRIMARY KEY,                      -- operator-chosen stable key
+    display_name  text,
+    criticality   text        NOT NULL DEFAULT 'medium', -- critical|high|medium|low
+    category      text[]      NOT NULL DEFAULT '{}',     -- server, workstation, dmz, pci
+    owner         text,
+    business_unit text,
+    environment   text,                                  -- prod | staging | dev
+    watchlist     text[]      NOT NULL DEFAULT '{}',     -- crown-jewel, quarantine
+    enabled       boolean     NOT NULL DEFAULT true,
+    notes         text,
+    source        text        NOT NULL DEFAULT 'manual', -- manual | csv | pack name
+    updated_by    text,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS assets_criticality_idx ON assets (criticality);
+CREATE INDEX IF NOT EXISTS assets_watchlist_idx   ON assets USING GIN (watchlist);
+
+-- One row per identifier an asset is known by. A separate table rather than array
+-- columns on `assets`, because THIS is the lookup: resolution is a single primary-key
+-- hit on (alias_type, alias_value), not a scan with an array-containment predicate.
+-- The PK is also the collision guard — two assets claiming the same hostname is
+-- refused by the database rather than resolved by whichever row happens to be read
+-- first, which is the difference between a registry and a guess.
+--
+-- `alias_value` is stored ALREADY NORMALIZED (app/assets/normalize.py): hostnames and
+-- emails lower-cased, addresses through `ipaddress` so 010.1.1.1 and 10.1.1.1 cannot
+-- both exist as separate rows. Normalizing on write means the ingest path does one
+-- dict lookup and never a per-row transformation of the stored side.
+CREATE TABLE IF NOT EXISTS asset_aliases (
+    alias_type  text NOT NULL,        -- hostname | fqdn | ip | cidr | mac
+    alias_value text NOT NULL,
+    asset_id    text NOT NULL REFERENCES assets(asset_id) ON DELETE CASCADE,
+    PRIMARY KEY (alias_type, alias_value)
+);
+CREATE INDEX IF NOT EXISTS asset_aliases_asset_idx ON asset_aliases (asset_id);
+
+CREATE TABLE IF NOT EXISTS identities (
+    identity_id  text PRIMARY KEY,
+    display_name text,
+    priority     text        NOT NULL DEFAULT 'medium',  -- critical|high|medium|low
+    department   text,
+    manager      text,
+    title        text,
+    email        text,
+    watchlist    text[]      NOT NULL DEFAULT '{}',   -- vip, service-account, contractor
+    enabled      boolean     NOT NULL DEFAULT true,
+    notes        text,
+    source       text        NOT NULL DEFAULT 'manual',
+    updated_by   text,
+    created_at   timestamptz NOT NULL DEFAULT now(),
+    updated_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS identities_priority_idx  ON identities (priority);
+CREATE INDEX IF NOT EXISTS identities_watchlist_idx ON identities USING GIN (watchlist);
+
+-- The alias-resolution half of "jdoe + john.doe@corp.example + CORP\jdoe resolve to
+-- one identity" (the asset side above is the other half).
+CREATE TABLE IF NOT EXISTS identity_aliases (
+    alias_type  text NOT NULL,        -- email | upn | sam | employee_id | cn
+    alias_value text NOT NULL,
+    identity_id text NOT NULL REFERENCES identities(identity_id) ON DELETE CASCADE,
+    PRIMARY KEY (alias_type, alias_value)
+);
+CREATE INDEX IF NOT EXISTS identity_aliases_identity_idx ON identity_aliases (identity_id);
+
+-- ---------------------------------------------------------------------------
+--  Resolved context, materialized on `events`.
+-- ---------------------------------------------------------------------------
+-- Post-hoc ALTERs for the same reason `cim_models` is one: a fresh database and an
+-- upgraded one must converge on the SAME column list, identical ordinal position
+-- included. With no DEFAULT each ADD COLUMN is catalog-only (no heap rewrite) and it
+-- recurses to every existing partition; partitions created later inherit them because
+-- CREATE TABLE PARTITION OF events takes its column list from the parent.
+--
+-- WHY DENORMALIZE AT ALL rather than join `assets` at query time: a detection rule
+-- must be able to gate on criticality while the event is still streaming through the
+-- pipeline, before any row exists to join to. That is the same constraint that made
+-- `cim_models` a plain column, and it carries the same obligation — a registry edit
+-- does not reach stored rows until db.backfill_assets runs, which `asset_meta` below
+-- exists to make visible instead of silent.
+--
+-- The SUBJECT asset, resolved host_name then src_ip then dst_ip (app/assets/resolve.py).
+ALTER TABLE events ADD COLUMN IF NOT EXISTS asset_id          text;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS asset_criticality text;
+-- The subject identity, resolved from user_name.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS identity_id       text;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS identity_priority text;
+-- Role-prefixed context labels from EVERY side that resolved, not only the subject:
+-- 'src:pci', 'dst:crown-jewel', 'host:prod', 'identity:vip'. One GIN-indexed array
+-- instead of the ~20 src_*/dest_* columns Splunk ES carries, because on a table that
+-- retains three years of partitions those columns are the expensive choice, and a
+-- containment predicate answers the same questions ("traffic TO a crown jewel",
+-- "action BY a VIP") without having to privilege one side of a flow.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS context_tags      text[];
+
+CREATE INDEX IF NOT EXISTS events_asset_idx    ON events (asset_id);
+CREATE INDEX IF NOT EXISTS events_identity_idx ON events (identity_id);
+-- Rows with no resolved context store NULL, not the empty array, so they cost no
+-- index entries at all — the same rule `cim_models` follows.
+CREATE INDEX IF NOT EXISTS events_context_idx  ON events USING GIN (context_tags);
+
+-- Exactly one row: which registry the stored context on `events` was last derived
+-- under. Same two-writer split as `cim_meta`, and for the same reason:
+--   * registry_hash / asset_count / identity_count / applied_at — refreshed whenever
+--     the registry is (re)loaded. A RECORD of the live rule set for an operator.
+--   * backfilled_at / backfill_hash — written ONLY by db.backfill_assets, and only by
+--     a run that was unbounded AND completed. The rule set the rows in `events` were
+--     last derived under.
+-- Staleness is `backfill_hash` against the fingerprint of the registry AS IT IS NOW,
+-- recomputed from the live tables rather than compared with `registry_hash` — so an
+-- edit made since the last load cannot report itself as already applied. That is the
+-- same trap `cim_meta.backfill_due` documents at length.
+CREATE TABLE IF NOT EXISTS asset_meta (
+    id             boolean     PRIMARY KEY DEFAULT true CHECK (id),  -- one row only
+    registry_hash  text        NOT NULL,
+    asset_count    integer     NOT NULL DEFAULT 0,
+    identity_count integer     NOT NULL DEFAULT 0,
+    applied_at     timestamptz NOT NULL DEFAULT now(),
+    backfilled_at  timestamptz,
+    backfill_hash  text
+);
