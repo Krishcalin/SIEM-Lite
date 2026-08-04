@@ -1503,13 +1503,15 @@ def test_the_clear_event_logs_rule_fires_on_what_the_parsers_actually_emit():
 
     from app.parsers import sysmon, windows_security
 
-    doc = yaml.safe_load(Path("rules/clear_windows_event_logs.yml").read_text(
+    root = Path(__file__).resolve().parent.parent
+    doc = yaml.safe_load((root / "rules" / "clear_windows_event_logs.yml").read_text(
         encoding="utf-8"))
     eng = engine.DetectionEngine([engine.rule_from_dict(doc, "clear.yml")])
 
-    for mod, sample in ((windows_security, "samples/windows_security.json"),
-                        (sysmon, "samples/sysmon.json")):
-        evt = next(iter(mod.parse(Path(sample).read_text(encoding="utf-8"))))
+    for mod, sample in ((windows_security, "windows_security.json"),
+                        (sysmon, "sysmon.json")):
+        evt = next(iter(mod.parse(
+            (root / "samples" / sample).read_text(encoding="utf-8"))))
         assert not eng.evaluate_event(evt), "must not fire on an ordinary event"
         evt.raw["event_id"] = 1102              # the parsers' own canonical key
         assert eng.evaluate_event(evt), f"{mod.__name__} log-clearing went undetected"

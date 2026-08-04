@@ -1447,7 +1447,15 @@ def test_plan_cache_stays_bounded():
 
 
 # ── registry cache: one parse, however many callers ───────────────────────────
-def test_concurrent_cold_start_parses_the_registry_once(monkeypatch):
+#: How long a racer thread may take before this file calls it a hang. Deliberately
+#: generous: a shared CI runner is slow and preempted, and the original 5s was tuned on
+#: a developer machine — which is how the two tests below passed on Windows and failed
+#: on every Linux CI leg from the commit that introduced them.
+_RACER_JOIN_TIMEOUT = 60.0
+
+
+def test_concurrent_cold_start_parses_the_registry_once(monkeypatch,
+                                                        registry_cache_reset):
     """`get_registry()` is the lazy singleton every consumer reaches through, and a cold
     start is genuinely concurrent: INGEST_WORKERS writers arrive via `pipeline` alongside
     /upload, /api/ingest and the workbench. Unlocked, each caller inside the window paid
@@ -1468,7 +1476,6 @@ def test_concurrent_cold_start_parses_the_registry_once(monkeypatch):
         return real(*a, **k)
 
     monkeypatch.setattr(cim_registry, "load", slow_load)
-    monkeypatch.setattr(cim_registry, "_cache", None)
     out, errors = [], []
 
     def racer():
@@ -1477,12 +1484,27 @@ def test_concurrent_cold_start_parses_the_registry_once(monkeypatch):
         except Exception as exc:              # noqa: BLE001 — reported, not swallowed
             errors.append(exc)
 
-    threads = [threading.Thread(target=racer) for _ in range(4)]
+    # daemon=True so a genuinely wedged racer cannot hold the interpreter open at exit
+    threads = [threading.Thread(target=racer, daemon=True) for _ in range(4)]
     for t in threads:
         t.start()
     start.set()                               # release before any assert — never hangs
     for t in threads:
-        t.join(5)
+        t.join(_RACER_JOIN_TIMEOUT)
+
+    # FAIL HERE RATHER THAN LEAK, and this assertion is the whole reason the two
+    # registry-cache tests were red on Linux CI while green on Windows. A racer still
+    # running when this test ends carries on with `load` un-patched, calls
+    # `get_registry()` and repopulates the process-global `_cache` — so the NEXT test,
+    # which arms a broken registry and asserts every caller is told about it, instead
+    # found a warm cache and reported "DID NOT RAISE CimError". The failure surfaced
+    # in the victim, two tests away from the cause, and only on a machine slow enough
+    # for the join to time out. Naming it here keeps the blame where it belongs.
+    alive = [t for t in threads if t.is_alive()]
+    assert not alive, (
+        f"{len(alive)} racer thread(s) did not finish within {_RACER_JOIN_TIMEOUT}s; "
+        "they would outlive this test and repopulate the registry cache under whatever "
+        "runs next")
 
     assert not errors and len(out) == 4
     assert sum(parses) == 1, (

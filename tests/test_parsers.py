@@ -801,7 +801,7 @@ def test_sysmon_writes_back_the_canonical_event_id():
     """
     from app.parsers import sysmon
 
-    events = list(sysmon.parse(Path("samples/sysmon.json").read_text(encoding="utf-8")))
+    events = list(sysmon.parse((SAMPLES / "sysmon.json").read_text(encoding="utf-8")))
     assert events, "the sample must parse"
     for e in events:
         assert isinstance(e.raw["event_id"], int)       # an int, so jsonb renders "1"
