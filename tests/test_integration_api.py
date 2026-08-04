@@ -112,7 +112,9 @@ def test_security_headers_present(clean_db):
 def test_coverage_scoreboard(clean_db):
     with _client(clean_db) as c:
         page = c.get("/coverage")
-        assert page.status_code == 200 and "MITRE ATT&CK" in page.text
+        # The heading is HTML-escaped in the rendered page (`MITRE ATT&amp;CK`), so
+        # asserting the bare ampersand never matched. Match what the template emits.
+        assert page.status_code == 200 and "MITRE ATT&amp;CK" in page.text
         rep = c.get("/coverage.json")
         assert rep.status_code == 200
         body = rep.json()

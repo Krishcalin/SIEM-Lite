@@ -165,9 +165,21 @@ def ensure_partitions(conn, months: Iterable[tuple[int, int]]) -> None:
         start = dt.date(year, month, 1)
         end = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
         name = f"events_{year:04d}{month:02d}"
+        # The bounds are INLINED, not bound. `CREATE TABLE ... PARTITION OF` is a utility
+        # statement, and utility statements have no ParamRef production — psycopg's
+        # server-side binding turns `%s` into `$1` and PostgreSQL answers
+        # "there is no parameter $1" (SQLSTATE 42P02). Every ingest raised here, so no
+        # month partition has ever been created; this is the same defect class as the
+        # parameterized `SET LOCAL statement_timeout` fixed in 5fdddc5, and it survived
+        # for the same reason - the integration suite never ran.
+        #
+        # Inlining is safe by construction and no weaker than the line above: `year` and
+        # `month` are ints, `start`/`end` are `datetime.date` objects built from them, and
+        # `isoformat()` on a date cannot produce anything but YYYY-MM-DD. No caller string
+        # reaches this SQL.
         conn.execute(
             f"CREATE TABLE IF NOT EXISTS {name} PARTITION OF events "
-            f"FOR VALUES FROM (%s) TO (%s)", (start, end))
+            f"FOR VALUES FROM ('{start.isoformat()}') TO ('{end.isoformat()}')")
 
 
 # --------------------------------------------------------------------------- #

@@ -165,6 +165,15 @@ def test_rule_stats_windowed(clean_db):
 
     with db.pool().connection() as conn:
         db.insert_alerts(conn, [mk("a", 1), mk("b", 5), mk("c", 40)])  # 2 in 30d, 3 all-time
+        # `rule_stats` windows on `created_at` — when the alert was RAISED — like every
+        # other alert analytic in db.py (alerts_over_time, top_rules, top_alert_sources,
+        # alert_technique_counts). `event_time` is when the underlying event happened and
+        # does not bound the window, so ageing the rows means ageing created_at: all three
+        # were just inserted with the DEFAULT now(), which put the 40-day-old one inside
+        # a 30-day window.
+        for dh, days_ago in (("a", 1), ("b", 5), ("c", 40)):
+            conn.execute("UPDATE alerts SET created_at = now() - make_interval(days => %s) "
+                         "WHERE dedup_hash = %s", (days_ago, dh))
         conn.commit()
 
     stats = {r["rule_id"]: r for r in db.rule_stats(days=30)}
@@ -175,7 +184,12 @@ def test_rule_stats_windowed(clean_db):
 
     # feed the real registry through the pure analytics
     cov = wb.coverage_map(list(db.rule_stats(30)))
-    assert "T1059" in cov["covered_techniques"] or cov["covered_techniques"] >= 0
+    # `covered_techniques` is a COUNT, not a set of names — `"T1059" in <int>` raised
+    # TypeError, and the `or count >= 0` fallback was vacuously true anyway. The names
+    # of what is NOT covered are in `uncovered_techniques`, so assert the real property:
+    # r-fires is enabled and tagged T1059, so T1059 must be covered.
+    assert cov["covered_techniques"] >= 1
+    assert "T1059" not in cov["uncovered_techniques"]
     health = wb.rule_health(list(db.rule_stats(30)), noisy_window_threshold=1)
     assert any(r["rule_id"] == "r-fires" for r in health["noisy"])
     assert any(r["rule_id"] == "r-quiet" for r in health["never_fired"])

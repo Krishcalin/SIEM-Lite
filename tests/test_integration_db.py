@@ -517,8 +517,10 @@ def test_alert_analytics_aggregations(clean_db):
     assert ts[0]["src_ip"] == "1.1.1.1" and ts[0]["n"] == 2
 
     now = datetime.now(timezone.utc)
-    _store(db, [_evt(vendor="x", src_ip="9.9.9.9", event_time=now),
-                _evt(vendor="x", src_ip="9.9.9.9", event_time=now, message="b")])
+    # distinct `raw` per event — see the dedup note in test_batch_lifecycle_and_sha_lookup
+    _store(db, [_evt(vendor="x", src_ip="9.9.9.9", event_time=now, raw={"k": "a"}),
+                _evt(vendor="x", src_ip="9.9.9.9", event_time=now, message="b",
+                     raw={"k": "b"})])
     es = db.top_event_sources(7)
     assert es[0]["src_ip"] == "9.9.9.9" and es[0]["n"] == 2
 
@@ -567,8 +569,11 @@ def test_ueba_entity_baselines_and_risk(clean_db):
 def test_batch_lifecycle_and_sha_lookup(clean_db):
     db = clean_db
     bid = db.create_batch("fw.log", "sha-abc", "paloalto", "paloalto_csv")
-    _store(db, [_evt(vendor="paloalto", message="a"),
-                _evt(vendor="paloalto", message="b")], batch_id=bid)
+    # `raw` must differ: dedup identity is vendor + event_time + raw (normalize.dedup_hash),
+    # and `message` is deliberately NOT part of it. `_evt` defaults raw to a shared stub, so
+    # two events differing only by message are genuine duplicates and collapse to one row.
+    _store(db, [_evt(vendor="paloalto", message="a", raw={"k": "a"}),
+                _evt(vendor="paloalto", message="b", raw={"k": "b"})], batch_id=bid)
     db.update_batch(bid, status="done", total_rows=2, inserted_rows=2)
     assert db.count_batch_rows(bid) == 2
     assert db.find_batch_by_sha("sha-abc")["id"] == bid
