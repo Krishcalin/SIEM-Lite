@@ -17,7 +17,7 @@ from urllib.parse import urlencode, urlparse
 
 from fastapi import Depends, FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
-                               RedirectResponse, StreamingResponse)
+                               RedirectResponse, Response, StreamingResponse)
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 from . import (api, assets, auth, cim, collectors, compliance, contentpack, coverage,
                custom_parser, db, ingest, ingest_actions, killchain_runtime, navigator,
                notify, ot, saved, sourcehealth, streaming, vault, workbench)
+from .assets import csvio
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -2128,3 +2129,152 @@ def rules_test(request: Request, yaml_text: str = Form(...),
     return templates.TemplateResponse(request, "rules.html", _ctx(
         request, rules=db.list_custom_rules(), test=result,
         draft={"rule_id": rule_id, "title": title, "yaml_text": yaml_text}))
+
+
+# --------------------------------------------------------------------------- #
+#  Asset & identity registry (Phase 3)                                         #
+# --------------------------------------------------------------------------- #
+# ADMIN-ONLY, and on the console rather than /api/v1, for the reason the content-pack
+# writes are: an `api_keys` row carries no role and `require_api_key` accepts any
+# enabled key, so putting registry WRITES on /api/v1 would let a key issued to a log
+# forwarder re-declare which hosts are crown jewels. /api/v1 keeps the read side.
+
+
+def _registry_ctx(request: Request, **extra) -> dict:
+    """The page context. Reads the registry fresh so the list reflects the last write."""
+    try:
+        status = db.asset_status()
+    except Exception:                                   # noqa: BLE001 — page must render
+        status = {"assets": 0, "identities": 0, "aliases": 0, "registry_hash": "?",
+                  "backfill_due": False, "backfilled_at": None}
+    return _ctx(request, status=status, assets=db.list_assets(),
+                identities=db.list_identities(), **extra)
+
+
+def _plan_preview(plan, kind: str) -> list[dict]:
+    """At most 25 rows, rendered for the plan table. Bounded because an operator
+    pasting a 40,000-row CMDB export should not get a 40,000-row HTML page."""
+    key = "asset_id" if kind == "assets" else "identity_id"
+    level = "criticality" if kind == "assets" else "priority"
+    out = []
+    for r in plan.rows[:25]:
+        labels = list(r.get("category") or ()) + list(r.get("watchlist") or ())
+        out.append({"id": r[key], "level": r.get(level, ""),
+                    "labels": ", ".join(labels),
+                    "aliases": "  ".join(f"{t}:{v}" for t, v in r.get("aliases") or ())})
+    return out
+
+
+@app.get("/registry", response_class=HTMLResponse)
+def registry_page(request: Request, _user=Depends(require_role("admin"))):
+    return templates.TemplateResponse(request, "registry.html",
+                                      _registry_ctx(request))
+
+
+@app.get("/registry/template")
+def registry_template(kind: str = "assets", _user=Depends(require_role("admin"))):
+    """A correct header to start from, so an operator is not guessing at column names."""
+    identities = kind == "identities"
+    body = csvio.IDENTITY_TEMPLATE if identities else csvio.ASSET_TEMPLATE
+    name = "identities" if identities else "assets"
+    return Response(body, media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="{name}-template.csv"'})
+
+
+@app.get("/registry/export")
+def registry_export(kind: str = "assets", _user=Depends(require_role("admin"))):
+    """The registry as CSV. ROUND-TRIPPABLE: these are exactly the columns the import
+    reads, so export -> edit in a spreadsheet -> re-import is lossless."""
+    if kind == "identities":
+        body, name = csvio.export_identities(db.list_identities(limit=100000)), "identities"
+    else:
+        body, name = csvio.export_assets(db.list_assets(limit=100000)), "assets"
+    return Response(body, media_type="text/csv", headers={
+        "Content-Disposition": f'attachment; filename="{name}.csv"'})
+
+
+@app.post("/registry/plan", response_class=HTMLResponse)
+def registry_plan(request: Request, document: str = Form(...),
+                  kind: str = Form("assets"), replace: str = Form(""),
+                  _user=Depends(require_role("admin"))):
+    """Dry run. Parses and validates; writes nothing."""
+    identities = kind == "identities"
+    parsed = (csvio.read_identities(document) if identities
+              else csvio.read_assets(document))
+    plan = {"kind": "identities" if identities else "assets",
+            "rows": parsed.rows, "errors": parsed.errors,
+            "aliasless": parsed.aliasless, "replace": bool(replace),
+            "preview": _plan_preview(parsed, "identities" if identities else "assets")}
+    return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+        request, plan=plan, document=document, kind=kind, replace=bool(replace)))
+
+
+@app.post("/registry/apply", response_class=HTMLResponse)
+def registry_apply(request: Request, document: str = Form(...),
+                   kind: str = Form("assets"), replace: str = Form(""),
+                   _user=Depends(require_role("admin"))):
+    """Apply an import in ONE transaction, then reload and re-stamp the registry.
+
+    RE-PARSED HERE rather than carried over from the plan: the plan is a round trip
+    through the browser, and applying a structure the server did not just validate
+    would let an edited hidden field write rows no plan ever showed.
+    """
+    identities = kind == "identities"
+    parsed = (csvio.read_identities(document) if identities
+              else csvio.read_assets(document))
+    if not parsed.ok:
+        return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+            request, error="; ".join(parsed.errors[:5]), document=document, kind=kind))
+    try:
+        apply_fn = db.apply_identity_import if identities else db.apply_asset_import
+        result = apply_fn(parsed.rows, updated_by=_owner(request),
+                          replace=bool(replace))
+    except ValueError as exc:               # an alias claimed by another entry
+        return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+            request, error=f"nothing was written — {exc}", document=document, kind=kind))
+
+    index = assets.reload()
+    db.stamp_asset_registry(index)
+    _audit(request, "registry.import",
+           f"{kind}: {result['written']} written, {result['removed']} removed")
+    return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+        request, message=(
+            f"{result['written']} {kind} written"
+            + (f", {result['removed']} removed" if result["removed"] else "")
+            + ". New events carry the updated context; run the backfill to correct "
+              "events already stored.")))
+
+
+@app.post("/registry/delete", response_class=HTMLResponse)
+def registry_delete(request: Request, entry_id: str = Form(...),
+                    kind: str = Form("assets"),
+                    _user=Depends(require_role("admin"))):
+    if kind == "identities":
+        n = db.delete_identity(entry_id)
+    else:
+        n = db.delete_asset(entry_id)
+    index = assets.reload()
+    db.stamp_asset_registry(index)
+    _audit(request, "registry.delete", f"{kind}: {entry_id}")
+    return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+        request, message=(f"{entry_id} deleted. Events already stored keep their "
+                          "context until the next backfill.") if n else
+                         f"{entry_id} was not found."))
+
+
+@app.post("/registry/backfill", response_class=HTMLResponse)
+def registry_backfill(request: Request, _user=Depends(require_role("admin"))):
+    """Re-derive the registry columns on stored events.
+
+    Synchronous and unbounded: it is the operator's explicit action, it is the only
+    run permitted to advance the `asset_meta` stamp, and a bounded one would leave
+    `backfill_due` true with no indication of how far it had got. Chunked internally,
+    committing per chunk, so it holds no long transaction.
+    """
+    result = db.backfill_assets()
+    _audit(request, "registry.backfill",
+           f"scanned={result['scanned']} updated={result['updated']}")
+    return templates.TemplateResponse(request, "registry.html", _registry_ctx(
+        request, message=(f"Re-derived {result['scanned']} event(s): "
+                          f"{result['updated']} updated, "
+                          f"{result['unchanged']} already correct.")))

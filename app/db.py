@@ -2840,3 +2840,83 @@ def backfill_assets(*, chunk: int = 2000, start_id: int = 0,
               "seconds": round(time.monotonic() - started, 2)}
     log.info("asset backfill finished: %s", result)
     return result
+
+
+def _asset_row(fields: dict) -> dict:
+    """One `assets` bind-parameter row from loose field input (CSV or a form)."""
+    row = {"asset_id": str(fields["asset_id"]).strip()}
+    for col in _ASSET_COLS:
+        row[col] = fields.get(col)
+    row["criticality"] = assets.normalize_level(row["criticality"] or "medium")
+    row["category"] = _clean_labels(row["category"])
+    row["watchlist"] = _clean_labels(row["watchlist"])
+    row["enabled"] = True if row["enabled"] is None else bool(row["enabled"])
+    row["source"] = str(row["source"] or "manual")
+    return row
+
+
+def _identity_row(fields: dict) -> dict:
+    row = {"identity_id": str(fields["identity_id"]).strip()}
+    for col in _IDENTITY_COLS:
+        row[col] = fields.get(col)
+    row["priority"] = assets.normalize_level(row["priority"] or "medium")
+    row["watchlist"] = _clean_labels(row["watchlist"])
+    row["enabled"] = True if row["enabled"] is None else bool(row["enabled"])
+    row["source"] = str(row["source"] or "manual")
+    return row
+
+
+def apply_asset_import(rows: Sequence[dict], *, updated_by: str = "",
+                       replace: bool = False) -> dict[str, Any]:
+    """Write a whole asset import in ONE transaction. All-or-nothing.
+
+    A half-applied import leaves the registry in a state nobody chose: some hosts
+    carry their new criticality and some do not, and every event ingested afterwards
+    is stamped from that mixture. So the raise from `_write_aliases` (an alias claimed
+    by another entry) rolls the entire file back, and the operator fixes the file
+    rather than reconciling a partial result.
+
+    `replace=True` deletes assets NOT named in the file — for an operator whose CMDB
+    export is the whole truth. Off by default, because the far more common import is
+    a partial one and silently retiring everything absent from it would strip context
+    from every event about those hosts.
+    """
+    ids = [str(r["asset_id"]).strip() for r in rows]
+    with pool().connection() as conn:
+        removed = 0
+        if replace and ids:
+            removed = conn.execute(
+                "DELETE FROM assets WHERE asset_id <> ALL(%s)", (ids,)).rowcount
+        for fields in rows:
+            row = _asset_row({**fields, "updated_by": updated_by})
+            conn.execute(_ASSET_UPSERT, row)
+            aliases = fields.get("aliases")
+            if aliases is not None:
+                conn.execute("DELETE FROM asset_aliases WHERE asset_id = %s",
+                             (row["asset_id"],))
+                _write_aliases(conn, "asset_aliases", "asset_id", row["asset_id"],
+                               aliases, identity=False)
+        conn.commit()
+    return {"written": len(rows), "removed": removed}
+
+
+def apply_identity_import(rows: Sequence[dict], *, updated_by: str = "",
+                          replace: bool = False) -> dict[str, Any]:
+    """The identity twin of `apply_asset_import`. Same all-or-nothing contract."""
+    ids = [str(r["identity_id"]).strip() for r in rows]
+    with pool().connection() as conn:
+        removed = 0
+        if replace and ids:
+            removed = conn.execute(
+                "DELETE FROM identities WHERE identity_id <> ALL(%s)", (ids,)).rowcount
+        for fields in rows:
+            row = _identity_row({**fields, "updated_by": updated_by})
+            conn.execute(_IDENTITY_UPSERT, row)
+            aliases = fields.get("aliases")
+            if aliases is not None:
+                conn.execute("DELETE FROM identity_aliases WHERE identity_id = %s",
+                             (row["identity_id"],))
+                _write_aliases(conn, "identity_aliases", "identity_id",
+                               row["identity_id"], aliases, identity=True)
+        conn.commit()
+    return {"written": len(rows), "removed": removed}

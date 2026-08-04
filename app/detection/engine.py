@@ -59,6 +59,17 @@ _FIELD_ALIASES = {
     "user": "user_name", "username": "user_name", "account": "user_name",
     "computername": "host_name", "hostname": "host_name", "host": "host_name",
     "msg": "message",
+    # `EventID` is THE field name every upstream Sigma rule for Windows uses, and
+    # without this it resolved to nothing at all: `_flatten_raw` lower-cases, so the
+    # rule's `EventID` becomes `eventid`, while the parsers write `event_id` (the
+    # canonical write-back) and the vendor exports carry `Id`. MEASURED before the
+    # fix: rules/clear_windows_event_logs.yml — the T1070.001 anti-forensics rule —
+    # matched NO shape either windows_security.py or sysmon.py actually emits.
+    # Aliased to `event_id` rather than to `id`: `id` is a generic key that dozens of
+    # unrelated sources carry (an alert id, a record id), and pointing the Windows
+    # event-code field at it would fire this class of rule on all of them.
+    "eventid": "event_id", "event id": "event_id", "event_code": "event_id",
+    "eventcode": "event_id",
 }
 
 # Sigma logsource.product -> acceptable values of our `vendor`.

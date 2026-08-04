@@ -141,6 +141,28 @@ def parse(content: str) -> Iterator[NormalizedEvent]:
             if v is not None:
                 raw.setdefault(k, v)
 
+        if eid is not None:
+            # ONE AGREED SPELLING for the event id, exactly as windows_security.py
+            # writes one — and for the same reason. An export calls it "Id",
+            # "EventID" or "Event ID" depending on whether it came from Get-WinEvent,
+            # the EVTX XML or Event Viewer's CSV, while Postgres' `raw ->> 'event_id'`
+            # is byte-exact and the detection engine's `EventID` alias resolves to
+            # `event_id`. Without this, a Sigma rule keyed on the Sysmon event code
+            # matched nothing at all — measured against samples/sysmon.json, whose raw
+            # carried only `Id`.
+            #
+            # The vendor's own key is copied through untouched; this only ADDS
+            # "event_id" beside it. Stored as an int, so jsonb renders the canonical
+            # digit string the registry's integer membership values become.
+            #
+            # ACCEPTED CONSEQUENCE (one-time migration, pre-1.0): app.normalize.dedup_hash
+            # hashes json.dumps(evt.raw, sort_keys=True), so adding this key changes the
+            # identity of every Sysmon event. A file ingested before this change
+            # re-inserts on re-upload instead of deduping via events_dedup_idx. This is
+            # the second and last parser to take that cost; windows_security.py took it
+            # when the same write-back was added there.
+            raw["event_id"] = eid
+
         yield NormalizedEvent(
             event_time=parse_ts(first(f("UtcTime"),
                                       _g(rec, "timecreated", "time created", "date"))),

@@ -17,6 +17,26 @@ from types import SimpleNamespace
 
 import pytest
 
+# A COLLECTION ERROR, DELIBERATELY NOT A SKIP. `starlette.testclient.TestClient`
+# refuses to construct without `httpx`, and the 22 HTTP-surface tests below go
+# through it. Absent that package they used to fail one at a time with a RuntimeError
+# raised deep inside starlette, which is how the unit CI job stayed red for two
+# commits while the same suite was green on a developer machine (where httpx arrives
+# transitively). Raising here names the missing package once, at collection.
+#
+# Not `pytest.skip`: these tests cover a public HTTP surface that accepts credentials,
+# and a run that silently stops exercising it must not report success. Importing this
+# module is what triggers the check, so `pytest tests/test_assets.py` on a machine
+# without httpx is unaffected.
+try:
+    import httpx  # noqa: F401
+except ImportError as exc:                       # pragma: no cover - env guard
+    raise RuntimeError(
+        "tests/test_hec.py needs `httpx` — starlette's TestClient cannot be built "
+        "without it. Install it with `pip install httpx` (it is test tooling, so it "
+        "lives on the CI pip line next to pytest, not in requirements.txt)."
+    ) from exc
+
 from app import hec
 from app.hec import (envelope_entry, envelope_record, format_for_sourcetype,
                      group_envelopes, hec_body, hec_status, hec_token, looks_json,

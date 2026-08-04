@@ -215,3 +215,66 @@ async def api_query(body: dict, key: dict = Depends(require_api_key)):
             timeout_ms=settings.loql_timeout_ms)
     except LoqlError as e:
         raise HTTPException(status_code=400, detail=e.message)
+
+
+# --------------------------------------------------------------------------- #
+#  Asset & identity registry (Phase 3) — READ ONLY on this surface             #
+# --------------------------------------------------------------------------- #
+# Reads only, deliberately. An `api_keys` row carries no role and `require_api_key`
+# accepts any enabled key, so a write endpoint here would let a key issued to a log
+# forwarder re-declare which hosts are crown jewels — and /api/ is exempt from the
+# console session auth, so RBAC could not reach it. Writes live on the console under
+# `require_role("admin")`, exactly where the content-pack writes ended up and for the
+# same reason. These endpoints exist so CI can diff a registry and a CMDB sync can
+# verify what landed.
+
+@router.get("/registry/status")
+async def api_registry_status(key: dict = Depends(require_api_key)):
+    """Counts, the live fingerprint, and whether stored history is stale."""
+    return await run_in_threadpool(db.asset_status)
+
+
+@router.get("/registry/assets")
+async def api_registry_assets(limit: int = 500, offset: int = 0, q: str = "",
+                              key: dict = Depends(require_api_key)):
+    rows = await run_in_threadpool(db.list_assets, limit, offset, q)
+    return [{"asset_id": r["asset_id"], "display_name": r["display_name"],
+             "criticality": r["criticality"], "category": r["category"],
+             "owner": r["owner"], "business_unit": r["business_unit"],
+             "environment": r["environment"], "watchlist": r["watchlist"],
+             "enabled": r["enabled"], "source": r["source"],
+             "aliases": r["aliases"], "updated_at": r["updated_at"]} for r in rows]
+
+
+@router.get("/registry/identities")
+async def api_registry_identities(limit: int = 500, offset: int = 0, q: str = "",
+                                  key: dict = Depends(require_api_key)):
+    rows = await run_in_threadpool(db.list_identities, limit, offset, q)
+    return [{"identity_id": r["identity_id"], "display_name": r["display_name"],
+             "priority": r["priority"], "department": r["department"],
+             "manager": r["manager"], "title": r["title"], "email": r["email"],
+             "watchlist": r["watchlist"], "enabled": r["enabled"],
+             "source": r["source"], "aliases": r["aliases"],
+             "updated_at": r["updated_at"]} for r in rows]
+
+
+@router.get("/registry/resolve")
+async def api_registry_resolve(host: str = "", user: str = "", src_ip: str = "",
+                               dst_ip: str = "",
+                               key: dict = Depends(require_api_key)):
+    """"Which asset would this event resolve to, and why?"
+
+    The answer to the question an operator actually asks when context looks wrong.
+    It runs the REAL resolver against the live index, so it cannot drift from what
+    ingest would store — including `via`, the field the subject was resolved from.
+    """
+    from types import SimpleNamespace
+
+    from . import assets
+
+    evt = SimpleNamespace(host_name=host or None, user_name=user or None,
+                          src_ip=src_ip or None, dst_ip=dst_ip or None)
+    res = await run_in_threadpool(assets.resolve, evt, assets.get_index())
+    return {"asset_id": res.asset_id, "asset_criticality": res.asset_criticality,
+            "identity_id": res.identity_id, "identity_priority": res.identity_priority,
+            "context_tags": list(res.context_tags), "via": res.asset_via or None}

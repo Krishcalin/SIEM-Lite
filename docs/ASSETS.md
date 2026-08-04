@@ -99,6 +99,56 @@ cidr  10.1.2.0/24  → office-net
 cidr  10.0.0.0/8   → corp-wide     (10.1.2.7 belongs to the /24, always)
 ```
 
+## Populating it
+
+**Admin ▸ Registry** (`/registry`). Admin-only, and every write is audited.
+
+Import is CSV — what a CMDB export, an AD export and a spreadsheet all produce, and
+what an operator can diff in review before applying. Download a template from the page
+to start from a correct header.
+
+```csv
+asset_id,criticality,category,watchlist,environment,hostname,ip
+srv-db-01,critical,server;pci,crown-jewel,prod,SRV-DB-01,10.1.2.50
+```
+
+One column per alias type, each able to hold several values. Multi-valued cells split
+on `;`, `|` or `,` — **the first separator present in the cell wins**, so
+`"Finance, EMEA;server"` is two labels and not three.
+
+Import is **planned before it is applied**, and applying is **all-or-nothing**. A
+half-applied file would leave some hosts carrying their new criticality and some not,
+with every event ingested afterwards stamped from that mixture. So a duplicate id, an
+unparseable address, or an alias already claimed by another entry rolls the whole file
+back and reports the row number you see in your editor.
+
+`replace` deletes entries **absent** from the file — for an operator whose CMDB export
+is the whole truth. It is off by default, because the far more common import is partial
+and silently retiring everything absent from it would strip context from every event
+about those hosts.
+
+Export writes exactly the columns the import reads, so *export → edit in a spreadsheet
+→ re-import* is lossless. A test asserts that round trip.
+
+### API
+
+`/api/v1/registry/*` is **read-only**, deliberately. An `api_keys` row carries no role
+and `require_api_key` accepts any enabled key, so a write endpoint here would let a key
+issued to a log forwarder re-declare which hosts are crown jewels — and `/api/` is
+exempt from the console session auth, so RBAC could not reach it. Writes are console
+routes under `require_role("admin")`.
+
+| endpoint | answers |
+|---|---|
+| `GET /api/v1/registry/status` | counts, live fingerprint, `backfill_due` |
+| `GET /api/v1/registry/assets` | declared assets with their aliases |
+| `GET /api/v1/registry/identities` | declared identities with their aliases |
+| `GET /api/v1/registry/resolve?host=&user=&src_ip=&dst_ip=` | *which asset would this resolve to, and via which field* |
+
+That last one runs the **real** resolver against the live index, so it cannot drift
+from what ingest would store. It is the answer to the question an operator actually
+asks when context looks wrong.
+
 ## Backfill
 
 A registry edit does **not** reach stored rows. `asset_meta` is what makes that visible

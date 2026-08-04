@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from app.detection import engine
 from app.detection.engine import (DetectionEngine, Rule, alert_from_match,
                                    as_str_list, cim_tags, datamodels_match,
                                    flatten_event, load_rules, match_rule,
@@ -1467,3 +1468,48 @@ def test_cardinality_correlation_rules_load_and_build_alerts():
     assert bf.distinct_field is None
     a2 = correlation_alert(bf, {"src_ip": "1.2.3.4", "n": 6, "last_seen": None}, bucket=1)
     assert "matching events" in a2["message"]
+
+
+# ── the EventID alias (T1070.001 was silently dead without it) ────────────────
+def test_the_eventid_alias_resolves_to_the_canonical_writeback_key():
+    """`EventID` is the field name every upstream Sigma rule for Windows uses.
+
+    `_flatten_raw` lower-cases, so a rule's `EventID` becomes `eventid`, while the
+    parsers write `event_id` and the vendor exports carry `Id`. Without the alias
+    that resolved to nothing at all.
+
+    Aliased to `event_id` and NOT to `id`: `id` is a generic key dozens of unrelated
+    sources carry (an alert id, a record id), and pointing the Windows event-code
+    field at it would fire this whole class of rule on all of them.
+    """
+    flat = {"event_id": 1102, "id": 999}
+    assert engine._lookup(flat, "EventID") == 1102
+    assert engine._lookup(flat, "eventid") == 1102
+    assert engine._lookup(flat, "Event ID") == 1102
+    assert engine._lookup(flat, "EventCode") == 1102        # the Splunk spelling
+    # a source carrying only the generic `id` must NOT be picked up
+    assert engine._lookup({"id": 999}, "EventID") is None
+
+
+def test_the_clear_event_logs_rule_fires_on_what_the_parsers_actually_emit():
+    """A shipped rule, against real parser output, end to end.
+
+    MEASURED BEFORE THE FIX: this rule — T1070.001, one of the highest-value Windows
+    detections there is — matched no shape either `windows_security.py` or
+    `sysmon.py` produces. It was not a coverage gap; the rule was live, enabled and
+    dead. That is why this test drives the REAL rule file rather than a fixture rule.
+    """
+    import yaml
+
+    from app.parsers import sysmon, windows_security
+
+    doc = yaml.safe_load(Path("rules/clear_windows_event_logs.yml").read_text(
+        encoding="utf-8"))
+    eng = engine.DetectionEngine([engine.rule_from_dict(doc, "clear.yml")])
+
+    for mod, sample in ((windows_security, "samples/windows_security.json"),
+                        (sysmon, "samples/sysmon.json")):
+        evt = next(iter(mod.parse(Path(sample).read_text(encoding="utf-8"))))
+        assert not eng.evaluate_event(evt), "must not fire on an ordinary event"
+        evt.raw["event_id"] = 1102              # the parsers' own canonical key
+        assert eng.evaluate_event(evt), f"{mod.__name__} log-clearing went undetected"

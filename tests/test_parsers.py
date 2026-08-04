@@ -788,3 +788,32 @@ def test_nutanix_pc_json_export():
     assert len(evs) == 1
     assert evs[0].vendor == "nutanix" and evs[0].action == "Delete"
     assert evs[0].src_ip == "203.0.113.9" and evs[0].user_name == "root"
+
+
+def test_sysmon_writes_back_the_canonical_event_id():
+    """The same one-agreed-spelling write-back `windows_security` does.
+
+    A Sysmon export names the event code `Id`, `EventID` or `Event ID` depending on
+    whether it came from Get-WinEvent, the EVTX XML or Event Viewer's CSV — while
+    `raw ->> 'event_id'` is byte-exact and the detection engine resolves a rule's
+    `EventID` to `event_id`. Measured before this landed: samples/sysmon.json carried
+    only `Id`, so a Sigma rule keyed on the Sysmon event code matched nothing.
+    """
+    from app.parsers import sysmon
+
+    events = list(sysmon.parse(Path("samples/sysmon.json").read_text(encoding="utf-8")))
+    assert events, "the sample must parse"
+    for e in events:
+        assert isinstance(e.raw["event_id"], int)       # an int, so jsonb renders "1"
+        assert e.raw["event_id"] == e.raw["Id"]         # vendor key copied through, not moved
+
+
+def test_sysmon_event_id_is_an_int_whatever_the_export_spelled_it():
+    import json
+
+    from app.parsers import sysmon
+
+    for key in ("Id", "EventID", "Event ID"):
+        doc = json.dumps([{key: " 011 ", "Message": "x", "UtcTime": "2026-06-25 10:00:00.000"}])
+        (e,) = list(sysmon.parse(doc))
+        assert e.raw["event_id"] == 11, key             # padded/spaced value normalized

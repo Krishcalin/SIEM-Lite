@@ -52,8 +52,13 @@ def norm_fqdn(value: object) -> Optional[str]:
 def norm_ip(value: object) -> Optional[str]:
     """Canonical address text, or None.
 
-    Through `ipaddress` rather than a string compare, so ``10.1.1.1`` and
-    ``010.1.1.1`` cannot be declared as two separate aliases of two different assets.
+    Through `ipaddress` rather than a string compare, so an address has exactly one
+    stored spelling and two equivalent forms cannot become aliases of two different
+    assets. Note that a leading-zero form like ``010.1.1.1`` is REFUSED, not
+    normalized: Python rejects it outright (CVE-2021-29921 — such octets used to be
+    read as octal, so `010.1.1.1` and `10.1.1.1` were different addresses to
+    different libraries). Refusing is the safer of the two, and it means a
+    typo'd alias is reported to the operator rather than silently reinterpreted.
 
     AN IPv4-MAPPED IPv6 ADDRESS IS UNWRAPPED to its IPv4 form. Dual-stack sockets and
     JVM-based servers routinely log ``::ffff:10.1.1.1`` for what is plainly

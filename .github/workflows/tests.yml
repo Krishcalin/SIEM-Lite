@@ -31,10 +31,17 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # `httpx` is TEST tooling, not an app dependency, which is why it is here and
+      # not in requirements.txt: `starlette.testclient.TestClient` refuses to
+      # construct without it, and the HEC shim's 22 HTTP-surface tests go through it.
+      # The integration job below has always installed it; this job did not, so from
+      # the moment those tests landed every unit matrix leg failed on a RuntimeError
+      # raised inside starlette — while the same suite was green locally, where httpx
+      # arrives as a transitive dependency of something else.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest
+          pip install -r requirements.txt pytest httpx
 
       - name: Byte-compile the app (syntax check, incl. modules tests don't import)
         run: python -m compileall app -q

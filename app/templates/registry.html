@@ -1,0 +1,155 @@
+{% extends "base.html" %}
+{% block title %}Asset &amp; identity registry — LogOcean{% endblock %}
+{% block body %}
+<h1>Asset &amp; identity registry</h1>
+<p>What you declare here is resolved onto <b>every event as it is stored</b> — its
+   criticality, its owner and its watchlist labels — so a detection can gate on
+   business context instead of on a hostname, and risk scoring has something to
+   weight by. See <a href="https://github.com/Krishcalin/SIEM-Lite/blob/main/docs/ASSETS.md">docs/ASSETS.md</a>.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+<section>
+  <h2>Status</h2>
+  <div class="panel">
+    <p><b>{{ status.assets }}</b> asset(s), <b>{{ status.identities }}</b> identity(ies),
+       <b>{{ status.aliases }}</b> alias(es).
+       Fingerprint <code>{{ status.registry_hash }}</code></p>
+    {% if status.backfill_due %}
+      <div class="alert err">
+        <b>Stored history is out of date.</b> The registry has changed since events were
+        last derived under it, so rows already in the store still carry their old
+        context. New events are stamped correctly; the existing ones are corrected by a
+        backfill.
+        <form method="post" action="/registry/backfill" style="margin-top:.6rem">
+          <button type="submit" class="btn">Re-derive stored events now</button>
+        </form>
+      </div>
+    {% else %}
+      <p class="muted">Stored history matches the declared registry
+         {% if status.backfilled_at %}(last re-derived {{ status.backfilled_at }}){% endif %}.</p>
+    {% endif %}
+  </div>
+</section>
+
+<section>
+  <h2>Import</h2>
+  <p>CSV, because that is what a CMDB export, an AD export and a spreadsheet all
+     produce. Import is <b>planned before it is applied</b>, and applying is
+     <b>all-or-nothing</b> — a half-applied file would leave some hosts carrying their
+     new criticality and some not, with every event afterwards stamped from the
+     mixture.</p>
+  <form method="post" action="/registry/plan" class="panel">
+    <label>Kind
+      <select name="kind">
+        <option value="assets" {% if kind != 'identities' %}selected{% endif %}>Assets</option>
+        <option value="identities" {% if kind == 'identities' %}selected{% endif %}>Identities</option>
+      </select>
+    </label>
+    <label style="margin-left:1rem">
+      <input type="checkbox" name="replace" value="1" {% if replace %}checked{% endif %}>
+      Replace — delete entries absent from this file
+    </label>
+    <br>
+    <label>CSV<br>
+      <textarea name="document" rows="10" cols="110" required
+                placeholder="asset_id,criticality,category,hostname,ip">{{ document or '' }}</textarea></label><br>
+    <button type="submit" class="btn">Plan (dry run)</button>
+  </form>
+  <p class="muted">Start from a template:
+     <a href="/registry/template?kind=assets">assets.csv</a> ·
+     <a href="/registry/template?kind=identities">identities.csv</a></p>
+</section>
+
+{% if plan %}
+<section>
+  <h2>Plan — {{ plan.kind }}</h2>
+  {% if plan.errors %}
+    <div class="alert err"><b>This file cannot be imported:</b>
+      <ul>{% for e in plan.errors %}<li>{{ e }}</li>{% endfor %}</ul></div>
+  {% else %}
+    <div class="alert ok">{{ plan.rows|length }} row(s) would be written{% if plan.replace %},
+      and any entry absent from the file would be <b>deleted</b>{% endif %}.</div>
+    {% if plan.aliasless %}
+      <div class="alert err">Row(s) {{ plan.aliasless|join(', ') }} declare no
+        identifier at all, so they resolve nothing on their own. That is legitimate
+        when you are only editing criticality on entries declared elsewhere.</div>
+    {% endif %}
+    <table class="grid">
+      <tr><th>ID</th><th>Level</th><th>Labels</th><th>Aliases</th></tr>
+      {% for r in plan.preview %}
+        <tr><td><code>{{ r.id }}</code></td><td>{{ r.level }}</td>
+            <td>{{ r.labels }}</td><td class="muted">{{ r.aliases }}</td></tr>
+      {% endfor %}
+    </table>
+    {% if plan.rows|length > plan.preview|length %}
+      <p class="muted">…and {{ plan.rows|length - plan.preview|length }} more.</p>
+    {% endif %}
+    <form method="post" action="/registry/apply">
+      <input type="hidden" name="kind" value="{{ plan.kind }}">
+      <input type="hidden" name="replace" value="{{ '1' if plan.replace else '' }}">
+      <textarea name="document" hidden>{{ document }}</textarea>
+      <button type="submit" class="btn">Apply</button>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
+
+<section>
+  <h2>Assets <span class="muted">({{ assets|length }})</span>
+      <a class="muted" href="/registry/export?kind=assets" style="font-size:.8em">export CSV</a></h2>
+  <table class="grid">
+    <tr><th>ID</th><th>Criticality</th><th>Category</th><th>Watchlist</th>
+        <th>Owner</th><th>Env</th><th>Aliases</th><th></th></tr>
+    {% for a in assets %}
+      <tr{% if not a.enabled %} class="muted"{% endif %}>
+        <td><code>{{ a.asset_id }}</code>{% if not a.enabled %} (disabled){% endif %}</td>
+        <td>{{ a.criticality }}</td>
+        <td>{{ a.category|join(', ') }}</td>
+        <td>{{ a.watchlist|join(', ') }}</td>
+        <td>{{ a.owner or '' }}</td>
+        <td>{{ a.environment or '' }}</td>
+        <td class="muted">{{ a.aliases|join('  ') }}</td>
+        <td>
+          <form method="post" action="/registry/delete" onsubmit="return confirm('Delete {{ a.asset_id }}? Events already stored keep their context until the next backfill.')">
+            <input type="hidden" name="kind" value="assets">
+            <input type="hidden" name="entry_id" value="{{ a.asset_id }}">
+            <button type="submit" class="btn danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="8" class="muted">Nothing declared yet.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+
+<section>
+  <h2>Identities <span class="muted">({{ identities|length }})</span>
+      <a class="muted" href="/registry/export?kind=identities" style="font-size:.8em">export CSV</a></h2>
+  <table class="grid">
+    <tr><th>ID</th><th>Priority</th><th>Watchlist</th><th>Department</th>
+        <th>Email</th><th>Aliases</th><th></th></tr>
+    {% for i in identities %}
+      <tr{% if not i.enabled %} class="muted"{% endif %}>
+        <td><code>{{ i.identity_id }}</code>{% if not i.enabled %} (disabled){% endif %}</td>
+        <td>{{ i.priority }}</td>
+        <td>{{ i.watchlist|join(', ') }}</td>
+        <td>{{ i.department or '' }}</td>
+        <td>{{ i.email or '' }}</td>
+        <td class="muted">{{ i.aliases|join('  ') }}</td>
+        <td>
+          <form method="post" action="/registry/delete" onsubmit="return confirm('Delete {{ i.identity_id }}?')">
+            <input type="hidden" name="kind" value="identities">
+            <input type="hidden" name="entry_id" value="{{ i.identity_id }}">
+            <button type="submit" class="btn danger">Delete</button>
+          </form>
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted">Nothing declared yet.</td></tr>
+    {% endfor %}
+  </table>
+</section>
+{% endblock %}
