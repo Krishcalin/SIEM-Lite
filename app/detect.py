@@ -36,6 +36,28 @@ _CEF_RE = re.compile(r"CEF:\s*\d+\s*\|")
 _LEEF_RE = re.compile(r"LEEF:\s*\d+(?:\.\d+)?\s*\|", re.IGNORECASE)
 # Cisco ASA / Firepower message ID: %ASA-6-302013: ...
 _CISCO_RE = re.compile(r"%(?:ASA|FTD|ASASM|FWSM|PIX)-\d-\d+", re.IGNORECASE)
+# Cisco FTD unified security events (430001-430005) or an FMC/Snort alert. MUST be
+# tested before _CISCO_RE, which matches any %FTD-n-nnnnnn id and would otherwise
+# claim these lines for the Lina parser.
+#
+# SIX digits — `43000[1-5]`, not `4300[1-5]`. The ids FTD actually emits, and the only
+# keys in `cisco_ftd._EVENT_CLASS`, are 430001-430005; the five-digit form matched
+# 43001-43005, which no appliance sends. Every real unified event therefore fell
+# through to _CISCO_RE and was parsed by the Lina grammar into log_type='430003' with
+# src_ip/dst_ip/ports/user all null, collapsing CIM membership to ['network'] — the
+# intrusion event never reached IDS, the malware event never reached Malware.
+#
+# It looked verified because it was checked against the whole sample FILE, which ends
+# with two `SFIMS:` lines that hit the SECOND alternative below: the file routed to
+# cisco_ftd for a reason that had nothing to do with the ids. Per-line assertions in
+# tests/test_detect_ftd.py now pin each id on its own.
+_FTD_RE = re.compile(
+    r"%\w{2,10}-\d-43000[1-5]:"
+    r"|(?:^|\s)(?:SFIMS|snort)\s*:\s*\[\d+:\d+:\d+\]",
+    re.IGNORECASE | re.MULTILINE)
+# Qualys VMDR Host List Detection XML. The response root is the signature; the
+# `<!DOCTYPE html>` that legitimately appears inside RESULTS CDATA is not.
+_QUALYS_RE = re.compile(r"<HOST_LIST_VM_DETECTION_OUTPUT|<HOST_LIST_OUTPUT", re.I)
 # Cisco IOS/IOS-XE/NX-OS mnemonic: %SEC-6-IPACCESSLOGP: ... (alpha mnemonic; not ASA's numeric id).
 _CISCO_IOS_RE = re.compile(r"%[A-Z][A-Z0-9_]*-\d-[A-Z_][A-Z0-9_]*:")
 # Cisco Meraki: RFC 5424 syslog whose body starts with a Meraki event type.
@@ -85,6 +107,11 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     if name.endswith((".json", ".ndjson")) or stripped[:1] in ("{", "["):
         return _detect_json(stripped)
 
+    # Qualys VMDR Host List Detection — XML, so it can collide with nothing above
+    # or below; without this it matches no signature at all and returns None.
+    if _QUALYS_RE.search(sample):
+        return "qualys"
+
     # CEF — generic, but a strong, specific prefix; check before syslog/CSV.
     if _CEF_RE.search(sample):
         return "cef"
@@ -92,6 +119,11 @@ def detect_format(filename: str, content: str) -> Optional[str]:
     # LEEF — likewise a strong, specific prefix (Tripwire Log Center / QRadar).
     if _LEEF_RE.search(sample):
         return "leef"
+
+    # Cisco FTD security events — the 430001-430005 unified block or an FMC/Snort
+    # alert. MUST precede _CISCO_RE, which matches any %FTD-n-nnnnnn id.
+    if _FTD_RE.search(sample):
+        return "cisco_ftd"
 
     # Cisco ASA / Firepower — distinctive %ASA-L-NNNNNN message id (numeric).
     if _CISCO_RE.search(sample):
@@ -213,6 +245,30 @@ def _detect_json(text: str) -> Optional[str]:
             ({"clientip", "client_ip", "sharename", "share_name",
               "sharepath", "share_path", "exportname", "export_name"} & keys):
         return "nutanix_files"
+    # AWS Security Hub — ASFF. ProductArn is unique to the format; the second
+    # arm catches a finding forwarded without it. Must precede GuardDuty: a
+    # GuardDuty finding *republished through* Security Hub is ASFF, not native.
+    if "productarn" in keys or ({"awsaccountid", "types"} <= keys and "severity" in keys):
+        return "aws_securityhub"
+    # AWS GuardDuty — native findings: the Service/Resource pair plus a finding Type.
+    if {"service", "resource"} <= keys and ({"schemaversion", "detectorid"} & keys) \
+            and "type" in keys:
+        return "aws_guardduty"
+    # Microsoft Defender XDR — Graph security alerts_v2 / M365 Defender incidents.
+    if ({"servicesource", "alertweburl", "provideralertid", "incidentweburl"} & keys) or \
+            ({"determination", "lastupdatedatetime"} <= keys):
+        return "defender_xdr"
+    # Tenable Vulnerability Management — vulns/export chunk.
+    if {"plugin", "asset"} <= keys and \
+            ({"state", "severity_id", "first_found", "last_found"} & keys):
+        return "tenable"
+    # Rapid7 InsightVM — the asset x finding x vulnerability join envelope.
+    if {"asset", "finding", "vulnerability"} <= keys:
+        return "rapid7"
+    # NetFlow / IPFIX, re-uploaded from a saved decode (the live receiver names the
+    # format explicitly). The receiver emits a BARE array, so these are top-level.
+    if "flow_version" in keys and ("exporter" in keys or "flow_sequence" in keys):
+        return "netflow"
     # CrowdStrike Falcon JSON (detection-summary or flat/FDR shapes).
     if ({"aid", "cid", "sensorid", "detectname"} & keys) or ({"metadata", "event"} <= keys):
         return "crowdstrike_json"
@@ -232,7 +288,10 @@ def _first_json_record(text: str) -> Optional[dict]:
         if isinstance(obj, list):
             return next((r for r in obj if isinstance(r, dict)), None)
         if isinstance(obj, dict):
-            for key in ("resources", "events", "Records", "records", "value", "entries", "data"):
+            # "Findings" is the AWS GuardDuty GetFindings / Security Hub GetFindings
+            # envelope; no other shipped sample carries a top-level Findings list.
+            for key in ("resources", "events", "Records", "records", "value", "entries",
+                        "data", "Findings"):
                 if isinstance(obj.get(key), list):
                     return next((r for r in obj[key] if isinstance(r, dict)), None)
             return obj

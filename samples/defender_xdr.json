@@ -1,0 +1,247 @@
+{
+  "@odata.context": "https://graph.microsoft.com/v1.0/$metadata#security/alerts_v2",
+  "value": [
+    {
+      "id": "da637921100000000001_-1234567890",
+      "providerAlertId": "da637921100000000001_-1234567890",
+      "incidentId": "4711",
+      "status": "new",
+      "severity": "high",
+      "classification": null,
+      "determination": null,
+      "serviceSource": "microsoftDefenderForEndpoint",
+      "detectionSource": "antivirus",
+      "detectorId": "e0da400f-affd-43ef-b1d5-afc2eb6f2756",
+      "title": "Ransomware behaviour detected in the file system",
+      "description": "A process performed rapid, high-entropy rewrites across a file share.",
+      "category": "Ransomware",
+      "assignedTo": null,
+      "tenantId": "3ac1f0d0-f9a2-b1c4-d5e6-f708192a3b4c",
+      "createdDateTime": "2026-06-25T09:30:12.4Z",
+      "lastUpdateDateTime": "2026-06-25T09:31:02.7Z",
+      "firstActivityDateTime": "2026-06-25T09:29:58Z",
+      "lastActivityDateTime": "2026-06-25T09:30:44Z",
+      "alertWebUrl": "https://security.microsoft.com/alerts/da637921100000000001_-1234567890",
+      "incidentWebUrl": "https://security.microsoft.com/incidents/4711",
+      "mitreTechniques": [
+        "T1486",
+        "T1490"
+      ],
+      "evidence": [
+        {
+          "@odata.type": "#microsoft.graph.security.deviceEvidence",
+          "createdDateTime": "2026-06-25T09:30:12.4Z",
+          "verdict": "malicious",
+          "remediationStatus": "remediated",
+          "deviceDnsName": "fs01.corp.example.com",
+          "mdeDeviceId": "9a3f2b6e5d8c1a44b7c0d1e2f3a4b5c6",
+          "osPlatform": "WindowsServer2022",
+          "ipInterfaces": [
+            "10.20.30.51"
+          ]
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.processEvidence",
+          "verdict": "malicious",
+          "remediationStatus": "remediated",
+          "processId": 6612,
+          "processCommandLine": "vssadmin.exe delete shadows /all /quiet",
+          "parentProcessId": 4408,
+          "parentProcessImageFile": {
+            "fileName": "cmd.exe",
+            "filePath": "C:\\Windows\\System32"
+          },
+          "imageFile": {
+            "fileName": "vssadmin.exe",
+            "filePath": "C:\\Windows\\System32",
+            "sha256": "2f1c9a5b8e7d6c4b3a29180f7e6d5c4b3a2918f7e6d5c4b3a2918f7e6d5c4b3a",
+            "sha1": "a2918f7e6d5c4b3a2918f7e6d5c4b3a291800f7e"
+          }
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.userEvidence",
+          "verdict": "suspicious",
+          "userAccount": {
+            "accountName": "svc_backup",
+            "domainName": "CORP",
+            "userPrincipalName": "svc_backup@corp.example.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": "da637921100000000002_-1234567891",
+      "providerAlertId": "da637921100000000002_-1234567891",
+      "incidentId": "4712",
+      "status": "active",
+      "severity": "high",
+      "classification": null,
+      "determination": null,
+      "serviceSource": "microsoftDefenderForIdentity",
+      "detectionSource": "microsoftDefenderForIdentity",
+      "title": "Suspected Golden Ticket usage (forged authorization data)",
+      "description": "A Kerberos ticket with forged PAC data was presented to a domain controller.",
+      "category": "CredentialAccess",
+      "createdDateTime": "2026-06-25T09:34:00Z",
+      "lastUpdateDateTime": "2026-06-25T09:34:40Z",
+      "alertWebUrl": "https://security.microsoft.com/alerts/da637921100000000002_-1234567891",
+      "mitreTechniques": [
+        "T1558.001"
+      ],
+      "evidence": [
+        {
+          "@odata.type": "#microsoft.graph.security.deviceEvidence",
+          "deviceDnsName": "dc01.corp.example.com",
+          "osPlatform": "WindowsServer2019"
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.userEvidence",
+          "userAccount": {
+            "accountName": "administrator",
+            "domainName": "CORP",
+            "userPrincipalName": "administrator@corp.example.com"
+          }
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.ipEvidence",
+          "ipAddress": "10.20.30.77",
+          "verdict": "suspicious"
+        }
+      ]
+    },
+    {
+      "id": "da637921100000000003_-1234567892",
+      "providerAlertId": "da637921100000000003_-1234567892",
+      "incidentId": "4713",
+      "status": "resolved",
+      "severity": "medium",
+      "classification": "truePositive",
+      "determination": "phishing",
+      "serviceSource": "microsoftDefenderForOffice365",
+      "detectionSource": "microsoftDefenderForOffice365",
+      "title": "Email messages containing malicious URL removed after delivery",
+      "description": "A zero-hour auto purge removed a delivered message whose URL was later found malicious.",
+      "category": "InitialAccess",
+      "createdDateTime": "2026-06-25T09:40:00Z",
+      "lastUpdateDateTime": "2026-06-25T09:52:11Z",
+      "alertWebUrl": "https://security.microsoft.com/alerts/da637921100000000003_-1234567892",
+      "mitreTechniques": [
+        "T1566.002"
+      ],
+      "evidence": [
+        {
+          "@odata.type": "#microsoft.graph.security.analyzedMessageEvidence",
+          "verdict": "malicious",
+          "remediationStatus": "remediated",
+          "subject": "Action required: outstanding invoice INV-88213",
+          "senderIp": "203.0.113.9",
+          "networkMessageId": "1f0a2b3c-4d5e-6f70-8192-a3b4c5d6e7f8",
+          "p1Sender": {
+            "emailAddress": "billing@invoice-portal.example"
+          },
+          "p2Sender": {
+            "emailAddress": "billing@invoice-portal.example"
+          },
+          "recipientEmailAddress": "jdoe@corp.example.com",
+          "urlCount": 1,
+          "attachmentsCount": 0
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.urlEvidence",
+          "url": "http://invoice-portal.example/pay/88213",
+          "verdict": "malicious"
+        }
+      ]
+    },
+    {
+      "id": "da637921100000000004_-1234567893",
+      "providerAlertId": "da637921100000000004_-1234567893",
+      "incidentId": "4711",
+      "status": "new",
+      "severity": "medium",
+      "serviceSource": "microsoft365Defender",
+      "detectionSource": "microsoft365Defender",
+      "title": "Multi-stage incident involving credential access on one endpoint",
+      "description": "Microsoft 365 Defender correlated an identity alert with endpoint process activity.",
+      "category": "DefenseEvasion",
+      "createdDateTime": "2026-06-25T09:55:00Z",
+      "lastUpdateDateTime": "2026-06-25T09:56:30Z",
+      "alertWebUrl": "https://security.microsoft.com/alerts/da637921100000000004_-1234567893",
+      "mitreTechniques": [
+        "T1562.001"
+      ],
+      "evidence": [
+        {
+          "@odata.type": "#microsoft.graph.security.deviceEvidence",
+          "deviceDnsName": "ws14.corp.example.com",
+          "osPlatform": "Windows11"
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.processEvidence",
+          "processId": 3320,
+          "processCommandLine": "powershell.exe -NoProfile -EncodedCommand SQBFAFgA",
+          "imageFile": {
+            "fileName": "powershell.exe",
+            "filePath": "C:\\Windows\\System32\\WindowsPowerShell\\v1.0",
+            "sha256": "b3a2918f7e6d5c4b3a2918f7e6d5c4b3a2918f7e6d5c4b3a2918f7e6d5c4b3a2"
+          }
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.registryValueEvidence",
+          "registryKey": "HKEY_LOCAL_MACHINE\\SOFTWARE\\Microsoft\\Windows Defender\\Real-Time Protection",
+          "registryValueName": "DisableRealtimeMonitoring",
+          "registryValue": "1"
+        },
+        {
+          "@odata.type": "#microsoft.graph.security.userEvidence",
+          "userAccount": {
+            "accountName": "jdoe",
+            "domainName": "CORP",
+            "userPrincipalName": "jdoe@corp.example.com"
+          }
+        }
+      ]
+    },
+    {
+      "id": "4711",
+      "incidentWebUrl": "https://security.microsoft.com/incidents/4711",
+      "redirectIncidentId": null,
+      "displayName": "Multi-stage incident involving Initial access & Ransomware on one endpoint",
+      "tenantId": "3ac1f0d0-f9a2-b1c4-d5e6-f708192a3b4c",
+      "createdDateTime": "2026-06-25T09:31:10.2Z",
+      "lastUpdateDateTime": "2026-06-25T09:44:51.9Z",
+      "assignedTo": null,
+      "classification": null,
+      "determination": null,
+      "status": "active",
+      "severity": "high",
+      "tags": [
+        "ransomware"
+      ],
+      "comments": [],
+      "alerts": [
+        {
+          "id": "da637921100000000001_-1234567890",
+          "serviceSource": "microsoftDefenderForEndpoint",
+          "category": "Ransomware",
+          "title": "Ransomware behaviour detected in the file system",
+          "evidence": [
+            {
+              "@odata.type": "#microsoft.graph.security.deviceEvidence",
+              "deviceDnsName": "WKS-FIN-014.corp.example.com"
+            },
+            {
+              "@odata.type": "#microsoft.graph.security.processEvidence",
+              "imageFile": {
+                "fileName": "vssadmin.exe",
+                "filePath": "C:\\Windows\\System32",
+                "sha256": "9f2c4a1b7e6d5038c1a2b3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718"
+              },
+              "processCommandLine": "vssadmin.exe delete shadows /all /quiet"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

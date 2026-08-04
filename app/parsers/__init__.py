@@ -3,12 +3,14 @@
 """Log parsers. Each module exposes `parse(content: str) -> Iterator[NormalizedEvent]`."""
 from __future__ import annotations
 
-from . import (aws_cloudtrail, azure_activity, cef, cisco_asa, cisco_ios,
-               crowdstrike_csv, crowdstrike_json, entra_signin, fortinet_fortigate,
-               gcp_audit, generic_json, generic_syslog, github_audit, gitlab_audit,
-               leef, linux_auditd, m365_audit, meraki, nutanix_files, nutanix_pc,
-               okta_system_log, paloalto_csv, paloalto_syslog, suricata_eve, sysmon,
-               web_access, windows_security, zeek_json, zeek_tsv)
+from . import (aws_cloudtrail, aws_guardduty, aws_securityhub, azure_activity, cef,
+               cisco_asa, cisco_ftd, cisco_ios, crowdstrike_csv, crowdstrike_json,
+               defender_xdr, entra_signin, fortinet_fortigate, gcp_audit, generic_json,
+               generic_syslog, github_audit, gitlab_audit, leef, linux_auditd,
+               m365_audit, meraki, netflow, nutanix_files, nutanix_pc,
+               okta_system_log, paloalto_csv, paloalto_syslog, qualys, rapid7,
+               suricata_eve, sysmon, tenable, web_access, windows_security,
+               zeek_json, zeek_tsv)
 
 # Format key -> parser module. Keys are also the values of the UI "format" dropdown.
 PARSERS = {
@@ -25,9 +27,17 @@ PARSERS = {
     "cef": cef,
     "leef": leef,
     "cisco_asa": cisco_asa,
+    "cisco_ftd": cisco_ftd,
     "zeek_tsv": zeek_tsv,
     "generic_syslog": generic_syslog,
     "aws_cloudtrail": aws_cloudtrail,
+    "aws_guardduty": aws_guardduty,
+    "aws_securityhub": aws_securityhub,
+    "defender_xdr": defender_xdr,
+    "netflow": netflow,
+    "qualys": qualys,
+    "tenable": tenable,
+    "rapid7": rapid7,
     "m365_audit": m365_audit,
     "okta_system_log": okta_system_log,
     "entra_signin": entra_signin,
@@ -56,10 +66,21 @@ FORMAT_LABELS = {
     "suricata_eve": "Suricata — EVE JSON",
     "cef": "CEF — Common Event Format (generic)",
     "leef": "LEEF — Log Event Extended Format (Tripwire Log Center / QRadar; generic)",
-    "cisco_asa": "Cisco ASA / Firepower (FTD) — syslog",
+    # ASA and FTD split by GRAMMAR, not by product: cisco_asa owns the Lina
+    # data-plane free text (%ASA-6-302013 …), cisco_ftd the unified security
+    # events (430001-430005) and the FMC/Snort SFIMS alert.
+    "cisco_asa": "Cisco ASA / FTD — Lina syslog",
+    "cisco_ftd": "Cisco Firepower Threat Defense — security events (430001-430005 / SFIMS)",
     "zeek_tsv": "Zeek (Bro) — TSV (conn / dns / http …)",
     "generic_syslog": "Generic syslog — RFC 3164 / 5424",
     "aws_cloudtrail": "AWS CloudTrail — JSON",
+    "aws_guardduty": "AWS GuardDuty — findings (JSON)",
+    "aws_securityhub": "AWS Security Hub — findings (ASFF JSON)",
+    "defender_xdr": "Microsoft Defender XDR — alerts / incidents (Graph)",
+    "netflow": "NetFlow v5/v9/IPFIX — decoded flows",
+    "qualys": "Qualys VMDR — Host List Detection (XML)",
+    "tenable": "Tenable Vulnerability Management — vulns export (JSON)",
+    "rapid7": "Rapid7 InsightVM — asset/finding/vulnerability (JSON)",
     "m365_audit": "Microsoft 365 — Unified Audit Log",
     "okta_system_log": "Okta — System Log",
     "entra_signin": "Microsoft Entra ID — sign-in logs",

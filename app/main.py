@@ -22,9 +22,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.concurrency import run_in_threadpool
 
-from . import (api, auth, cim, collectors, compliance, coverage, custom_parser, db,
-               ingest, killchain_runtime, navigator, notify, ot, saved, sourcehealth,
-               streaming, vault, workbench)
+from . import (api, auth, cim, collectors, compliance, contentpack, coverage,
+               custom_parser, db, ingest, ingest_actions, killchain_runtime, navigator,
+               notify, ot, saved, sourcehealth, streaming, vault, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -32,7 +32,7 @@ from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
 from .loql import LoqlError, run_query
 from .parsers import FORMAT_LABELS
-from .receivers import syslog
+from .receivers import netflow as netflow_receiver, syslog
 from .response import engine as response_engine
 from .response import revert as response_revert
 from .threatintel import feeds as ti_feeds, matcher as ti_matcher, runtime as ti_runtime
@@ -112,6 +112,28 @@ _cim_backfill: dict[str, Any] = {"state": "idle", "started_at": None,
 _cim_backfill_task: Optional[asyncio.Task] = None
 
 
+# The running NetFlow receiver, so /health can report its counters. Same
+# singleton shape as `streaming.get_queue()` / `set_queue()`, and it exists for a
+# specific reason: `unknown_drops` climbing without bound is the signature of an
+# exporter whose periodic template refresh never reaches us (or an exporter/domain key
+# mismatch), and `evicted` climbing is the signature of a source cycling template ids.
+# `redefined` is the third: a template id whose SHAPE changed under a live exporter,
+# which is what a spoofed Options Template Set looks like when it blackholes that
+# exporter's flows (they route to `options_skipped`, which reads as healthy) or what a
+# transposed field list looks like when it silently swaps src and dst on every flow.
+# None of the three is visible anywhere else — the flows are simply not there, or wrong.
+_flow_receiver: Any = None
+
+
+def get_flow_receiver():
+    return _flow_receiver
+
+
+def set_flow_receiver(r) -> None:
+    global _flow_receiver
+    _flow_receiver = r
+
+
 def _require_cim_registry() -> None:
     """Parse + validate app/cim/models.yaml, and REFUSE TO BOOT if it will not load.
 
@@ -187,6 +209,14 @@ def _init_cim() -> None:
 async def lifespan(app: FastAPI):
     _require_cim_registry()                    # FIRST: a bad models.yaml never serves
     db.init_schema()
+    # The registry is compiled and cached on the first call, which `_require_cim_registry`
+    # just made — BEFORE `init_schema`, so the content-pack CIM overlay ran against a
+    # database with no `content_packs` table and correctly found nothing. Re-load now
+    # that the table exists, or a pack's membership clauses would never take effect and
+    # the restart the operator was told to perform would change nothing. Cheap (one YAML
+    # parse) and single-threaded here, before any worker can race it.
+    cim.registry.reload()
+    compliance.apply_pack_overlay()            # pack compliance controls -> the MAP
     _init_cim()                                # CIM model views (needs events.cim_models)
     if settings.auth_enabled and db.count_users() == 0:
         pw = settings.admin_password or secrets.token_urlsafe(12)
@@ -198,6 +228,11 @@ async def lifespan(app: FastAPI):
         db.purge_older_than(settings.retention_years)
     custom_parser.reload()                     # console-authored field maps
     triage_runtime.reload_index()              # load suppression/allowlist rules
+    # Ingest actions (drop / mask / route / sample). Never raises: a rule file that will
+    # not load is collected into ActionIndex.load_errors, logged, and surfaced on /health
+    # — which matters more here than anywhere else, because a rule that DROPS events
+    # leaves no row behind to notice.
+    ingest_actions.reload_index(settings.ingest_actions_dir)
     correlator = None
     if settings.detection_enabled:
         detection_runtime.load_and_sync(BASE.parent / "rules")
@@ -271,6 +306,17 @@ async def lifespan(app: FastAPI):
     receiver = syslog.SyslogReceiver(queue) if settings.syslog_enabled else None
     if receiver is not None:
         await receiver.start()
+    # NetFlow v5/v9/IPFIX. Same shape as the syslog receiver: an asyncio datagram
+    # protocol that submits to the shared IngestQueue, never to the database directly.
+    # Host/ports are constructor args rather than settings reads, so the lifespan is
+    # the only place configuration touches it.
+    flow_receiver = netflow_receiver.NetflowReceiver(
+        queue, settings.netflow_host, settings.netflow_udp_port,
+        settings.netflow_tcp_port, settings.netflow_max_templates,
+    ) if settings.netflow_enabled else None
+    if flow_receiver is not None:
+        await flow_receiver.start()
+        set_flow_receiver(flow_receiver)
     if correlator is not None:
         await correlator.start()
     if revert_sched is not None:
@@ -320,6 +366,9 @@ async def lifespan(app: FastAPI):
             response_revert.set_scheduler(None)
         if receiver is not None:
             await receiver.stop()
+        if flow_receiver is not None:
+            await flow_receiver.stop()
+            set_flow_receiver(None)
         await queue.stop()
         streaming.set_queue(None)
         if dispatcher is not None:
@@ -332,6 +381,10 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="LogOcean", lifespan=lifespan)
 app.include_router(api.router)  # POST /api/v1/ingest (HTTP live ingestion)
+# The Splunk HEC wire shim: POST /services/collector/*. Mounted on the APP, not nested
+# under api.router — its paths are absolute, and api.router carries prefix="/api/v1",
+# which would relocate them to /api/v1/services/collector where no HEC sender looks.
+app.include_router(api.hec_router)
 app.mount("/static", StaticFiles(directory=BASE / "static"), name="static")
 templates = Jinja2Templates(directory=BASE / "templates")
 templates.env.filters["ist"] = fmt_ist          # render stored-UTC datetimes in IST
@@ -380,13 +433,19 @@ async def auth_guard(request: Request, call_next):
     blocked = None
     if settings.auth_enabled:
         path = request.url.path
-        exempt = path in _AUTH_EXEMPT or path.startswith(("/static", "/api/"))
+        # /services/collector/* is the HEC shim. It authenticates itself with
+        # `Authorization: Splunk <key>` -> db.verify_api_key, exactly as /api/ does with
+        # its own key, so what is bypassed here is only the session-cookie redirect —
+        # without it every HEC POST 303s to /login and the sender reads an opaque failure.
+        exempt = path in _AUTH_EXEMPT or path.startswith(
+            ("/static", "/api/", "/services/collector"))
         token = request.cookies.get("session")
         if token:
             request.state.user = await run_in_threadpool(db.get_session_user, token)
         if not exempt and request.state.user is None:
             blocked = RedirectResponse(url="/login", status_code=303)
-        elif request.method in _UNSAFE_METHODS and not path.startswith("/api/") and \
+        elif request.method in _UNSAFE_METHODS and \
+                not path.startswith(("/api/", "/services/collector")) and \
                 not _csrf_same_origin(request.headers.get("host", ""),
                                       request.headers.get("origin"),
                                       request.headers.get("referer")):
@@ -536,11 +595,30 @@ def health():
     rv = response_revert.get_scheduler()
     cs = collectors.get_scheduler()
     sh = sourcehealth.get_scheduler()
+    fr = get_flow_receiver()
     cim_block, degraded = _cim_health()
     degraded = _ingest_degraded(q) + degraded
+    actions = ingest_actions.stats()
+    # A rule that will not load and a rule that is deleting events are the two things an
+    # operator cannot discover any other way — a dropped event leaves no row behind — so
+    # both are promoted to `degraded` rather than sitting in a sub-block nobody reads.
+    #
+    # The message says "not filtering anything" rather than "the rule was REJECTED",
+    # because `load_errors` now also carries a configured-but-absent rules directory.
+    # That case matters most for a mask: `ingest_actions_dir` defaults to the RELATIVE
+    # "ingest_actions", resolved against the process CWD, so a rule verified on a laptop
+    # at the repo root loads nothing under a systemd unit with a different
+    # WorkingDirectory — and it used to do so with an EMPTY load_errors, i.e. a PII
+    # feed running unredacted while every check the docs prescribe still said ok.
+    if actions.get("load_errors"):
+        degraded = degraded + [
+            "ingest_actions: " + "; ".join(actions["load_errors"][:3]) +
+            " — that rule is NOT filtering anything"]
     return {"status": "degraded" if degraded else "ok",
             "degraded": degraded or None,
             "ingest_queue": q.stats.as_dict() if q else None,
+            "netflow": fr.status() if fr else None,
+            "ingest_actions": actions,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
             "reverts": rv.stats() if rv else None,
@@ -1705,6 +1783,131 @@ def admin_toggle_user(request: Request, user_id: int, enabled: str = Form(...),
         db.set_user_enabled(user_id, on)
         _audit(request, "user.toggle", f"user {user_id} -> {'enabled' if on else 'disabled'}")
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Content packs (import / export / uninstall)                                 #
+# --------------------------------------------------------------------------- #
+# These are the WRITE routes, and they live on the console rather than on /api/v1
+# deliberately: an `api_keys` row carries no role, so a key issued to a log forwarder
+# for POST /ingest would otherwise also be able to install detection rules and parsers.
+# /api/v1 keeps the side-effect-free half (validate / plan / list / export) so CI can
+# diff a pack without a session.
+
+def _app_version() -> str:
+    """The running LogOcean version, for a pack's `requires: {logocean: ">=x.y"}`."""
+    from . import __version__
+    return __version__
+
+
+def _pack_key() -> str:
+    """The HMAC signing key, resolved through the vault like a collector credential."""
+    return vault.get("contentpack", "key", settings.content_pack_key)
+
+
+def _installed_pack_rows() -> list[dict]:
+    """Installed packs for the table, each with its signature verdict."""
+    key = _pack_key()
+    rows = []
+    for row in db.list_content_packs():
+        sig = None
+        try:
+            pack = contentpack.parse(str(row["document"]))
+            if pack.signature is None:
+                sig = "unsigned"
+            elif key:
+                sig = "valid" if contentpack.verify(pack, key) else "invalid"
+        except Exception:  # noqa: BLE001 — a stored row must never break the page
+            sig = None
+        rows.append(dict(row, signature=sig))
+    return rows
+
+
+def _plan_ctx(plan) -> dict:
+    """An ImportPlan flattened for the template (Jinja gets data, not objects)."""
+    return {"pack": plan.pack.name, "version": plan.pack.version,
+            "summary": plan.summary(), "applicable": plan.applicable,
+            "restart_required": plan.restart_required,
+            "problems": list(plan.problems),
+            "conflicts": [c.describe() for c in plan.conflicts],
+            "changes": [{"kind": c.kind, "ident": c.ident, "verb": c.verb,
+                         "detail": c.detail, "owner": c.owner} for c in plan.changes]}
+
+
+@app.get("/packs", response_class=HTMLResponse)
+def packs_page(request: Request, _user=Depends(require_role("admin"))):
+    return templates.TemplateResponse(request, "packs.html", _ctx(
+        request, packs=_installed_pack_rows()))
+
+
+@app.post("/packs/plan", response_class=HTMLResponse)
+def packs_plan(request: Request, document: str = Form(...),
+               _user=Depends(require_role("admin"))):
+    """Dry run. Reads the DB to work out ownership; writes nothing."""
+    plan = error = None
+    try:
+        plan = _plan_ctx(contentpack.install(document, dry_run=True,
+                                             app_version=_app_version()))
+    except contentpack.PackError as exc:
+        error = str(exc)
+    return templates.TemplateResponse(request, "packs.html", _ctx(
+        request, packs=_installed_pack_rows(), plan=plan, error=error,
+        document=document))
+
+
+@app.post("/packs/import", response_class=HTMLResponse)
+def packs_import(request: Request, document: str = Form(...),
+                 overwrite: str = Form(""), _user=Depends(require_role("admin"))):
+    message = error = None
+    plan = None
+    try:
+        result = contentpack.install(document, overwrite=bool(overwrite), dry_run=False,
+                                     app_version=_app_version(),
+                                     installed_by=_owner(request))
+    except contentpack.PackError as exc:
+        error = str(exc)
+    else:
+        if isinstance(result, contentpack.ImportPlan):
+            # `install` hands back the PLAN rather than applying when the pack has
+            # problems or unresolved conflicts — show exactly why instead of a bare
+            # "failed", which is the difference between a fixable and a mysterious error.
+            plan = _plan_ctx(result)
+            error = "Not imported. Resolve the problems below, or tick overwrite."
+        else:
+            _audit(request, "content_pack.import",
+                   f"{result.pack.key} digest={contentpack.digest(result.pack)}")
+            # Parsers and rules are hot-reloadable; CIM membership and compliance are
+            # process-cached and honestly reported as needing a restart instead.
+            custom_parser.reload()
+            if settings.detection_enabled:
+                detection_runtime.load_and_sync(BASE.parent / "rules")
+            message = (f"Imported {result.pack.key}: "
+                       + "; ".join(c.describe() for c in result.applied))
+            if result.restart_required:
+                message += (" — RESTART REQUIRED for the CIM/compliance half, then run "
+                            "the membership backfill from Admin, in that order.")
+    return templates.TemplateResponse(request, "packs.html", _ctx(
+        request, packs=_installed_pack_rows(), plan=plan, message=message, error=error,
+        document=document))
+
+
+@app.post("/packs/uninstall", response_class=HTMLResponse)
+def packs_uninstall(request: Request, name: str = Form(...),
+                    _user=Depends(require_role("admin"))):
+    message = error = None
+    try:
+        result = contentpack.uninstall(name, dry_run=False)
+    except contentpack.PackError as exc:
+        error = str(exc)
+    else:
+        _audit(request, "content_pack.uninstall", name)
+        custom_parser.reload()
+        if settings.detection_enabled:
+            detection_runtime.load_and_sync(BASE.parent / "rules")
+        removed = "; ".join(c.describe() for c in getattr(result, "applied", ()))
+        message = f"Uninstalled {name}" + (f": {removed}" if removed else "")
+    return templates.TemplateResponse(request, "packs.html", _ctx(
+        request, packs=_installed_pack_rows(), message=message, error=error))
 
 
 # --------------------------------------------------------------------------- #

@@ -361,12 +361,37 @@ def get_registry() -> CimRegistry:
                 raise _replay(err)
             _failure = None                 # the window elapsed — try the file again
         try:
-            _cache = load()
+            _cache = _with_packs(load())
         except Exception as exc:            # noqa: BLE001 — remembered, then re-raised
             _failure = (exc, time.monotonic() + _FAILURE_TTL_SECONDS)
             raise
         _failure = None
         return _cache
+
+
+def _with_packs(reg: CimRegistry) -> CimRegistry:
+    """``reg`` plus the CIM additions of every installed content pack.
+
+    A pack may ADD membership clauses and fields to a model models.yaml already
+    defines; it may never define a model, because a model tag is what detections and
+    LOQL bind to. The overlay never raises and never removes — a stale pack costs that
+    pack's membership, not the registry — so a failure here degrades to the shipped
+    file rather than taking CIM down with it.
+
+    Two things make this safe to call from inside ``_lock``:
+      * the import is LAZY, because ``app.contentpack`` imports this module; and
+      * ``overlay_registry`` threads `known_models` down from the registry handed to
+        it, so nothing under this call re-enters :func:`get_registry`. It used to,
+        via ``parse`` -> ``_registry_model_names``, and since ``_lock`` is a plain
+        ``threading.Lock`` that was a hard hang on the first startup after any pack
+        was installed — silent, because a lock that never releases raises nothing.
+
+    Because the registry is compiled once per process and cached, a pack's membership
+    takes effect on the NEXT START, and then needs ``db.backfill_cim()`` — in that
+    order (see the ordering note at the top of models.yaml).
+    """
+    from .. import contentpack             # lazy: contentpack imports this module
+    return contentpack.overlay_registry(reg)
 
 
 # Backwards/ergonomic alias — callers holding the module use ``registry.registry()``.
@@ -392,7 +417,7 @@ def reload() -> CimRegistry:
         _cache = None
         _failure = None
         try:
-            _cache = load()
+            _cache = _with_packs(load())
         except Exception as exc:            # noqa: BLE001 — remembered, then re-raised
             _failure = (exc, time.monotonic() + _FAILURE_TTL_SECONDS)
             raise

@@ -35,7 +35,7 @@ from .normalize import dedup_hash, tsv_text
 from .ot import OT_PROTOCOLS
 from .risk import ENTITY_COLUMN, weight_case_sql
 from .severity import max_severity
-from .util import hash_api_key, to_port
+from .util import hash_api_key, to_int, to_port
 
 log = logging.getLogger("logocean")
 
@@ -310,7 +310,13 @@ def _row(evt: NormalizedEvent, batch_id: int,
         "src_port": to_port(evt.src_port), "dst_port": to_port(evt.dst_port),
         "protocol": evt.protocol, "app": evt.app,
         "user_name": evt.user_name, "host_name": evt.host_name, "rule_name": evt.rule_name,
-        "bytes_total": evt.bytes_total, "message": evt.message,
+        # bounded to the `bigint` column for the same reason as the ports above, and
+        # it is a real backstop rather than belt-and-braces: a parser that SUMS two
+        # already-bounded fields (netflow's bytes + out_bytes, FTD's Initiator +
+        # Responder) can produce an out-of-range total from in-range inputs. That
+        # raises inside `executemany`, and on the live queue path the exception costs
+        # the entire buffered group, not just the offending row.
+        "bytes_total": to_int(evt.bytes_total), "message": evt.message,
         "raw": Jsonb(evt.raw), "tsv": tsv_text(evt),
         # CIM membership is derived here, in Python, on the same footing as the
         # full-text vector one line up: `search_tsv` <- tsv_text(evt) and
@@ -2193,6 +2199,72 @@ def delete_custom_rule(rule_id: str) -> None:
     with pool().connection() as conn:
         conn.execute("DELETE FROM custom_rules WHERE rule_id = %s", (rule_id,))
         conn.execute("DELETE FROM detection_rules WHERE rule_id = %s", (rule_id,))
+        conn.commit()
+
+
+# ------------------------------------------------------------ content packs
+def list_content_packs() -> list[dict]:
+    """Every installed pack, oldest first. The `document` column is the pack itself."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT name, version, format, digest, document, signed_by, installed_at, "
+            "installed_by FROM content_packs ORDER BY installed_at").fetchall()
+
+
+def apply_content_pack(*, pack_name: str, version: str, document: str, digest: str,
+                       parsers: list[dict], rules: list[dict],
+                       removed_parsers: list[str], removed_rules: list[str],
+                       remove_pack: str = "", installed_by: str = "") -> None:
+    """Apply one already-validated content-pack plan in ONE transaction.
+
+    `contentpack.DbWriter` buffers the whole staged change set and calls this exactly
+    once, so a pack can never land half-installed: either every parser, rule and
+    removal commits together with the pack row, or none of it does. Passing an empty
+    `document` with a `remove_pack` name is the uninstall shape.
+
+    The dicts in `parsers` / `rules` carry exactly the column names below — they are
+    built by the pack writer from the same fields `upsert_custom_parser` /
+    `upsert_custom_rule` take, so nothing is re-derived here.
+    """
+    import json as _json
+    with pool().connection() as conn:
+        for p in parsers:
+            conn.execute(
+                "INSERT INTO custom_parsers (parser_id, title, match_key, match_value, "
+                "field_map, vendor, product, enabled, kv_source, kv_sep) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (parser_id) DO UPDATE SET title = EXCLUDED.title, "
+                "match_key = EXCLUDED.match_key, match_value = EXCLUDED.match_value, "
+                "field_map = EXCLUDED.field_map, vendor = EXCLUDED.vendor, "
+                "product = EXCLUDED.product, enabled = EXCLUDED.enabled, "
+                "kv_source = EXCLUDED.kv_source, kv_sep = EXCLUDED.kv_sep",
+                (p["parser_id"], p["title"], p["match_key"], p["match_value"],
+                 _json.dumps(p["field_map"]), p["vendor"], p["product"], p["enabled"],
+                 p["kv_source"], p["kv_sep"]))
+        for r in rules:
+            conn.execute(
+                "INSERT INTO custom_rules (rule_id, title, yaml_text, enabled) "
+                "VALUES (%s,%s,%s,%s) ON CONFLICT (rule_id) DO UPDATE SET "
+                "title = EXCLUDED.title, yaml_text = EXCLUDED.yaml_text, "
+                "enabled = EXCLUDED.enabled",
+                (r["rule_id"], r["title"], r["yaml_text"], r["enabled"]))
+        for pid in removed_parsers:
+            conn.execute("DELETE FROM custom_parsers WHERE parser_id = %s", (pid,))
+        for rid in removed_rules:
+            # Same pair `delete_custom_rule` does: the compiled row must go too, or the
+            # rule keeps firing from detection_rules after the pack removed it.
+            conn.execute("DELETE FROM custom_rules WHERE rule_id = %s", (rid,))
+            conn.execute("DELETE FROM detection_rules WHERE rule_id = %s", (rid,))
+        if remove_pack:
+            conn.execute("DELETE FROM content_packs WHERE name = %s", (remove_pack,))
+        elif document:
+            conn.execute(
+                "INSERT INTO content_packs (name, version, digest, document, installed_by) "
+                "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (name) DO UPDATE SET "
+                "version = EXCLUDED.version, digest = EXCLUDED.digest, "
+                "document = EXCLUDED.document, installed_at = now(), "
+                "installed_by = EXCLUDED.installed_by",
+                (pack_name, version, digest, document, installed_by or None))
         conn.commit()
 
 

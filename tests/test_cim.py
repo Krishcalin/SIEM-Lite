@@ -872,12 +872,42 @@ def test_an_ot_event_is_both_network_and_industrial():
 # a source therefore names the source.
 _GOLDEN: dict[str, tuple[tuple[str, ...], int]] = {
     "aws_cloudtrail.json":        (("authentication", "change"), 0),
+    "aws_guardduty.json":         (("ids",), 0),
+    # The three ASFF log_types fan out to three models: Compliance.Status -> config
+    # -> Change, a non-empty Vulnerabilities[] -> vulnerability -> Vulnerability,
+    # everything else -> threat -> IDS.
+    "aws_securityhub.json":       (("change", "ids", "vulnerability"), 0),
     "azure_activity.json":        (("change",), 0),
     "cef.log":                    (("ids", "network", "web"), 0),
     "cisco_asa.log":              (("authentication", "network"), 0),
+    # FTD carries the EVENT CLASS in log_type (connection / intrusion / file-transfer
+    # / malware), which is what lets the generic clauses reach several models; every
+    # event is also a Network member through {vendor: cisco, product: firepower}.
+    # NOT an Endpoint member: 430004 used to spell its log_type `file`, the bare token
+    # the Endpoint clause carries for a FIM source's ECS event.category, so an inline
+    # NETWORK file-transfer observation joined a model described as "host telemetry
+    # from EDR/Sysmon/auditd/FIM" — with `dvc` set to the firewall and every process
+    # and registry field null. It also split the two file-policy events arbitrarily,
+    # 430004 in Endpoint and its sibling 430005 not. `file-transfer` ends both.
+    "cisco_ftd.log":              (("ids", "malware", "network"), 0),
     "cisco_ios.log":              (("authentication", "network"), 0),
+    # Cortex Data Lake records reshaped into a PAN CSV export, so they ride
+    # paloalto_csv and land exactly where PAN-OS logs land.
+    "cortex_prisma_access.csv":   (("ids", "malware", "network", "web"), 0),
     "crowdstrike_detections.csv": (("endpoint", "malware"), 0),
     "crowdstrike_events.json":    (("endpoint", "malware"), 0),
+    # Defender XDR routes on serviceSource: endpoint/xdr -> Endpoint, identity ->
+    # Authentication, email -> Email (the alert that finally populates that model),
+    # and the Ransomware-category endpoint alert is additionally a Malware member.
+    # The 1 untagged is the INCIDENT record, and it is deliberate rather than a gap.
+    # An incident is a correlation object, not telemetry; with $expand=alerts on, the
+    # parser emits each nested alert as its own event, which lands in Endpoint/Malware
+    # on its own merits — so no evidence is lost by leaving the wrapper untagged. The
+    # sample carries an expanded incident specifically so this is MEASURED here: the
+    # corpus previously held only alerts, i.e. it could not see the default output of
+    # the shipped `defender_incidents` collector at all.
+    "defender_xdr.json":          (("authentication", "email", "endpoint",
+                                    "malware"), 1),
     "entra_signin.json":          (("authentication",), 0),
     "fortinet_fortigate.log":     (("authentication", "ids", "network"), 0),
     "gcp_audit.json":             (("change",), 0),
@@ -895,13 +925,19 @@ _GOLDEN: dict[str, tuple[tuple[str, ...], int]] = {
     "linux_auditd.log":           (("authentication", "endpoint"), 0),
     "m365_audit.json":            (("authentication", "change"), 0),
     "meraki.log":                 (("ids", "network", "web"), 0),
+    # A saved decode from the NetFlow/IPFIX receiver, re-uploaded — the path the
+    # detect.py "netflow" rule exists for (the live receiver names its format).
+    "netflow.json":               (("network",), 0),
     "nutanix_files.log":          (("endpoint",), 0),
     "nutanix_pc.log":             (("change", "network"), 0),
     "okta_system_log.json":       (("authentication",), 0),
     "paloalto_syslog.log":        (("change", "ids", "network"), 0),
     "paloalto_traffic.csv":       (("ids", "network"), 0),
+    "qualys_detection.xml":       (("vulnerability",), 0),
+    "rapid7_insightvm.json":      (("vulnerability",), 0),
     "suricata_eve.json":          (("dns", "ids", "web"), 0),
     "sysmon.json":                (("dns", "endpoint"), 0),
+    "tenable_vulns.json":         (("vulnerability",), 0),
     "web_access.log":             (("web",), 0),
     "windows_security.csv":       (("endpoint",), 0),
     "windows_security.json":      (("authentication",), 0),
@@ -913,16 +949,20 @@ _GOLDEN: dict[str, tuple[tuple[str, ...], int]] = {
     "zeek_s7comm.log":            (("ics", "network"), 0),
 }
 
-# Members per model over the corpus. `email` and `vulnerability` are EMPTY BY DESIGN —
-# no shipped parser emits mail or scanner telemetry — so "every view returns rows" would
-# be the wrong assertion and these two are pinned at 0 on purpose.
-_MEMBERS = {"authentication": 15, "network": 32, "web": 6, "dns": 4, "endpoint": 19,
-            "change": 17, "malware": 5, "ids": 6, "ics": 11, "email": 0,
-            "vulnerability": 0}
+# Members per model over the corpus. As of the Phase-2 onboarding wave EVERY model has
+# members: `vulnerability` went 0 -> 10 (Qualys / Tenable / Rapid7 / AWS Inspector via
+# Security Hub) and `email` 0 -> 1 (the Defender for Office 365 alert), so the two
+# "EMPTY BY DESIGN" pins are gone and `test_every_model_has_at_least_one_member` below
+# is now a real assertion rather than an aspiration.
+_MEMBERS = {"authentication": 16, "network": 44, "web": 7, "dns": 4, "endpoint": 22,
+            "change": 18, "malware": 9, "ids": 14, "ics": 11, "email": 1,
+            "vulnerability": 10}
 
-_CORPUS_EVENTS = 97
-_CORPUS_UNTAGGED = 3
-# It was 29/97 (30%) before the Backbone #2 registry work and is 3/97 (3.1%) now. The
+_CORPUS_EVENTS = 133
+_CORPUS_UNTAGGED = 4
+# It was 29/97 (30%) before the Backbone #2 registry work, 3/97 (3.1%) after it, and is
+# 4/133 (3.0%) now. The 4th is the Defender incident wrapper added to close a corpus
+# blind spot — a shipped collector whose default output no measurement could see. The
 # threshold is the ceiling a regression may not cross, not the achievement.
 _MAX_UNTAGGED_FRACTION = 0.05
 
@@ -974,6 +1014,20 @@ def test_at_least_eight_models_are_populated_by_existing_parsers():
     existing parsers" (docs/SPLUNK_TRANSFORMATION_ROADMAP.md)."""
     populated = {t for _, _, tags in corpus_tags() for t in tags}
     assert len(populated) >= 8, sorted(populated)
+
+
+def test_every_shipped_model_has_at_least_one_corpus_member():
+    """The Phase-2 exit criterion, and stronger than the reachability test above.
+
+    `test_every_shipped_model_is_reachable` proves a model can be matched by a
+    HAND-BUILT event; this proves a REAL parser, over a real vendor document, emits
+    one. Email and Vulnerability were pinned at 0 until the Defender XDR and
+    Qualys/Tenable/Rapid7/Security-Hub sources onboarded — a model with no member is
+    a schema nobody has ever filled, which is exactly what CIM Backbone #2 exists to
+    prevent, so it is asserted rather than left to the per-model counts.
+    """
+    populated = {t for _, _, tags in corpus_tags() for t in tags}
+    assert sorted(populated) == sorted(REGISTRY.tags)
 
 
 def test_the_untagged_fraction_stays_under_the_threshold():
@@ -1054,8 +1108,82 @@ def test_ot_protocol_logs_reach_both_network_and_industrial(name):
 
 def test_no_flow_record_lands_in_email():
     """The deleted `{app: [smtp, smtps, submission]}` clause filled Email with firewall
-    flows whose sender/recipient/subject were all null. Email is honestly empty instead."""
-    assert not [name for name, _, tags in corpus_tags() if "email" in tags]
+    flows whose sender/recipient/subject were all null.
+
+    Email USED to be asserted empty, because an empty model was the only way to state
+    "no flow record is in here". It has real members now (Defender for Office 365), so
+    the assertion is the guarantee itself rather than its proxy: every member must
+    carry mail semantics. A firewall flow has no subject, sender or recipient by
+    construction, so re-adding an `app:`-style clause fails this immediately.
+    """
+    members = [(name, e) for name, e, tags in corpus_tags() if "email" in tags]
+    assert members, "Email has no members; it is supposed to be populated"
+    for name, e in members:
+        mail = [e.raw.get(k) for k in ("subject", "sender", "from",
+                                       "recipient", "to")]
+        assert any(v for v in mail), (name, e.vendor, e.log_type, sorted(e.raw))
+
+
+def _project(model, e):
+    """Resolve every declared field of `model` over `e`, the way the SQL view does."""
+    out = {}
+    for f in model.fields:
+        s, v = f.source, None
+        if s.kind == "column":
+            v = getattr(e, s.name, None)
+        elif s.kind == "raw":
+            for path in s.paths:
+                cur = e.raw
+                for seg in path:
+                    cur = cur.get(seg) if isinstance(cur, dict) else None
+                    if cur is None:
+                        break
+                if cur is not None:
+                    v = cur
+                    break
+        elif s.kind == "const":
+            v = s.name
+        elif s.kind == "expr":
+            v = f"{e.vendor}:{e.product}"
+        out[f.name] = v
+    return out
+
+
+def test_the_vulnerability_model_projects_real_values_from_the_scanner_corpus():
+    """Honesty rule 4 on the model that was empty until Phase 2.
+
+    Every declared field must be provided by SOME member — a mapping no member can
+    fill is null-by-construction and models.yaml deletes it rather than shipping it.
+    `user` was deleted for exactly that reason (a scanner finding has no acting
+    account) and `cvss` was added for the opposite one, so both directions are pinned
+    here: without this, dropping the `cvss` mapping breaks no test at all.
+    """
+    model = REGISTRY.by_name("vulnerability")
+    members = [e for _, e, tags in corpus_tags() if "vulnerability" in tags]
+    assert len(members) >= 10, len(members)
+    filled = {k for e in members for k, v in _project(model, e).items()
+              if v not in (None, "")}
+    declared = {f.name for f in model.fields}
+    assert declared - filled == set(), sorted(declared - filled)
+    assert "cvss" in filled and "cve" in filled
+    # The deleted mapping stays deleted: no member could ever fill it.
+    assert "user" not in declared
+    assert not any(e.user_name for e in members)
+
+
+def test_the_email_model_projects_real_values_for_the_defender_member():
+    """The Email model went from zero members to one; prove it is not a null row.
+
+    A member whose subject/recipient/sender are all null would satisfy the membership
+    test above while leaving the model exactly as useless as it was when empty.
+    """
+    model = REGISTRY.by_name("email")
+    members = [e for _, e, tags in corpus_tags() if "email" in tags]
+    assert members
+    filled = {k for e in members for k, v in _project(model, e).items()
+              if v not in (None, "")}
+    assert {"subject", "recipient", "src_user", "action", "signature"} <= filled, \
+        sorted(filled)
 
 
 def test_zeek_dotted_keys_survive_the_whole_pipeline():

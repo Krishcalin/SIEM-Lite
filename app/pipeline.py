@@ -15,7 +15,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Iterator, NamedTuple, Optional
 
-from . import alert_actions, db, risk
+from . import alert_actions, db, ingest_actions, risk
 from . import custom_parser
 from .cim import match as cim_match
 from .config import settings
@@ -32,6 +32,7 @@ log = logging.getLogger("logocean")
 class WriteResult(NamedTuple):
     total: int                 # events seen (inserted-or-deduped)
     alerts: list               # newly-raised alerts (empty unless notifications active)
+    dropped: int = 0           # events REMOVED by an ingest action (never stored)
 
 # Rows per INSERT batch. One executemany per chunk keeps memory flat on big files.
 CHUNK = 5000
@@ -134,6 +135,7 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     tags_to_db = _accepts(db.insert_events, "cim_tags")
     tags_to_engine = engine is not None and _accepts(engine.evaluate_event, "tags")
     total = 0
+    dropped = 0                # removed by an ingest action; counted, never stored
     chunk: list[NormalizedEvent] = []
     chunk_tags: list[Optional[frozenset[str]]] = []   # index-aligned with `chunk`
     pending: list[dict] = []
@@ -167,13 +169,32 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     for evt in events:
         total += 1
         apply_fallback_time(evt, fb)
+        # `custom_parser.apply` is HOISTED above the ingest-action seam, and the hoist
+        # is load-bearing rather than cosmetic: it fills any normalized column that is
+        # None or "" out of `raw`, so a mask that NULLs src_ip / a port / a byte count
+        # would be silently refilled if it still ran afterwards. (Text masks write a
+        # non-empty placeholder and survive either order; typed masks do not.) It keeps
+        # its own try so it retains the fail-open property it would lose by leaving the
+        # block below — it mutates `evt` in place, so nothing about storage changes.
+        try:
+            custom_parser.apply(evt)   # console-authored field maps fill empty columns
+        except Exception:  # noqa: BLE001
+            log.warning("custom parser failed for an event", exc_info=True)
+        # Ingest actions: data-not-code drop / mask / route / sample. Deliberately
+        # placed BEFORE `cim_match.tags_for` (so a mask CHANGES membership instead of
+        # disagreeing with it) and before detection / threat-intel (so a dropped event
+        # raises no alerts and feeds no UEBA baseline). Never raises — see
+        # app/ingest_actions.py's fail-open policy — so it needs no try of its own.
+        verdict = ingest_actions.apply(evt)
+        if verdict.dropped:
+            dropped += 1
+            continue                   # never appended, never inserted, never alerted
         chunk.append(evt)
         dh: Optional[str] = None               # event identity, computed once if needed
         tags: Optional[frozenset[str]] = None  # CIM membership, resolved once if wanted
         # Detection / threat-intel must never abort the batch: on any unexpected
         # error the event is still stored (already in `chunk`), just un-alerted.
         try:
-            custom_parser.apply(evt)   # console-authored field maps fill empty columns
             if tags_to_db:
                 # AFTER `custom_parser.apply`, which fills empty columns and so can
                 # change membership — the same point in the event's life at which
@@ -214,4 +235,5 @@ def write_stream(conn, events: Iterable[NormalizedEvent], batch_id: int,
     if chunk or pending:
         flush()
     # Suppressed alerts are stored for audit but never notified / actioned.
-    return WriteResult(total, [a for a in new_alerts if a.get("status") != "suppressed"])
+    return WriteResult(total, [a for a in new_alerts if a.get("status") != "suppressed"],
+                       dropped)

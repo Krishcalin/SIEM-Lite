@@ -62,9 +62,13 @@
 #       the PAN and FortiGate clauses read the real TYPE out of raw.
 #    4. On a POPULATED model, a field mapping no member source can ever provide
 #       is deleted rather than shipped null-by-construction; a mapping kept for
-#       an unsampled-but-real parser path says so in a comment. Email and
-#       Vulnerability have no members at all — their fields are the schema those
-#       models will project once a source onboards, and they say so.
+#       an unsampled-but-real parser path says so in a comment.
+#
+#  As of Phase 2 EVERY model in this file has corpus members — Email through the
+#  Defender for Office 365 alert in samples/defender_xdr.json, and Vulnerability
+#  through the Qualys / Tenable / Rapid7 / AWS-Inspector-via-Security-Hub scanner
+#  samples. Nothing here is "empty by design" any more, so rule 4 now applies to
+#  all eleven models without exception.
 # ============================================================================
 version: 1
 
@@ -101,6 +105,12 @@ models:
         product: [fortigate]
         action: [login, logout]
         fgt_type: {raw: [type], values: [event]}
+      # Defender for Identity / AAD Identity Protection. defender_xdr.py puts the
+      # PROVIDER (serviceSource) in log_type, because that is the only handle a
+      # membership term can test; `identity` is the provider whose detections —
+      # Golden Ticket, pass-the-hash, AS-REP roasting, risky sign-in — are all
+      # credential-validation findings.
+      - {vendor: [microsoft], product: [defender], log_type: [identity]}
       - {vendor: [cisco], product: [ios], log_type: [sec_login]}    # %SEC_LOGIN-4-LOGIN_FAILED
       # ASA log_type is the numeric message id: 605005 login permitted (measured),
       # 611101/611102 user auth ok/fail, 113004/113005 AAA ok/fail.
@@ -218,6 +228,23 @@ models:
     membership:
       - {vendor: [microsoft], product: [sysmon]}                   # all Sysmon
       - {vendor: [crowdstrike], product: [falcon]}                 # all Falcon
+      # Microsoft Defender XDR. defender_xdr.py puts the PROVIDER in log_type
+      # (serviceSource): `endpoint` is Defender for Endpoint and `xdr` is Microsoft
+      # 365 Defender's own correlated alerts. Identity / email / cloud-apps
+      # providers are excluded on purpose — they are Authentication and Email
+      # members, not host telemetry.
+      #
+      # `incident` is excluded UNCONDITIONALLY, and the reason does not depend on
+      # DEFENDER_EXPAND_ALERTS. An incident is a correlation object over alerts, not
+      # telemetry: with expansion OFF it carries no evidence at all, and with it ON
+      # the parser emits each nested alert as its OWN event, which lands in Endpoint /
+      # Malware / Authentication on its own merits. So the evidence is never lost by
+      # leaving the incident itself untagged — it arrives under the alert that
+      # actually observed it, with `dvc` and the process fields populated.
+      # MEASURED, not assumed: samples/defender_xdr.json carries an expanded incident
+      # precisely so the corpus can see this shape (it previously held only alerts,
+      # so the whole default output of a shipped collector was outside the corpus).
+      - {vendor: [microsoft], product: [defender], log_type: [endpoint, xdr]}
       # `fileintegrity` is the LEEF cat= of Tripwire Enterprise FIM; `file` is the
       # ECS event.category a generic-JSON FIM source lands on.
       - {log_type: [process-create, process-exit, image-load, network-connect,
@@ -314,6 +341,14 @@ models:
       # `ransomware-alert` is nutanix_files.py's Data Lens alert (line 212).
       - {log_type: [ransomware-alert, wildfire, virus, malware, quarantine]}
       - {vendor: [crowdstrike], product: [falcon], log_type: [detection]}
+      # Defender AV / ransomware alerts, keyed on the alert's OWN category rather
+      # than on the provider, so a DefenseEvasion or CredentialAccess endpoint
+      # alert is not pulled in. A Defender malware alert is therefore both an
+      # Endpoint and a Malware member, which is correct — it is host telemetry
+      # carrying a verdict.
+      - vendor: [microsoft]
+        product: [defender]
+        defender_category: {raw: [category], values: [malware, ransomware]}
       # unsampled — nutanix_files.py:211 sets product=data-lens only for its
       # ransomware/anomaly alerts, so this needs no log_type qualifier.
       - {vendor: [nutanix], product: [data-lens]}
@@ -404,12 +439,15 @@ models:
     version: 1
     description: >
       Message / mail-gateway activity — sender, recipient, subject and delivery
-      action (Splunk CIM: Email). EMPTY BY DESIGN: no shipped parser emits mail
-      telemetry. It populates when an email-security source onboards (O365
-      Exchange workload fan-out, mail gateway) — see roadmap Phase 2.
+      action (Splunk CIM: Email). POPULATED as of Phase 2 by Microsoft Defender
+      for Office 365: defender_xdr.py maps the `microsoftDefenderForOffice365`
+      serviceSource to log_type `email`, so those alerts land here through the
+      clause below with no registry edit — which is exactly why that provider
+      mapping was chosen over an opaque one.
     membership:
-      # forward-looking. m365_audit.py puts the workload in log_type, so an
-      # Exchange record already lands on `exchange` the day one is ingested.
+      # m365_audit.py puts the workload in log_type, so an Exchange record lands
+      # on `exchange`; defender_xdr.py puts the PROVIDER in log_type, so Defender
+      # for Office 365 lands on `email`. One clause serves both.
       - {log_type: [email, smtp, mail, exchange, message-trace]}
       # REMOVED: {app: [smtp, smtps, submission]} — app is the L7 protocol a
       # firewall detected, so that clause filled Email with flow records whose
@@ -432,25 +470,43 @@ models:
     tag: vulnerability
     version: 1
     description: >
-      Vulnerability-scanner findings — CVE, severity and the affected host
-      (Splunk CIM: Vulnerabilities). EMPTY BY DESIGN: no shipped parser emits
-      vulnerability telemetry; it populates when a Qualys/Tenable/Rapid7
-      collector onboards (roadmap Phase 2).
+      Vulnerability-scanner findings — CVE, CVSS, severity and the affected host
+      (Splunk CIM: Vulnerabilities). POPULATED as of Phase 2 by the Qualys VMDR,
+      Tenable VM and Rapid7 InsightVM collectors, plus AWS Inspector / ECR image
+      scans arriving as ASFF through Security Hub. One honest gap: a BARE Qualys
+      Host List Detection response carries the QID, not the CVE or the title —
+      those live in the KnowledgeBase — so `cve` reads null for a plain Qualys
+      detection and populates when the export is KB-enriched. That is a property
+      of the endpoint, not of the parser.
     membership:
-      # forward-looking, and qualified by BOTH vendor and log_type on purpose.
-      # The previous bare `{log_type: [vulnerability, …]}` clause captured every
-      # PAN-OS IPS alert, because paloalto_*.py put the THREAT *subtype* in
-      # log_type — a firewall detection is not a scanner finding. Those events
-      # are IDS members now; nothing here may match a non-scanner vendor.
+      # Qualified by BOTH vendor and log_type on purpose. The previous bare
+      # `{log_type: [vulnerability, …]}` clause captured every PAN-OS IPS alert,
+      # because paloalto_*.py put the THREAT *subtype* in log_type — a firewall
+      # detection is not a scanner finding. Those events are IDS members now;
+      # nothing here may match a non-scanner vendor.
       - vendor: [qualys, tenable, rapid7, nessus, openvas, nexpose]
         log_type: [vulnerability, vuln, vulnerabilities, vulnerability-detection,
                    host-detection]
+      # AWS Inspector / ECR image-scan findings, delivered as ASFF through Security
+      # Hub. Vendor+product qualified for the same reason the scanner clause above
+      # is: only a scanner finding may land here, never an IPS detection. The other
+      # ASFF log_types (config -> Change, threat -> IDS) are excluded by construction.
+      - vendor: [aws]
+        product: [securityhub, inspector]
+        log_type: [vulnerability]
     fields:
       - {name: signature, column: rule_name, description: "vulnerability / plugin name"}
       - {name: cve, raw: [cve, cve_id]}
+      # All three scanner parsers write a NUMERIC top-level raw["cvss"] (Qualys'
+      # "8.8 (AV:N/…)" vector suffix is stripped) so the score is comparable across
+      # vendors — which is the whole point of a cross-vendor severity search.
+      - {name: cvss, raw: cvss, description: "CVSS base score"}
       - {name: severity, column: severity}
       - {name: dest, column: host_name, description: "affected host"}
       - {name: dvc, column: host_name}
       - {name: category, raw: [category, plugin_family]}
-      - {name: user, column: user_name}
       - {name: vendor_product, expr: vendor_product}
+      # DROPPED: user <- user_name. A scanner finding has no acting account, and
+      # measurement confirms it: user_name is null on all 10 corpus members. Honesty
+      # rule 4 — on a POPULATED model a field no member can provide is deleted
+      # rather than shipped null-by-construction.

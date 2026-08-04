@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}Content packs — LogOcean{% endblock %}
+{% block body %}
+<h1>Content packs</h1>
+<p>A content pack is <b>one versioned YAML document</b> carrying everything needed to
+   onboard a source: custom parsers, CIM membership clauses, detection rules and
+   compliance mappings. Import is always <b>planned before it is applied</b> — the plan
+   below is a dry run that reads nothing and writes nothing.</p>
+
+{% if message %}<div class="alert ok">{{ message }}</div>{% endif %}
+{% if error %}<div class="alert err">{{ error }}</div>{% endif %}
+
+<section>
+  <h2>Import a pack</h2>
+  <form method="post" action="/packs/plan" class="panel">
+    <label>Pack document (YAML or JSON)<br>
+      <textarea name="document" rows="14" cols="100" required
+                placeholder="pack: 1&#10;name: acme-firewall&#10;version: 1.0.0&#10;...">{{ document or '' }}</textarea></label><br>
+    <button type="submit" class="btn">Plan (dry run)</button>
+  </form>
+</section>
+
+{% if plan %}
+<section>
+  <h2>Plan — {{ plan.pack }} {{ plan.version }}</h2>
+  {% if plan.problems %}
+    <div class="alert err"><b>This pack cannot be imported:</b>
+      <ul>{% for p in plan.problems %}<li>{{ p }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  {% if plan.conflicts %}
+    <div class="alert err"><b>Conflicts</b> — these objects are owned by another pack or
+      were authored in the console. Importing over them replaces content this pack did
+      not create:
+      <ul>{% for c in plan.conflicts %}<li>{{ c }}</li>{% endfor %}</ul></div>
+  {% endif %}
+  {% if plan.restart_required %}
+    <div class="alert warn">This pack changes <b>CIM membership or compliance
+      mappings</b>. Both are compiled once per process, so they take effect on the next
+      <b>restart</b> — and only then run the membership backfill from
+      <a href="/admin">Admin</a>, in that order. Parsers and rules take effect
+      immediately.</div>
+  {% endif %}
+  <p><small>{{ plan.summary }}</small></p>
+  <table>
+    <tr><th>Verb</th><th>Kind</th><th>Object</th><th>Detail</th><th>Owner</th></tr>
+    {% for c in plan.changes %}
+    <tr{% if c.verb == 'conflict' %} class="danger"{% endif %}>
+      <td><b>{{ c.verb }}</b></td><td>{{ c.kind }}</td><td><code>{{ c.ident }}</code></td>
+      <td>{{ c.detail }}</td><td>{{ c.owner or '—' }}</td>
+    </tr>
+    {% else %}<tr><td colspan="5">Nothing to do.</td></tr>{% endfor %}
+  </table>
+  <form method="post" action="/packs/import" class="panel">
+    <input type="hidden" name="document" value="{{ document }}">
+    <label>overwrite conflicting content
+      <input type="checkbox" name="overwrite"></label>
+    <button type="submit" class="btn"
+            {% if not plan.applicable %}title="Tick overwrite to import over the conflicts above"{% endif %}>
+      Import</button>
+  </form>
+</section>
+{% endif %}
+
+<section>
+  <h2>Installed packs</h2>
+  <table>
+    <tr><th>Name</th><th>Version</th><th>Installed</th><th>By</th><th>Digest</th>
+        <th>Signature</th><th></th></tr>
+    {% for p in packs %}
+    <tr>
+      <td>{{ p.name }}</td><td>{{ p.version }}</td>
+      <td>{{ p.installed_at | ist }}</td><td>{{ p.installed_by or '—' }}</td>
+      <td><code>{{ p.digest[:16] }}…</code></td>
+      <td>{% if p.signature == 'valid' %}<span class="ok">signed</span>
+          {% elif p.signature == 'invalid' %}<span class="err">BAD SIGNATURE</span>
+          {% elif p.signature == 'unsigned' %}unsigned
+          {% else %}—{% endif %}</td>
+      <td>
+        <a class="btn" href="/api/v1/packs/{{ p.name }}/export">Export</a>
+        <form method="post" action="/packs/uninstall" style="display:inline"
+              onsubmit="return confirm('Uninstall {{ p.name }}? This removes exactly what it installed.');">
+          <input type="hidden" name="name" value="{{ p.name }}">
+          <button class="btn danger" type="submit">Uninstall</button></form>
+      </td>
+    </tr>
+    {% else %}<tr><td colspan="7">No packs installed.</td></tr>{% endfor %}
+  </table>
+  <p><small>The digest is the SHA-256 of the pack's canonical parse — it covers content,
+     not formatting, so re-indenting a pack does not change it. Signing is
+     <b>HMAC-SHA256</b> with the shared <code>CONTENT_PACK_KEY</code>: it proves a pack
+     came from a holder of that key, which is the model for an internal or air-gapped
+     pack repository. For a third-party pack, compare this digest against a detached
+     signature published out of band.</small></p>
+</section>
+{% endblock %}

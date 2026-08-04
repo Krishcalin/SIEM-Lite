@@ -33,6 +33,45 @@ def iso_lookback(hours: int) -> str:
         "%Y-%m-%dT%H:%M:%S.000Z")
 
 
+# --------------------------------------------------------------------------- #
+#  Checkpoint codec — one opaque text column, watermark plus resume state      #
+# --------------------------------------------------------------------------- #
+def parse_cursor(cursor: Optional[str]) -> dict:
+    """Decode a collector checkpoint.
+
+    Compact JSON, so the single ``collectors.cursor`` text column can carry the
+    watermark AND whatever resume state the vendor's pagination needs. Members are
+    read by name, so a collector ignores keys it does not use.
+
+    A BARE ISO STRING decodes as ``{"since": <text>}``. That is what every cursor
+    written before a collector adopted this codec looks like, and what an operator
+    who edits the column by hand will write — so adopting it is not a migration.
+    Anything unparseable decodes as ``{}``, which restarts from the lookback window
+    rather than raising inside the scheduler.
+    """
+    text = (cursor or "").strip()
+    if not text:
+        return {}
+    if not text.startswith("{"):
+        return {"since": text}
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, ValueError, TypeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def make_cursor(**fields: object) -> str:
+    """Encode a checkpoint, dropping empty members so an idle cursor stays short.
+
+    NEVER returns None: ``run_collector`` writes ``cursor=result.cursor``
+    unconditionally, so handing it None would write SQL NULL and replay the whole
+    lookback window on the next poll.
+    """
+    return json.dumps({k: v for k, v in fields.items() if v not in (None, "", [])},
+                      sort_keys=True)
+
+
 def json_records(body: str, key: Optional[str] = None) -> list:
     """Parse a response into a list of records ([] on anything else).
 

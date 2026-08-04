@@ -16,17 +16,25 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse
 from starlette.concurrency import run_in_threadpool
 
-from . import db, ingest
+from . import contentpack, db, ingest
 from .config import settings
 from .detect import detect_format
+from .hec import router as hec_router          # re-exported; main.py mounts it on the app
 from .loql import LoqlError, run_query
 from .parsers import PARSERS
 from .util import extract_api_key, gunzip_capped
 
 log = logging.getLogger("logocean")
 router = APIRouter(prefix="/api/v1", tags=["ingest"])
+
+#: The Splunk HEC wire shim. Re-exported here (rather than included into `router`)
+#: because its paths are ABSOLUTE — /services/collector/* — and nesting it under this
+#: router's /api/v1 prefix would relocate them to /api/v1/services/collector, which no
+#: HEC sender will ever call. `app/main.py` does `app.include_router(api.hec_router)`.
+__all__ = ["router", "hec_router"]
 
 
 def require_api_key(
@@ -97,6 +105,85 @@ async def api_ingest(
         log.exception("api ingest failed (key=%s, format=%s)", key.get("key_prefix"), fmt)
         raise HTTPException(status_code=500, detail="ingest failed; see server logs")
     return result
+
+
+# --------------------------------------------------------------------------- #
+#  Content packs — READ + DRY RUN only                                         #
+# --------------------------------------------------------------------------- #
+# WHY NO IMPORT/UNINSTALL HERE, against the builder's handoff. An `api_keys` row has
+# no role: the table is (name, key_sha256, key_prefix, source_label, enabled) and
+# `require_api_key` accepts any enabled key. A content pack installs DETECTION RULES
+# and PARSERS, so exposing the write half on this router would let a key handed to a
+# log forwarder for `POST /ingest` also rewrite the detection content — a real
+# privilege escalation, and the /api/ prefix is deliberately exempt from the console's
+# session auth, so RBAC could not reach it either. Writes therefore live on the
+# console under `require_role("admin")`, next to /parsers and /rules, which is where
+# every other content-authoring operation in this app already is. Everything
+# side-effect-free is here, so CI can validate and diff a pack with an API key.
+
+
+def _plan_json(plan) -> dict:
+    """An ImportPlan as JSON — the same shape the console table renders."""
+    return {
+        "pack": plan.pack.name, "version": plan.pack.version,
+        "summary": plan.summary(), "counts": plan.counts(),
+        "applicable": plan.applicable, "restart_required": plan.restart_required,
+        "problems": list(plan.problems),
+        "conflicts": [c.describe() for c in plan.conflicts],
+        "changes": [{"kind": c.kind, "ident": c.ident, "verb": c.verb,
+                     "detail": c.detail, "owner": c.owner} for c in plan.changes],
+    }
+
+
+async def _pack_text(request: Request) -> str:
+    """The request body as pack text, bounded by the pack size cap."""
+    body = await _read_body_capped(request, contentpack.MAX_DOCUMENT_BYTES)
+    if body is None:
+        raise HTTPException(
+            status_code=413,
+            detail=f"pack exceeds the {contentpack.MAX_DOCUMENT_BYTES}-byte limit")
+    text = body.decode("utf-8", "replace")
+    if not text.strip():
+        raise HTTPException(status_code=400, detail="empty pack document")
+    return text
+
+
+@router.post("/packs/validate")
+async def api_pack_validate(request: Request, key: dict = Depends(require_api_key)):
+    """Strict validation of an untrusted pack document. Nothing is read or written."""
+    problems = contentpack.validate(await _pack_text(request))
+    return {"ok": not problems, "problems": problems}
+
+
+@router.post("/packs/plan")
+async def api_pack_plan(request: Request, key: dict = Depends(require_api_key)):
+    """The dry run: exactly what an import WOULD change. Always render this first."""
+    text = await _pack_text(request)
+    try:
+        plan = await run_in_threadpool(contentpack.install, text, dry_run=True)
+    except contentpack.PackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return _plan_json(plan)
+
+
+@router.get("/packs")
+async def api_packs(key: dict = Depends(require_api_key)):
+    rows = await run_in_threadpool(db.list_content_packs)
+    return [{"name": r["name"], "version": r["version"], "digest": r["digest"],
+             "installed_at": r["installed_at"], "installed_by": r["installed_by"]}
+            for r in rows]
+
+
+@router.get("/packs/{name}/export", response_class=PlainTextResponse)
+async def api_pack_export(name: str, key: dict = Depends(require_api_key)):
+    rows = await run_in_threadpool(db.list_content_packs)
+    row = next((r for r in rows if r["name"] == name), None)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"no installed pack named {name!r}")
+    return PlainTextResponse(
+        row["document"], media_type="application/yaml",
+        headers={"Content-Disposition":
+                 f'attachment; filename="{name}-{row["version"]}.yaml"'})
 
 
 @router.post("/query")

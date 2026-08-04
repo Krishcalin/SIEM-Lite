@@ -1,3 +1,5 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
 """Console-authored field-mapper parsers.
 
 Definitions live in the `custom_parsers` table as data (never code): a signature

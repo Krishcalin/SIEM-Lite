@@ -1,0 +1,77 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!-- Qualys VMDR: /api/2.0/fo/asset/host/vm/detection/?action=list -->
+<HOST_LIST_VM_DETECTION_OUTPUT>
+  <RESPONSE>
+    <DATETIME>2026-06-25T09:30:00Z</DATETIME>
+    <HOST_LIST>
+      <HOST>
+        <ID>84213377</ID>
+        <IP>10.20.30.41</IP>
+        <TRACKING_METHOD>IP</TRACKING_METHOD>
+        <OS><![CDATA[Ubuntu Linux 22.04]]></OS>
+        <DNS><![CDATA[db01.corp.example.com]]></DNS>
+        <NETBIOS><![CDATA[DB01]]></NETBIOS>
+        <LAST_SCAN_DATETIME>2026-06-25T08:55:00Z</LAST_SCAN_DATETIME>
+        <DETECTION_LIST>
+          <DETECTION>
+            <QID>150323</QID>
+            <TYPE>Confirmed</TYPE>
+            <SEVERITY>5</SEVERITY>
+            <PORT>8080</PORT>
+            <PROTOCOL>tcp</PROTOCOL>
+            <SSL>0</SSL>
+            <RESULTS><![CDATA[Vulnerable library found: /opt/app/lib/log4j-core-2.14.1.jar]]></RESULTS>
+            <STATUS>Active</STATUS>
+            <FIRST_FOUND_DATETIME>2026-06-01T02:10:00Z</FIRST_FOUND_DATETIME>
+            <LAST_FOUND_DATETIME>2026-06-25T08:55:00Z</LAST_FOUND_DATETIME>
+            <TIMES_FOUND>7</TIMES_FOUND>
+            <LAST_PROCESSED_DATETIME>2026-06-25T09:01:00Z</LAST_PROCESSED_DATETIME>
+          </DETECTION>
+          <DETECTION>
+            <QID>38657</QID>
+            <TYPE>Confirmed</TYPE>
+            <SEVERITY>3</SEVERITY>
+            <PORT>443</PORT>
+            <PROTOCOL>tcp</PROTOCOL>
+            <SSL>1</SSL>
+            <STATUS>New</STATUS>
+            <FIRST_FOUND_DATETIME>2026-06-25T08:55:00Z</FIRST_FOUND_DATETIME>
+            <LAST_FOUND_DATETIME>2026-06-25T08:55:00Z</LAST_FOUND_DATETIME>
+            <TIMES_FOUND>1</TIMES_FOUND>
+          </DETECTION>
+        </DETECTION_LIST>
+      </HOST>
+      <HOST>
+        <ID>84213402</ID>
+        <IP>10.20.30.52</IP>
+        <TRACKING_METHOD>DNS</TRACKING_METHOD>
+        <OS><![CDATA[Windows Server 2019]]></OS>
+        <DNS><![CDATA[web02.corp.example.com]]></DNS>
+        <NETBIOS><![CDATA[WEB02]]></NETBIOS>
+        <LAST_SCAN_DATETIME>2026-06-25T08:58:00Z</LAST_SCAN_DATETIME>
+        <DETECTION_LIST>
+          <DETECTION>
+            <QID>91785</QID>
+            <TYPE>Confirmed</TYPE>
+            <SEVERITY>4</SEVERITY>
+            <PORT>445</PORT>
+            <PROTOCOL>tcp</PROTOCOL>
+            <STATUS>Re-Opened</STATUS>
+            <VULN_TITLE><![CDATA[Microsoft Windows Print Spooler Remote Code Execution Vulnerability (PrintNightmare)]]></VULN_TITLE>
+            <CATEGORY>Windows</CATEGORY>
+            <CVSS3_BASE>8.8 (AV:N/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H)</CVSS3_BASE>
+            <CVE_LIST>
+              <CVE>
+                <ID><![CDATA[CVE-2021-34527]]></ID>
+                <URL><![CDATA[https://cve.mitre.org/cgi-bin/cvename.cgi?name=CVE-2021-34527]]></URL>
+              </CVE>
+            </CVE_LIST>
+            <FIRST_FOUND_DATETIME>2026-06-18T04:00:00Z</FIRST_FOUND_DATETIME>
+            <LAST_FOUND_DATETIME>2026-06-25T08:58:00Z</LAST_FOUND_DATETIME>
+            <TIMES_FOUND>3</TIMES_FOUND>
+          </DETECTION>
+        </DETECTION_LIST>
+      </HOST>
+    </HOST_LIST>
+  </RESPONSE>
+</HOST_LIST_VM_DETECTION_OUTPUT>

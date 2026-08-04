@@ -27,3 +27,8 @@ rules/imported/*.yaml
 Thumbs.db
 .vscode/
 .idea/
+
+# Test artifacts
+.coverage
+.coverage.*
+htmlcov/

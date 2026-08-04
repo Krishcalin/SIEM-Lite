@@ -30,10 +30,19 @@ import pytest
 # `cim_meta` is the one-row CIM registry stamp (schema.sql, Backbone 2): it must be
 # emptied like everything else, or the `backfill_due` / `applied_at` state one test
 # writes becomes the starting state of the next.
+# `content_packs`, `custom_parsers` and `custom_rules` are swept for the same reason
+# `cim_meta` is: a pack writes rows into all three, and an installed pack is precisely
+# the state that decides OWNERSHIP — whether the next install is an update, a no-op or
+# a conflict. HONEST SCOPE: no test currently depends on this. The Phase-2 pack tests
+# happen to pass without it because the last one to run uninstalls, so the tables are
+# empty by the time the conflict test asserts they are. That is an accident of
+# ordering, not isolation, which is exactly why the sweep is here rather than left to
+# be discovered by whoever adds the test that reorders them.
 _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_notes",
            "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
            "response_actions", "collectors", "sessions", "users", "audit_log", "iocs",
-           "saved_searches", "cim_meta", "secrets")
+           "saved_searches", "cim_meta", "secrets", "content_packs", "custom_parsers",
+           "custom_rules")
 
 # Exactly the shape `app.cim.sql.view_name` emits, matched independently of that module
 # on purpose: this is the broom the CIM tests are swept up with, so it must not share a

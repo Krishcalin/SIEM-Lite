@@ -1,0 +1,103 @@
+[
+  {
+    "asset": {
+      "device_type": "general-purpose",
+      "fqdn": "db01.corp.example.com",
+      "hostname": "db01",
+      "uuid": "0f9a2b1c-7d4e-4c11-9a3f-2b6e5d8c1a44",
+      "ipv4": "10.20.30.41",
+      "operating_system": ["Ubuntu 22.04 LTS"],
+      "network_id": "00000000-0000-0000-0000-000000000000"
+    },
+    "output": "Path : /opt/app/lib/log4j-core-2.14.1.jar\n  Installed version : 2.14.1\n  Fixed version : 2.17.1\n",
+    "plugin": {
+      "cve": ["CVE-2021-44228", "CVE-2021-45046"],
+      "cvss3_base_score": 10.0,
+      "cvss_base_score": 9.3,
+      "description": "The remote host is running a version of Apache Log4j vulnerable to remote code execution via JNDI lookup substitution.",
+      "family": "Misc.",
+      "family_id": 12,
+      "has_patch": true,
+      "id": 155999,
+      "name": "Apache Log4j 2.x < 2.17.1 Remote Code Execution (Log4Shell)",
+      "risk_factor": "Critical",
+      "solution": "Upgrade Apache Log4j to 2.17.1 or later.",
+      "synopsis": "The remote host is affected by a remote code execution vulnerability.",
+      "type": "local"
+    },
+    "port": {"port": 0, "protocol": "TCP", "service": null},
+    "scan": {
+      "schedule_uuid": "template-9f2c",
+      "started_at": "2026-06-25T08:40:00.000Z",
+      "uuid": "d1b6b0f0-3d1e-4a7c-9d2a-77f3a0c4b111"
+    },
+    "severity": "critical",
+    "severity_default_id": 4,
+    "severity_id": 4,
+    "severity_modification_type": "NONE",
+    "first_found": "2026-06-01T02:15:00.000Z",
+    "last_found": "2026-06-25T09:02:11.000Z",
+    "indexed": "2026-06-25T09:06:40.000Z",
+    "state": "OPEN"
+  },
+  {
+    "asset": {
+      "device_type": "general-purpose",
+      "fqdn": "web02.corp.example.com",
+      "hostname": "web02",
+      "uuid": "5c3e7a90-11bb-4d2f-8e6a-0c9f4d7b2e30",
+      "ipv4": "10.20.30.52",
+      "operating_system": ["Microsoft Windows Server 2019 Standard"]
+    },
+    "output": "The remote service accepts TLS 1.0 connections.",
+    "plugin": {
+      "cve": [],
+      "cvss_base_score": 5.3,
+      "description": "The remote service encrypts traffic using an obsolete version of TLS.",
+      "family": "Service detection",
+      "family_id": 19,
+      "has_patch": false,
+      "id": 104743,
+      "name": "TLS Version 1.0 Protocol Detection",
+      "risk_factor": "Medium",
+      "solution": "Enable support for TLS 1.2 or 1.3 and disable TLS 1.0.",
+      "synopsis": "The remote service supports an obsolete encryption protocol.",
+      "type": "remote"
+    },
+    "port": {"port": 443, "protocol": "TCP", "service": "www"},
+    "scan": {"started_at": "2026-06-25T08:40:00.000Z", "uuid": "d1b6b0f0-3d1e-4a7c-9d2a-77f3a0c4b111"},
+    "severity": "medium",
+    "severity_id": 2,
+    "first_found": "2026-05-11T11:00:00.000Z",
+    "last_found": "2026-06-25T09:03:47.000Z",
+    "indexed": "2026-06-25T09:06:41.000Z",
+    "state": "REOPENED"
+  },
+  {
+    "asset": {
+      "fqdn": "print01.corp.example.com",
+      "hostname": "print01",
+      "uuid": "7a11c0de-4f2b-4a99-b0c5-3e18d6a9f002",
+      "ipv4": "10.20.30.77",
+      "operating_system": ["Microsoft Windows Server 2016 Standard"]
+    },
+    "plugin": {
+      "cve": ["CVE-2021-34527"],
+      "cvss3_base_score": 8.8,
+      "family": "Windows",
+      "id": 151146,
+      "name": "Windows Print Spooler Remote Code Execution (PrintNightmare)",
+      "risk_factor": "High",
+      "synopsis": "The remote Windows host is affected by a remote code execution vulnerability in the Print Spooler service.",
+      "type": "local"
+    },
+    "port": {"port": 445, "protocol": "TCP", "service": "cifs"},
+    "scan": {"started_at": "2026-06-25T08:40:00.000Z"},
+    "severity": "high",
+    "severity_id": 3,
+    "first_found": "2026-06-18T04:20:00.000Z",
+    "last_found": "2026-06-25T09:05:02.000Z",
+    "indexed": "2026-06-25T09:06:42.000Z",
+    "state": "OPEN"
+  }
+]

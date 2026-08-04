@@ -26,7 +26,8 @@
       <a href="/coverage">Coverage</a>
       <a href="/datamodels">Data models</a>
       <a href="/workbench">Workbench</a>
-      {% if not auth_enabled or user.role == 'admin' %}<a href="/admin">Admin</a>{% endif %}
+      {% if not auth_enabled or user.role == 'admin' %}<a href="/packs">Packs</a>
+      <a href="/admin">Admin</a>{% endif %}
     </nav>
     {% endif %}
     <span class="retention">

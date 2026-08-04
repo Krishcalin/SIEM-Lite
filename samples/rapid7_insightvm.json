@@ -1,0 +1,87 @@
+[
+  {
+    "asset": {
+      "id": 282,
+      "ip": "10.20.30.42",
+      "hostName": "app01.corp.example.com",
+      "os": "Ubuntu Linux 22.04",
+      "mac": "00:50:56:9A:1B:2C",
+      "riskScore": 4821.7,
+      "lastScanEnd": "2026-06-25T09:10:00Z"
+    },
+    "finding": {
+      "id": "apache-httpd-cve-2021-41773",
+      "status": "vulnerable",
+      "since": "2026-06-20T00:00:00Z",
+      "results": [
+        {
+          "port": 443,
+          "protocol": "tcp",
+          "proof": "Running HTTP service Apache httpd 2.4.49",
+          "status": "vulnerable"
+        }
+      ]
+    },
+    "vulnerability": {
+      "id": "apache-httpd-cve-2021-41773",
+      "title": "Apache HTTPD: Path traversal and file disclosure vulnerability (CVE-2021-41773)",
+      "severity": "Critical",
+      "severityScore": 9,
+      "riskScore": 885.42,
+      "cvss": {
+        "v2": {"score": 7.5, "vector": "AV:N/AC:L/Au:N/C:P/I:P/A:P"},
+        "v3": {"score": 9.8, "vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"}
+      },
+      "categories": ["Apache", "Web"],
+      "cves": ["CVE-2021-41773"],
+      "denialOfService": false,
+      "published": "2021-10-05",
+      "modified": "2026-01-14"
+    }
+  },
+  {
+    "asset": {
+      "id": 282,
+      "ip": "10.20.30.42",
+      "hostName": "app01.corp.example.com",
+      "os": "Ubuntu Linux 22.04",
+      "lastScanEnd": "2026-06-25T09:10:00Z"
+    },
+    "finding": {
+      "id": "ssh-openssh-weak-mac-algorithms",
+      "status": "vulnerable-version",
+      "since": "2026-04-02T00:00:00Z",
+      "results": [
+        {"port": 22, "protocol": "tcp", "proof": "MAC hmac-md5 offered", "status": "vulnerable-version"}
+      ]
+    },
+    "vulnerability": {
+      "id": "ssh-openssh-weak-mac-algorithms",
+      "title": "OpenSSH: weak MAC algorithms enabled",
+      "severity": "Moderate",
+      "severityScore": 4,
+      "cvss": {"v2": {"score": 4.3, "vector": "AV:N/AC:M/Au:N/C:P/I:N/A:N"}},
+      "categories": ["OpenSSH", "SSH"],
+      "cves": [],
+      "published": "2016-01-14"
+    }
+  },
+  {
+    "asset": {
+      "id": 511,
+      "ip": "10.20.30.77",
+      "hostName": "print01.corp.example.com",
+      "os": "Microsoft Windows Server 2016",
+      "lastScanEnd": "2026-06-25T09:12:00Z"
+    },
+    "finding": {
+      "id": "msft-cve-2021-34527",
+      "status": "vulnerable",
+      "since": "2026-06-18T00:00:00Z",
+      "results": [
+        {"port": 445, "protocol": "tcp", "proof": "Print Spooler service running and unpatched", "status": "vulnerable"}
+      ]
+    },
+    "vulnerability": {}
+  }
+]

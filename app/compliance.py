@@ -13,6 +13,8 @@ unit-tested.
 """
 from __future__ import annotations
 
+import logging
+
 # Render frameworks in this order on the page. ISO 27001 (2022 Annex A) and SOC 2
 # (Trust Services Criteria) are general-purpose and cover the enterprise techniques.
 # The last two are OT/ICS-specific (IEC 62443-3-3 System Requirements; NERC CIP for
@@ -170,6 +172,31 @@ def _index() -> dict[str, dict[str, dict]]:
 
 
 _FW_CONTROLS = _index()
+
+
+def apply_pack_overlay() -> None:
+    """Merge installed content packs' compliance entries into `MAP` and re-index.
+
+    Called from the app lifespan once the database is up, and again after a pack is
+    imported or uninstalled. A re-derive hook rather than something that lets callers
+    mutate `MAP` directly, because `_FW_CONTROLS` is built from it at import and every
+    page read goes through that index — mutating one without the other is a page that
+    disagrees with its own data.
+
+    Adding a NEW framework still needs an edit to `FRAMEWORKS` above: `build_report`
+    iterates that list, so controls filed under an unlisted framework import cleanly
+    and are then shown to nobody. `contentpack` refuses such a pack at parse time,
+    with exactly that advice in the message.
+    """
+    global MAP, _FW_CONTROLS
+    from . import contentpack
+    try:
+        entries = contentpack.installed_compliance_entries(contentpack.installed_packs())
+        if entries:
+            MAP = contentpack.merge_compliance(MAP, entries)
+            _FW_CONTROLS = _index()
+    except Exception:                                       # noqa: BLE001
+        logging.getLogger("logocean").exception("compliance pack overlay failed")
 
 
 def controls_for_technique(technique: str) -> dict[str, list[tuple[str, str]]]:

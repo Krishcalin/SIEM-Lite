@@ -160,6 +160,13 @@ ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS source_addr text;
 ALTER TABLE ingest_batches ALTER COLUMN filename    DROP NOT NULL;
 ALTER TABLE ingest_batches ALTER COLUMN file_sha256 DROP NOT NULL;
 
+-- Events REMOVED by an ingest action (app/ingest_actions.py `drop` / a rejected
+-- `sample`), which never reached the INSERT. Without its own column those events
+-- would have to be absorbed into duplicate_rows, telling the operator "we already had
+-- this data" when the truth is "a rule deleted it" — so this column is what keeps the
+-- invariant total_rows = inserted_rows + duplicate_rows + dropped_rows honest.
+ALTER TABLE ingest_batches ADD COLUMN IF NOT EXISTS dropped_rows integer DEFAULT 0;
+
 -- ============================================================================
 --  Detection & alerting (Phase 2).
 -- ============================================================================
@@ -449,6 +456,24 @@ CREATE TABLE IF NOT EXISTS custom_rules (
     enabled    boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Installed content packs (Phase 2). One row per pack; `document` is the VERBATIM
+-- pack YAML (app/contentpack.py). Ownership ("which pack installed this rule?"),
+-- upgrade ("what did the new version drop?") and uninstall ("remove exactly what I
+-- added") are all derived from that document, so there is no second bookkeeping table
+-- that can fall out of step with it. `digest` is the SHA-256 of the canonical parse —
+-- it covers content, not formatting, so re-indenting a pack does not invalidate it.
+CREATE TABLE IF NOT EXISTS content_packs (
+    name         text PRIMARY KEY,
+    version      text NOT NULL,
+    format       integer NOT NULL DEFAULT 1,
+    digest       text NOT NULL,
+    document     text NOT NULL,
+    signed_by    text,
+    installed_at timestamptz NOT NULL DEFAULT now(),
+    installed_by text
+);
+CREATE INDEX IF NOT EXISTS content_packs_installed_idx ON content_packs (installed_at DESC);
 
 -- Encrypted credential store (the "secrets vault", Phase 2). One row per
 -- (integration, name) slot — e.g. ('okta', 'token'), ('aws', 'secret_access_key').

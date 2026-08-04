@@ -74,6 +74,22 @@ class Settings:
     aws_access_key_id: str = os.getenv("AWS_ACCESS_KEY_ID", "")
     aws_secret_access_key: str = os.getenv("AWS_SECRET_ACCESS_KEY", "")
     aws_session_token: str = os.getenv("AWS_SESSION_TOKEN", "")   # optional (STS)
+    # CloudTrail via S3 + SQS — full fidelity (management AND data events), where
+    # the LookupEvents API above is management-only and throttled. Reuses aws_region
+    # and the three keys; the queue URL is the gate and is NOT a secret. Give each
+    # S3+SQS collector its OWN queue: a collector DRAINS the queue it polls.
+    aws_sqs_queue_url: str = os.getenv("AWS_SQS_QUEUE_URL", "")
+    # AWS security services (GuardDuty / Security Hub / Config / Route 53 Resolver),
+    # all on the same aws_* credentials. The three booleans are coarse gates: the
+    # service must be enabled in the account or every poll errors — same pattern as
+    # m365_enabled. AWS Config compliance is read THROUGH Security Hub on purpose
+    # (the Config API has no time filter and no ordering, so it cannot be
+    # checkpointed); see app/collectors/aws_services.py.
+    aws_guardduty_enabled: bool = _bool("AWS_GUARDDUTY_ENABLED", False)
+    aws_securityhub_enabled: bool = _bool("AWS_SECURITYHUB_ENABLED", False)
+    aws_config_compliance_enabled: bool = _bool("AWS_CONFIG_COMPLIANCE_ENABLED", False)
+    aws_guardduty_detector_id: str = os.getenv("AWS_GUARDDUTY_DETECTOR_ID", "")
+    aws_route53_log_group: str = os.getenv("AWS_ROUTE53_LOG_GROUP", "")
     # Microsoft Entra ID / 365 (OAuth2 client credentials, one app registration).
     # Entra sign-ins activate when tenant+client+secret are set; the M365 unified
     # audit log additionally needs M365_ENABLED (separate API permission + a
@@ -83,6 +99,14 @@ class Settings:
     azure_client_secret: str = os.getenv("AZURE_CLIENT_SECRET", "")
     m365_enabled: bool = _bool("M365_ENABLED", False)
     m365_content_type: str = os.getenv("M365_CONTENT_TYPE", "Audit.General")
+    # Microsoft Defender XDR (Graph security API). SAME app registration as Entra /
+    # M365 above — no extra credential, only two extra APPLICATION permissions
+    # (SecurityAlert.Read.All, SecurityIncident.Read.All), which is why this needs
+    # its own coarse gate. DEFENDER_EXPAND_ALERTS pulls each incident's alerts
+    # inline: heavier pages, and it re-fetches what the alert collector already has
+    # (they dedup), so it is off unless you run ONLY the incident collector.
+    defender_enabled: bool = _bool("DEFENDER_ENABLED", False)
+    defender_expand_alerts: bool = _bool("DEFENDER_EXPAND_ALERTS", False)
     # GCP Cloud Audit Logs (service-account signed-JWT OAuth2). Active when the
     # project + service-account email + private key are set. Copy client_email
     # and private_key straight out of the downloaded service-account JSON key
@@ -91,6 +115,48 @@ class Settings:
     gcp_client_email: str = os.getenv("GCP_CLIENT_EMAIL", "")
     gcp_private_key: str = os.getenv("GCP_PRIVATE_KEY", "")
     gcp_token_uri: str = os.getenv("GCP_TOKEN_URI", "https://oauth2.googleapis.com/token")
+    # CrowdStrike Falcon. Three independent paths on two credential sets:
+    #   * FDR  — CrowdStrike-ISSUED AWS keys (NOT the aws_* keys above; they are a
+    #            different account entirely) reading the SQS queue + S3 bucket
+    #            CrowdStrike replicates into. Gate: the queue URL + region + keys.
+    #   * Streams / Incidents — the Falcon OAuth2 API. Gate: client id + secret.
+    # crowdstrike_app_id keys the Event Streams session; two consumers sharing one
+    # appId steal each other's offsets, so make it unique per deployment.
+    crowdstrike_base_url: str = os.getenv("CROWDSTRIKE_BASE_URL", "")   # "" = US-1 cloud
+    crowdstrike_client_id: str = os.getenv("CROWDSTRIKE_CLIENT_ID", "")
+    crowdstrike_client_secret: str = os.getenv("CROWDSTRIKE_CLIENT_SECRET", "")
+    crowdstrike_app_id: str = os.getenv("CROWDSTRIKE_APP_ID", "logocean")
+    crowdstrike_streams_enabled: bool = _bool("CROWDSTRIKE_STREAMS_ENABLED", False)
+    crowdstrike_incidents_enabled: bool = _bool("CROWDSTRIKE_INCIDENTS_ENABLED", False)
+    crowdstrike_fdr_queue_url: str = os.getenv("CROWDSTRIKE_FDR_QUEUE_URL", "")
+    crowdstrike_fdr_region: str = os.getenv("CROWDSTRIKE_FDR_REGION", "us-west-1")
+    crowdstrike_fdr_bucket: str = os.getenv("CROWDSTRIKE_FDR_BUCKET", "")
+    crowdstrike_fdr_access_key: str = os.getenv("CROWDSTRIKE_FDR_ACCESS_KEY", "")
+    crowdstrike_fdr_secret_key: str = os.getenv("CROWDSTRIKE_FDR_SECRET_KEY", "")
+    crowdstrike_fdr_session_token: str = os.getenv("CROWDSTRIKE_FDR_SESSION_TOKEN", "")
+    # Palo Alto Cortex Data Lake (Prisma Access / cloud NGFW). OAuth2 refresh-token
+    # grant; records are reshaped into a PAN CSV export and read by the existing
+    # paloalto_csv parser, so no new parser key. An UNKNOWN region is a hard error,
+    # never a silent default — querying the wrong lake returns a confident nothing.
+    cortex_client_id: str = os.getenv("CORTEX_CLIENT_ID", "")
+    cortex_client_secret: str = os.getenv("CORTEX_CLIENT_SECRET", "")
+    cortex_refresh_token: str = os.getenv("CORTEX_REFRESH_TOKEN", "")
+    cortex_region: str = os.getenv("CORTEX_REGION", "americas")   # or an API hostname
+    cortex_tables: str = os.getenv("CORTEX_TABLES", "")           # "" = the safe default set
+    # Vulnerability scanners (Qualys VMDR / Tenable VM / Rapid7 InsightVM). These
+    # populate the CIM Vulnerability model. VULN_MIN_INTERVAL_SECONDS is the floor
+    # between real scanner pulls — a scanner publishes on a scan cadence, not
+    # continuously, so the shared COLLECTOR_INTERVAL ticks in between are no-ops
+    # that thread the cursor straight back.
+    qualys_base_url: str = os.getenv("QUALYS_BASE_URL", "")       # platform POD API root
+    qualys_username: str = os.getenv("QUALYS_USERNAME", "")
+    qualys_password: str = os.getenv("QUALYS_PASSWORD", "")
+    tenable_access_key: str = os.getenv("TENABLE_ACCESS_KEY", "")
+    tenable_secret_key: str = os.getenv("TENABLE_SECRET_KEY", "")
+    rapid7_base_url: str = os.getenv("RAPID7_BASE_URL", "")       # InsightVM console
+    rapid7_username: str = os.getenv("RAPID7_USERNAME", "")
+    rapid7_password: str = os.getenv("RAPID7_PASSWORD", "")
+    vuln_min_interval_seconds: int = int(os.getenv("VULN_MIN_INTERVAL_SECONDS", "3600"))
 
     # Threat-intelligence enrichment: match ingested events against IOC feeds
     # (IPs/CIDRs/domains/hashes/URLs) and raise an alert on a hit. THREATINTEL_FEEDS
@@ -204,6 +270,32 @@ class Settings:
     syslog_format: str = os.getenv("SYSLOG_FORMAT", "auto")             # fixed fmt or "auto"
     syslog_tls_cert: str = os.getenv("SYSLOG_TLS_CERT", "")            # enables TLS on TCP
     syslog_tls_key: str = os.getenv("SYSLOG_TLS_KEY", "")
+
+    # NetFlow / IPFIX receiver (Phase 2 onboarding breadth). 2055 is the de-facto
+    # collector port; TCP is IPFIX-only (RFC 7011 §10.4) and off by default. The
+    # template cache is a bounded LRU keyed by (exporter, domain, template id) —
+    # the bound is what stops a spoofed source address minting keys forever.
+    netflow_enabled: bool = _bool("NETFLOW_ENABLED", False)
+    netflow_host: str = os.getenv("NETFLOW_HOST", "0.0.0.0")
+    netflow_udp_port: int = int(os.getenv("NETFLOW_UDP_PORT", "2055"))    # 0 disables UDP
+    netflow_tcp_port: int = int(os.getenv("NETFLOW_TCP_PORT", "0"))       # IPFIX/TCP; 0 = off
+    netflow_max_templates: int = int(os.getenv("NETFLOW_MAX_TEMPLATES", "4096"))
+
+    # Ingest actions (Phase 2): data-not-code drop / mask / route / sample applied
+    # as events are written, from YAML rules in this directory. No enable flag —
+    # an absent or empty directory loads zero rules and the evaluator short-circuits.
+    # The match block is byte-for-byte a detection rule's, so there is no second
+    # matching language to learn. See app/ingest_actions.py.
+    ingest_actions_dir: str = os.getenv("INGEST_ACTIONS_DIR", "ingest_actions")
+
+    # Content packs (Phase 2): one versioned single-YAML-document bundle carrying a
+    # source's parsers + CIM membership + rules + compliance mappings. CONTENT_PACK_KEY
+    # signs and verifies side-loaded packs. It is SYMMETRIC (HMAC-SHA256): it proves a
+    # pack came from a holder of this key — the internal / air-gapped repository model —
+    # and is NOT public-key community signing. For third-party packs compare the
+    # published SHA-256 digest shown on /packs against a detached out-of-band signature.
+    # Resolved through the vault like a collector credential (slot contentpack/key).
+    content_pack_key: str = os.getenv("CONTENT_PACK_KEY", "")
 
 
 settings = Settings()

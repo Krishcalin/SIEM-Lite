@@ -49,13 +49,18 @@ def ingest(content: str, fmt: str, *, filename: Optional[str] = None,
     alert_actions.dispatch(result.alerts)  # after commit: notify + run response playbooks
 
     inserted = db.count_batch_rows(batch_id)
-    duplicates = max(result.total - inserted, 0)
+    # `dropped` is subtracted first: an event an ingest action REMOVED never reached
+    # the INSERT, so counting it as a duplicate would tell the operator "we already
+    # had this data" when the truth is "a rule deleted it". The batch row carries it
+    # in its own column so total == inserted + duplicates + dropped still holds.
+    duplicates = max(result.total - result.dropped - inserted, 0)
     db.update_batch(batch_id, status="done", total_rows=result.total, inserted_rows=inserted,
-                    duplicate_rows=duplicates, error_rows=0)
+                    duplicate_rows=duplicates, error_rows=0, dropped_rows=result.dropped)
 
     return {
         "batch_id": batch_id, "filename": filename, "format": fmt,
         "vendor": _VENDOR_OF.get(fmt), "sha256": sha, "source_type": source_type,
-        "total": result.total, "inserted": inserted, "duplicates": duplicates, "errors": 0,
+        "total": result.total, "inserted": inserted, "duplicates": duplicates,
+        "dropped": result.dropped, "errors": 0,
         "already_ingested": bool(prior),
     }

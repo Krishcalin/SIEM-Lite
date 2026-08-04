@@ -1,0 +1,78 @@
+# Author : Krishnendu De
+# Co-Author: Claude Fable 5.0
+#
+# Worked examples. This file is named `.disabled` ON PURPOSE: `load_actions` globs
+# *.yml / *.yaml only, so nothing here is live. Copy the rule you want into a real
+# `.yaml` file, adjust the logsource to your estate, and check /health afterwards.
+#
+# Every rule below is a complete, valid document — `contentpack`-style strictness
+# applies at load time, so a typo is a load error you will see, not a silent no-op.
+
+# ── 1. Mask an account name on a noisy source ────────────────────────────────
+# `scrub` (on by default) is the part that matters: masking only the named column is
+# theatre, because the value is still in `raw` (stored verbatim as jsonb and
+# GIN-indexed) and in whatever sibling column it was extracted alongside — usually
+# `message`, which normalize.tsv_text feeds to the full-text vector separately. The
+# sweep covers raw recursively and the other text columns, so the value is actually
+# gone rather than hidden from one view of it.
+id: mask-web-proxy-users
+title: Pseudonymise usernames on web proxy logs
+description: >
+  Works-council / GDPR posture: the proxy logs are kept for security analysis but the
+  acting account is pseudonymised, so "same user" analysis still works and the identity
+  does not.
+enabled: false
+order: 10
+logsource:
+  log_type: proxy
+action: mask
+mask:
+  fields: [user_name]
+  mode: hash          # deterministic: the same user always maps to the same token
+  salt: change-me     # rotate to break the mapping; keep secret or the hash is reversible
+  scrub: true
+
+---
+# ── 2. Sample a high-volume, low-value flow source ───────────────────────────
+# `key` is what keeps this honest: the bucket is derived from the named columns, so one
+# host is kept or dropped WHOLE. Sampling per event instead would give you 10% of what
+# every host did, which answers no question anyone actually asks.
+id: sample-netflow-noise
+title: Keep 1 flow in 10 from the lab exporter
+description: >
+  The lab segment exports more flow than it is worth. Sampled by src_ip so a host's
+  history is either complete or absent, never a tenth of itself.
+enabled: false
+order: 50
+logsource:
+  vendor: netflow
+detection:
+  lab:
+    src_ip|cidr: 10.99.0.0/16
+  condition: lab
+action: sample
+sample:
+  rate: 10
+  key: [src_ip]
+
+---
+# ── 3. Drop a known-benign health check ──────────────────────────────────────
+# COMMENTED OUT, and that is the point: a `drop` is unrecoverable — the event is never
+# written, so there is nothing to un-drop later. Prove the condition matches only what
+# you think it does (search for it first, or run it as a `route` for a day) before you
+# enable one. Note this rule is narrow on THREE terms; a drop keyed on one field is how
+# you lose a source.
+#
+# id: drop-loadbalancer-healthcheck
+# title: Drop the load-balancer health probe
+# enabled: false
+# order: 90
+# logsource:
+#   log_type: access
+# detection:
+#   probe:
+#     src_ip: 10.0.0.4
+#     url|startswith: /healthz
+#     status: 200
+#   condition: probe
+# action: drop

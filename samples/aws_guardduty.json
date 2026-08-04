@@ -1,0 +1,147 @@
+{
+  "Findings": [
+    {
+      "SchemaVersion": "2.0",
+      "AccountId": "111122223333",
+      "Region": "us-east-1",
+      "Partition": "aws",
+      "Id": "3ac1f0d0f9a2b1c4d5e6f708192a3b4c",
+      "Arn": "arn:aws:guardduty:us-east-1:111122223333:detector/6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11/finding/3ac1f0d0f9a2b1c4d5e6f708192a3b4c",
+      "Type": "UnauthorizedAccess:EC2/SSHBruteForce",
+      "Title": "198.51.100.24 is performing SSH brute force attacks against i-0a1b2c3d4e5f60718.",
+      "Description": "198.51.100.24 is performing SSH brute force attacks against i-0a1b2c3d4e5f60718. Brute force attacks are used to gain unauthorized access to your instance.",
+      "Severity": 5,
+      "Confidence": 8,
+      "CreatedAt": "2026-06-25T09:58:12.000Z",
+      "UpdatedAt": "2026-06-25T10:05:44.000Z",
+      "Resource": {
+        "ResourceType": "Instance",
+        "InstanceDetails": {
+          "InstanceId": "i-0a1b2c3d4e5f60718",
+          "InstanceType": "t3.micro",
+          "AvailabilityZone": "us-east-1b",
+          "NetworkInterfaces": [
+            {
+              "PrivateIpAddress": "10.0.12.44",
+              "PublicIp": "203.0.113.71",
+              "SubnetId": "subnet-0e1f2a3b4c5d6e7f8",
+              "VpcId": "vpc-0abc1def2345678a"
+            }
+          ],
+          "Tags": [{"Key": "Name", "Value": "bastion"}]
+        }
+      },
+      "Service": {
+        "ServiceName": "guardduty",
+        "DetectorId": "6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11",
+        "ResourceRole": "TARGET",
+        "Count": 37,
+        "Archived": false,
+        "EventFirstSeen": "2026-06-25T09:52:00.000Z",
+        "EventLastSeen": "2026-06-25T10:04:57.000Z",
+        "Action": {
+          "ActionType": "NETWORK_CONNECTION",
+          "NetworkConnectionAction": {
+            "ConnectionDirection": "INBOUND",
+            "Protocol": "TCP",
+            "Blocked": false,
+            "RemoteIpDetails": {
+              "IpAddressV4": "198.51.100.24",
+              "Country": {"CountryName": "Netherlands"},
+              "Organization": {"Asn": "64512", "AsnOrg": "Example Hosting BV"}
+            },
+            "RemotePortDetails": {"Port": 52344, "PortName": "Unknown"},
+            "LocalPortDetails": {"Port": 22, "PortName": "SSH"},
+            "LocalIpDetails": {"IpAddressV4": "10.0.12.44"}
+          }
+        }
+      }
+    },
+    {
+      "SchemaVersion": "2.0",
+      "AccountId": "111122223333",
+      "Region": "us-east-1",
+      "Partition": "aws",
+      "Id": "8bd0e3aa11f24d5f9b7c6a2e4d8f1032",
+      "Arn": "arn:aws:guardduty:us-east-1:111122223333:detector/6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11/finding/8bd0e3aa11f24d5f9b7c6a2e4d8f1032",
+      "Type": "Backdoor:EC2/C&CActivity.B!DNS",
+      "Title": "EC2 instance i-0a1b2c3d4e5f60718 is querying a domain name associated with a known command and control server.",
+      "Description": "EC2 instance i-0a1b2c3d4e5f60718 is querying a domain name of a remote host that is known to hold command and control traffic.",
+      "Severity": 8,
+      "Confidence": 9,
+      "CreatedAt": "2026-06-25T10:12:00.000Z",
+      "UpdatedAt": "2026-06-25T10:31:19.000Z",
+      "Resource": {
+        "ResourceType": "Instance",
+        "InstanceDetails": {
+          "InstanceId": "i-0a1b2c3d4e5f60718",
+          "InstanceType": "t3.micro",
+          "NetworkInterfaces": [{"PrivateIpAddress": "10.0.12.44", "VpcId": "vpc-0abc1def2345678a"}]
+        }
+      },
+      "Service": {
+        "ServiceName": "guardduty",
+        "DetectorId": "6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11",
+        "ResourceRole": "ACTOR",
+        "Count": 4,
+        "Archived": false,
+        "EventFirstSeen": "2026-06-25T10:11:03.000Z",
+        "EventLastSeen": "2026-06-25T10:30:41.000Z",
+        "Action": {
+          "ActionType": "DNS_REQUEST",
+          "DnsRequestAction": {
+            "Domain": "guzzcuhx.example",
+            "Protocol": "UDP",
+            "Blocked": true
+          }
+        }
+      }
+    },
+    {
+      "SchemaVersion": "2.0",
+      "AccountId": "111122223333",
+      "Region": "us-east-1",
+      "Partition": "aws",
+      "Id": "c41d9e5b6a7f4830b2c1d0e9f8a7b6c5",
+      "Arn": "arn:aws:guardduty:us-east-1:111122223333:detector/6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11/finding/c41d9e5b6a7f4830b2c1d0e9f8a7b6c5",
+      "Type": "Policy:IAMUser/RootCredentialUsage",
+      "Title": "API GetCallerIdentity was invoked using root credentials.",
+      "Description": "An API was invoked using root credentials from IP address 203.0.113.99.",
+      "Severity": 2,
+      "Confidence": 5,
+      "CreatedAt": "2026-06-25T08:40:00.000Z",
+      "UpdatedAt": "2026-06-25T08:41:03.000Z",
+      "Resource": {
+        "ResourceType": "AccessKey",
+        "AccessKeyDetails": {
+          "AccessKeyId": "AKIAIOSFODNN7EXAMPLE",
+          "PrincipalId": "AIDACKCEVSQ6C2EXAMPLE",
+          "UserName": "root",
+          "UserType": "Root"
+        }
+      },
+      "Service": {
+        "ServiceName": "guardduty",
+        "DetectorId": "6ab6e6ee0c4a8a0e0e3b1f6d3d9d9f11",
+        "ResourceRole": "TARGET",
+        "Count": 1,
+        "Archived": false,
+        "EventFirstSeen": "2026-06-25T08:40:58.000Z",
+        "EventLastSeen": "2026-06-25T08:40:58.000Z",
+        "Action": {
+          "ActionType": "AWS_API_CALL",
+          "AwsApiCallAction": {
+            "Api": "GetCallerIdentity",
+            "ServiceName": "sts.amazonaws.com",
+            "CallerType": "Remote IP",
+            "RemoteIpDetails": {
+              "IpAddressV4": "203.0.113.99",
+              "Country": {"CountryName": "United States"},
+              "Organization": {"Asn": "65001", "AsnOrg": "Example ISP"}
+            }
+          }
+        }
+      }
+    }
+  ]
+}

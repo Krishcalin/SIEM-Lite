@@ -79,8 +79,12 @@ def _write_group(events: list[NormalizedEvent], fmt: str, source_type: str,
             raise
     alert_actions.dispatch(result.alerts)      # after commit: notify + response
     inserted = db.count_batch_rows(batch_id)
+    # Same arithmetic as ingest.ingest, and needed separately: the live path (syslog,
+    # NetFlow, anything else on the queue) does NOT go through ingest.ingest, so
+    # fixing only that one would leave every dropped live event counted as a duplicate.
     db.update_batch(batch_id, status="done", total_rows=result.total, inserted_rows=inserted,
-                    duplicate_rows=max(result.total - inserted, 0), error_rows=0)
+                    duplicate_rows=max(result.total - result.dropped - inserted, 0),
+                    error_rows=0, dropped_rows=result.dropped)
     return inserted
 
 
