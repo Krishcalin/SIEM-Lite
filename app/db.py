@@ -2203,3 +2203,85 @@ def recent_events_for_test(limit: int = 200) -> list[dict]:
             "host(src_ip) AS src_ip, host(dst_ip) AS dst_ip, src_port, dst_port, "
             "protocol, app, user_name, host_name, rule_name, message, raw "
             "FROM events ORDER BY event_time DESC LIMIT %s", (limit,)).fetchall()
+
+
+# --------------------------------------------------------------------------- #
+#  Secrets vault                                                               #
+# --------------------------------------------------------------------------- #
+# Ciphertext in, ciphertext out. These helpers deliberately know NOTHING about the
+# master key or how to decrypt — sealing and opening live in `app/vault/crypto.py` and
+# the resolution policy in `app/vault/resolve.py`. Keeping db.py key-free means a query
+# logged here, or a row read by an operator, can never expose a credential.
+def put_secret(integration: str, name: str, ciphertext: bytes, nonce: bytes,
+               key_id: str, updated_by: str = "") -> None:
+    """Upsert one sealed secret into its (integration, name) slot."""
+    with pool().connection() as conn:
+        conn.execute(
+            "INSERT INTO secrets (integration, name, ciphertext, nonce, key_id, updated_by) "
+            "VALUES (%s, %s, %s, %s, %s, %s) "
+            "ON CONFLICT (integration, name) DO UPDATE SET "
+            "  ciphertext = EXCLUDED.ciphertext, nonce = EXCLUDED.nonce, "
+            "  key_id = EXCLUDED.key_id, updated_by = EXCLUDED.updated_by, "
+            "  updated_at = now()",
+            (integration, name, ciphertext, nonce, key_id, updated_by or None))
+        conn.commit()
+
+
+def get_secret_row(integration: str, name: str) -> Optional[dict]:
+    """The sealed row for one slot, or None. Caller opens it via the vault."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT integration, name, ciphertext, nonce, key_id FROM secrets "
+            "WHERE integration = %s AND name = %s", (integration, name)).fetchone()
+
+
+def all_secret_rows() -> list[dict]:
+    """Every sealed row — used by rotation, which must re-seal all of them."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT integration, name, ciphertext, nonce, key_id FROM secrets "
+            "ORDER BY integration, name").fetchall()
+
+
+def list_secrets() -> list[dict]:
+    """Metadata ONLY — never the ciphertext. This is what the admin UI renders, so it
+    physically cannot leak a secret even if the template is wrong."""
+    with pool().connection() as conn:
+        return conn.execute(
+            "SELECT integration, name, key_id, updated_by, created_at, updated_at "
+            "FROM secrets ORDER BY integration, name").fetchall()
+
+
+def delete_secret(integration: str, name: str) -> bool:
+    with pool().connection() as conn:
+        cur = conn.execute("DELETE FROM secrets WHERE integration = %s AND name = %s",
+                           (integration, name))
+        conn.commit()
+        return cur.rowcount > 0
+
+
+def reseal_secrets(rows: Iterable[tuple[str, str, bytes, bytes, str]]) -> int:
+    """Write back a batch of re-sealed rows in ONE transaction.
+
+    Rotation is all-or-nothing on purpose: a partial rotation would leave the store split
+    across two keys, and since the old key is being retired that is how credentials get
+    permanently lost. Either every row moves to the new key or none does.
+    """
+    n = 0
+    with pool().connection() as conn:
+        for integration, name, ciphertext, nonce, key_id in rows:
+            conn.execute(
+                "UPDATE secrets SET ciphertext = %s, nonce = %s, key_id = %s, "
+                "updated_at = now() WHERE integration = %s AND name = %s",
+                (ciphertext, nonce, key_id, integration, name))
+            n += 1
+        conn.commit()
+    return n
+
+
+def secret_key_ids() -> dict[str, int]:
+    """key_id -> row count, so the admin page can say "3 secrets under an older key"."""
+    with pool().connection() as conn:
+        rows = conn.execute(
+            "SELECT key_id, count(*) AS n FROM secrets GROUP BY key_id").fetchall()
+    return {r["key_id"]: r["n"] for r in rows}

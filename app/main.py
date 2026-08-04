@@ -24,7 +24,7 @@ from starlette.concurrency import run_in_threadpool
 
 from . import (api, auth, cim, collectors, compliance, coverage, custom_parser, db,
                ingest, killchain_runtime, navigator, notify, ot, saved, sourcehealth,
-               streaming, workbench)
+               streaming, vault, workbench)
 from .copilot import client as copilot
 from .auth import require_role
 from .config import settings
@@ -548,6 +548,10 @@ def health():
             "source_health": sh.stats() if sh else None,
             "threatintel_indicators": len(ti_runtime.get_index()),
             "cim": cim_block,
+            # Never the key itself - only whether the vault is usable, which key
+            # fingerprint is live, and how many secrets are sealed under it.
+            "vault": dict(vault.status(), secrets=len(db.list_secrets())
+                          if vault.status()["usable"] else 0),
             "copilot": {"enabled": settings.copilot_enabled,
                         "configured": copilot.is_configured(),
                         "model": settings.copilot_model} if settings.copilot_enabled else None}
@@ -1372,7 +1376,7 @@ def compliance_view(request: Request):
 #  Admin / retention                                                           #
 # --------------------------------------------------------------------------- #
 def _render_admin(request: Request, *, purged=None, new_key=None, user_error=None,
-                  ti_error=None):
+                  ti_error=None, vault_error=None, vault_notice=None):
     return templates.TemplateResponse(request, "admin.html", _ctx(
         request, batches=db.recent_batches(100), stats=db.stats(),
         api_keys=db.list_api_keys(), rules=db.list_rules(),
@@ -1383,6 +1387,9 @@ def _render_admin(request: Request, *, purged=None, new_key=None, user_error=Non
         ti_indicators=db.list_iocs(25), ti_index_size=len(ti_runtime.get_index()),
         ti_types=ti_matcher.VALID_TYPES, suppressions=db.list_suppressions(),
         cim_status=_cim_stamp(), cim_init=_cim_init, cim_backfill=_cim_backfill,
+        vault_status=vault.status(), vault_secrets=db.list_secrets(),
+        vault_slots=collectors.runner.KNOWN_SLOTS,
+        vault_error=vault_error, vault_notice=vault_notice,
         purged=purged, new_key=new_key, user_error=user_error, ti_error=ti_error))
 
 
@@ -1545,6 +1552,71 @@ def admin_ti_delete(request: Request, indicator: str = Form(...), ioc_type: str 
     ti_runtime.reload_index()
     _audit(request, "threatintel.delete", f"{indicator} ({ioc_type})")
     return RedirectResponse(url="/admin", status_code=303)
+
+
+# --------------------------------------------------------------------------- #
+#  Secrets vault (admin)                                                      #
+# --------------------------------------------------------------------------- #
+# NOTHING HERE EVER RENDERS OR LOGS A SECRET VALUE. The page reads `db.list_secrets`,
+# which does not select the ciphertext at all, and the audit entries record the SLOT
+# (integration/name), never the value — an audit log that leaks the credential it is
+# auditing would be worse than no audit log.
+@app.post("/admin/vault/secret", response_class=HTMLResponse)
+def admin_vault_set(request: Request, integration: str = Form(...), name: str = Form(...),
+                    value: str = Form(...), _user=Depends(require_role("admin"))):
+    integration, name = integration.strip().lower(), name.strip().lower()
+    try:
+        vault.set_secret(integration, name, value, _owner(request))
+    except vault.VaultError as e:
+        _audit(request, "vault.set.failed", f"{integration}/{name}: {e}")
+        return _render_admin(request, vault_error=str(e))
+    _audit(request, "vault.set", f"{integration}/{name}")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/vault/delete")
+def admin_vault_delete(request: Request, integration: str = Form(...),
+                       name: str = Form(...), _user=Depends(require_role("admin"))):
+    removed = vault.delete_secret(integration.strip().lower(), name.strip().lower())
+    _audit(request, "vault.delete",
+           f"{integration}/{name}" + ("" if removed else " (not present)"))
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/vault/migrate", response_class=HTMLResponse)
+def admin_vault_migrate(request: Request, _user=Depends(require_role("admin"))):
+    """Import plaintext env-var credentials into the vault (idempotent)."""
+    try:
+        moved = collectors.runner.migrate_env_secrets(_owner(request))
+    except vault.VaultError as e:
+        _audit(request, "vault.migrate.failed", str(e))
+        return _render_admin(request, vault_error=str(e))
+    _audit(request, "vault.migrate", f"imported {len(moved)}: {', '.join(moved) or 'none'}")
+    return RedirectResponse(url="/admin", status_code=303)
+
+
+@app.post("/admin/vault/rotate", response_class=HTMLResponse)
+def admin_vault_rotate(request: Request, new_key: str = Form(...),
+                       _user=Depends(require_role("admin"))):
+    """Re-seal every secret under a new master key.
+
+    The operator must then put `new_key` into VAULT_KEY and restart — this process cannot
+    edit its own environment. Until they do, the running process still holds the OLD key
+    and every secret will fail to open, so the audit entry records the new key_id to
+    check against the admin page after the restart.
+    """
+    try:
+        result = vault.rotate_key(new_key.strip())
+    except vault.VaultError as e:
+        _audit(request, "vault.rotate.failed", str(e))
+        return _render_admin(request, vault_error=str(e))
+    _audit(request, "vault.rotate",
+           f"re-sealed {result.rotated} secret(s) to key_id={result.to_key_id}")
+    return _render_admin(
+        request,
+        vault_notice=(f"Re-sealed {result.rotated} secret(s) under key_id {result.to_key_id}. "
+                "Set VAULT_KEY to the new key and restart — until you do, this process "
+                "still holds the old key and cannot read them."))
 
 
 # --------------------------------------------------------------------------- #

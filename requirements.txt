@@ -9,3 +9,9 @@ pyyaml>=6.0
 # Optional — only needed when the AI SOC copilot is enabled (COPILOT_ENABLED=true).
 # The app imports it lazily and runs fine without it; uncomment to install:
 # anthropic>=0.40
+
+# Optional — only needed when the encrypted secrets vault is enabled (VAULT_ENABLED=true).
+# The stdlib has no AES, so this is the one primitive the project does not hand-roll;
+# without it the vault is disabled and collector credentials fall back to environment
+# variables. See docs/VAULT.md. Uncomment to install:
+# cryptography>=42.0

@@ -449,3 +449,29 @@ CREATE TABLE IF NOT EXISTS custom_rules (
     enabled    boolean NOT NULL DEFAULT true,
     created_at timestamptz NOT NULL DEFAULT now()
 );
+
+-- Encrypted credential store (the "secrets vault", Phase 2). One row per
+-- (integration, name) slot — e.g. ('okta', 'token'), ('aws', 'secret_access_key').
+--
+-- `ciphertext` is AES-256-GCM (app/vault/crypto.py) over the master key in VAULT_KEY;
+-- the GCM tag is appended by the AEAD, so no separate tag column. `nonce` is the 96-bit
+-- IV drawn fresh on every write. `key_id` is a NON-SECRET fingerprint of the key that
+-- sealed the row, so rotation can select exactly the stale rows instead of trying to
+-- decrypt everything.
+--
+-- Nothing here is readable without VAULT_KEY, which deliberately does NOT live in this
+-- database — that separation is the whole point: a dump, a backup or a read replica
+-- carries ciphertext only.
+CREATE TABLE IF NOT EXISTS secrets (
+    integration text NOT NULL,
+    name        text NOT NULL,
+    ciphertext  bytea NOT NULL,
+    nonce       bytea NOT NULL,
+    key_id      text  NOT NULL,
+    updated_by  text,
+    created_at  timestamptz NOT NULL DEFAULT now(),
+    updated_at  timestamptz NOT NULL DEFAULT now(),
+    PRIMARY KEY (integration, name)
+);
+-- Rotation scans by key_id: "which rows are still under the previous key?"
+CREATE INDEX IF NOT EXISTS secrets_key_id_idx ON secrets (key_id);

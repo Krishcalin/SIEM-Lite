@@ -1116,3 +1116,26 @@ distinct-count correlation, GeoIP enrichment for impossible-travel), and an
 See [`LICENSE`](LICENSE) for terms. Imported SigmaHQ rules retain their original
 authorship and are used under the Detection Rule License (DRL); MITRE ATT&CK and
 ATLAS are trademarks of The MITRE Corporation.
+
+## Secrets vault
+
+Collector credentials encrypted at rest with AES-256-GCM, so a database dump, backup or
+read replica carries ciphertext only. The master key lives in `VAULT_KEY` and not in the
+database it protects.
+
+```bash
+pip install cryptography          # optional dep: the stdlib has no AES
+python -c "from app.vault.crypto import generate_key; print(generate_key())"
+```
+
+```bash
+VAULT_ENABLED=true
+VAULT_KEY=<base64, 32 bytes>
+```
+
+Resolution is **vault first, then the environment variable**, so integrations migrate one
+at a time instead of all at once on restart. Manage secrets on **Admin ▸ Secrets vault**:
+store a credential, import the existing plaintext environment variables, or rotate the
+master key (all-or-nothing — every secret is re-sealed in one transaction or none is).
+
+Full reference: [docs/VAULT.md](docs/VAULT.md).

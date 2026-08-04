@@ -2166,3 +2166,163 @@ def test_cim_status_survives_an_unreadable_registry_file(clean_db, monkeypatch):
         "the unreadable-file simulation outlived this test: registry_drift still reports "
         "an error with the real loader restored")
     assert "current_tags" in status, "the rest of the stamp was lost with the file"
+
+
+# ── secrets vault (Phase 2) ───────────────────────────────────────────────────
+def _vault_key(monkeypatch):
+    """Point the running process at a fresh vault key and clear the resolve cache."""
+    from app.config import settings
+    from app.vault import crypto, resolve
+    raw = crypto.generate_key()
+    object.__setattr__(settings, "vault_enabled", True)
+    object.__setattr__(settings, "vault_key", raw)
+    resolve.invalidate()
+    return crypto.load_key(raw)
+
+
+@pytest.mark.integration
+def test_vault_secret_round_trips_through_postgres(clean_db, monkeypatch):
+    """Seal -> store as bytea -> read back -> open. The bytea round trip is the part a
+    DB-free test cannot cover: psycopg returns `memoryview`, not `bytes`."""
+    from app import vault
+    from app.vault import crypto
+    db = clean_db
+    key = _vault_key(monkeypatch)
+
+    vault.set_secret("okta", "token", "s3cr3t-okta", updated_by="tester")
+    row = db.get_secret_row("okta", "token")
+    assert row is not None and row["key_id"] == crypto.key_id(key)
+    # stored ciphertext must not contain the plaintext
+    assert b"s3cr3t-okta" not in bytes(row["ciphertext"])
+    assert crypto.open_(key, "okta", "token",
+                        row["ciphertext"], row["nonce"]) == "s3cr3t-okta"
+
+
+@pytest.mark.integration
+def test_vault_resolution_prefers_the_vault_over_the_environment(clean_db, monkeypatch):
+    """The migration contract: vault wins where present, env var still serves elsewhere."""
+    from app import vault
+    _vault_key(monkeypatch)
+
+    vault.set_secret("okta", "token", "from-vault")
+    assert vault.get("okta", "token", "from-env") == "from-vault"
+    # a slot with nothing stored keeps working exactly as it did before Phase 2
+    assert vault.get("github", "token", "from-env") == "from-env"
+    assert vault.get("nothing", "here", "") == ""
+
+
+@pytest.mark.integration
+def test_vault_delete_falls_back_to_the_environment_again(clean_db, monkeypatch):
+    from app import vault
+    _vault_key(monkeypatch)
+    vault.set_secret("okta", "token", "from-vault")
+    assert vault.get("okta", "token", "from-env") == "from-vault"
+
+    assert vault.delete_secret("okta", "token") is True
+    assert vault.get("okta", "token", "from-env") == "from-env"   # cache was invalidated
+    assert vault.delete_secret("okta", "token") is False          # idempotent
+
+
+@pytest.mark.integration
+def test_vault_set_overwrites_in_place_rather_than_duplicating(clean_db, monkeypatch):
+    from app import vault
+    db = clean_db
+    _vault_key(monkeypatch)
+    vault.set_secret("okta", "token", "first")
+    vault.set_secret("okta", "token", "second")
+    assert len([r for r in db.list_secrets() if r["integration"] == "okta"]) == 1
+    assert vault.get("okta", "token", "") == "second"
+
+
+@pytest.mark.integration
+def test_list_secrets_never_exposes_ciphertext_or_plaintext(clean_db, monkeypatch):
+    """What the admin page renders. It must be structurally incapable of leaking."""
+    from app import vault
+    db = clean_db
+    _vault_key(monkeypatch)
+    vault.set_secret("aws", "secret_access_key", "wJalrXUtnFEMI-plaintext")
+
+    rows = db.list_secrets()
+    assert rows and "ciphertext" not in rows[0] and "nonce" not in rows[0]
+    assert "wJalrXUtnFEMI-plaintext" not in repr(rows)
+
+
+@pytest.mark.integration
+def test_vault_rotation_reseals_every_secret_under_the_new_key(clean_db, monkeypatch):
+    from app import vault
+    from app.config import settings
+    from app.vault import crypto, resolve
+    db = clean_db
+    old = _vault_key(monkeypatch)
+
+    vault.set_secret("okta", "token", "okta-value")
+    vault.set_secret("aws", "secret_access_key", "aws-value")
+    new_raw = crypto.generate_key()
+
+    result = vault.rotate_key(new_raw)
+    assert result.rotated == 2
+    assert result.to_key_id == crypto.key_id(crypto.load_key(new_raw))
+    assert result.from_key_ids == [crypto.key_id(old)]
+
+    # every row now carries the new key_id, and opens under the NEW key only
+    new = crypto.load_key(new_raw)
+    for r in db.all_secret_rows():
+        assert r["key_id"] == result.to_key_id
+        crypto.open_(new, r["integration"], r["name"], r["ciphertext"], r["nonce"])
+        with pytest.raises(crypto.VaultError):
+            crypto.open_(old, r["integration"], r["name"], r["ciphertext"], r["nonce"])
+
+    # and the values survived the round trip
+    object.__setattr__(settings, "vault_key", new_raw)
+    resolve.invalidate()
+    assert vault.get("okta", "token", "") == "okta-value"
+    assert vault.get("aws", "secret_access_key", "") == "aws-value"
+
+
+@pytest.mark.integration
+def test_vault_rotation_refuses_the_same_key(clean_db, monkeypatch):
+    from app import vault
+    from app.config import settings
+    _vault_key(monkeypatch)
+    vault.set_secret("okta", "token", "v")
+    with pytest.raises(vault.VaultError):
+        vault.rotate_key(settings.vault_key)
+
+
+@pytest.mark.integration
+def test_a_secret_that_cannot_be_opened_falls_back_loudly(clean_db, monkeypatch, caplog):
+    """A sealed row under a retired key must NOT silently become the env-var value with
+    no signal — the operator has to learn their vault is unreadable."""
+    from app import vault
+    from app.config import settings
+    from app.vault import crypto, resolve
+    _vault_key(monkeypatch)
+    vault.set_secret("okta", "token", "sealed-under-old-key")
+
+    object.__setattr__(settings, "vault_key", crypto.generate_key())   # retire the key
+    resolve.invalidate()
+    with caplog.at_level("ERROR"):
+        assert vault.get("okta", "token", "from-env") == "from-env"
+    assert any("could not decrypt" in r.message or "could not decrypt" in r.getMessage()
+               for r in caplog.records)
+
+
+@pytest.mark.integration
+def test_migrate_env_secrets_is_idempotent_and_non_destructive(clean_db, monkeypatch):
+    from app import vault
+    from app.collectors import runner
+    from app.config import settings
+    db = clean_db
+    _vault_key(monkeypatch)
+    object.__setattr__(settings, "okta_token", "env-okta-token")
+    object.__setattr__(settings, "github_token", "")        # unset stays unset
+
+    moved = runner.migrate_env_secrets("tester")
+    assert "okta/token" in moved and not any(m.startswith("github/") for m in moved)
+    assert vault.get("okta", "token", "") == "env-okta-token"
+    # the env var is deliberately NOT cleared - the operator removes it after verifying
+    assert settings.okta_token == "env-okta-token"
+
+    again = runner.migrate_env_secrets("tester")
+    assert again == []                                       # already present, left alone
+    assert len(db.list_secrets()) == 1

@@ -52,6 +52,14 @@ class Settings:
 
     # Agentless collectors: scheduled pull of logs from vendor APIs into the
     # ingest pipeline. A collector activates only when its credentials are set.
+    # Encrypted secrets vault (Phase 2). When enabled with a valid key AND the optional
+    # `cryptography` package installed, collector credentials resolve from the encrypted
+    # `secrets` table instead of the plaintext env vars below; anything not stored in the
+    # vault still falls back to them, so upgrading is not a flag day. VAULT_KEY is base64
+    # of exactly 32 bytes and must NOT be stored in the database it protects.
+    vault_enabled: bool = _bool("VAULT_ENABLED", False)
+    vault_key: str = os.getenv("VAULT_KEY", "")
+
     collectors_enabled: bool = _bool("COLLECTORS_ENABLED", False)
     collector_interval: int = int(os.getenv("COLLECTOR_INTERVAL", "300"))      # seconds
     collector_lookback_hours: int = int(os.getenv("COLLECTOR_LOOKBACK_HOURS", "24"))

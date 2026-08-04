@@ -260,6 +260,82 @@
 </section>
 
 <section>
+  <h2>Secrets vault</h2>
+  <p>Collector credentials, encrypted at rest with AES-256-GCM. A credential stored here
+     takes precedence over its environment variable; anything <em>not</em> stored here
+     still falls back to the environment, so integrations migrate one at a time.
+     The master key lives in <code>VAULT_KEY</code> and deliberately <b>not</b> in this
+     database &mdash; a dump or replica carries ciphertext only.</p>
+  {% if vault_error %}<div class="alert err">{{ vault_error }}</div>{% endif %}
+  {% if vault_notice %}<div class="alert">{{ vault_notice }}</div>{% endif %}
+  <p>
+    <span class="badge {{ 'done' if vault_status.usable else 'error' }}">{{ 'usable' if vault_status.usable else 'not usable' }}</span>
+    {% if not vault_status.enabled %}<code>VAULT_ENABLED</code> is off ·{% endif %}
+    {% if not vault_status.backend %}<b>the <code>cryptography</code> package is not installed</b> ·{% endif %}
+    {% if vault_status.key_id %}key <code>{{ vault_status.key_id }}</code> ·{% endif %}
+    <b>{{ vault_secrets|length }}</b> secret(s) stored
+  </p>
+
+  {% if vault_status.usable %}
+  <form method="post" action="/admin/vault/secret" class="inline-form">
+    <input type="text" name="integration" placeholder="integration (e.g. crowdstrike)" required>
+    <input type="text" name="name" placeholder="name (e.g. client_secret)" required>
+    <input type="password" name="value" placeholder="value" autocomplete="new-password" required>
+    <button type="submit" class="btn">Store secret</button>
+  </form>
+  <form method="post" action="/admin/vault/migrate" style="display:inline">
+    <button type="submit" class="btn">Import credentials from environment</button>
+  </form>
+  {% endif %}
+
+  {% if vault_secrets %}
+  <table>
+    <tr><th>Integration</th><th>Name</th><th>Key</th><th>Updated by</th><th>Updated</th><th></th></tr>
+    {% for s in vault_secrets %}
+    <tr>
+      <td>{{ s.integration }}</td>
+      <td>{{ s.name }}</td>
+      <td><code>{{ s.key_id }}</code>{% if vault_status.key_id and s.key_id != vault_status.key_id %}
+          <span class="badge error">stale key</span>{% endif %}</td>
+      <td>{{ s.updated_by or '&mdash;'|safe }}</td>
+      <td>{{ s.updated_at|ist }}</td>
+      <td>
+        <form method="post" action="/admin/vault/delete">
+          <input type="hidden" name="integration" value="{{ s.integration }}">
+          <input type="hidden" name="name" value="{{ s.name }}">
+          <button type="submit" class="btn danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  <details>
+    <summary>Credential slots the shipped collectors read</summary>
+    <table>
+      <tr><th>Integration</th><th>Name</th><th>Falls back to</th><th>In vault?</th></tr>
+      {% set stored = vault_secrets|map(attribute='integration')|list %}
+      {% for integration, name, env in vault_slots %}
+      <tr><td>{{ integration }}</td><td>{{ name }}</td><td><code>{{ env }}</code></td>
+          <td>{% if vault_secrets|selectattr('integration','equalto',integration)|selectattr('name','equalto',name)|list %}yes{% else %}&mdash;{% endif %}</td></tr>
+      {% endfor %}
+    </table>
+  </details>
+
+  {% if vault_status.usable %}
+  <details>
+    <summary>Rotate the master key</summary>
+    <p>Re-seals every secret under a new key in one transaction &mdash; all or nothing.
+       Afterwards you must set <code>VAULT_KEY</code> to the new key and restart; until
+       you do, this process still holds the old key and cannot read them.</p>
+    <form method="post" action="/admin/vault/rotate" class="inline-form">
+      <input type="password" name="new_key" placeholder="new base64 key (32 bytes)" required>
+      <button type="submit" class="btn danger">Rotate</button>
+    </form>
+  </details>
+  {% endif %}
+
   <h2>Threat intelligence</h2>
   <p>Ingested events are matched against these indicators (IPs, CIDRs, domains,
      file hashes, URLs); a hit raises a <b>Threat Intelligence Match</b> alert.

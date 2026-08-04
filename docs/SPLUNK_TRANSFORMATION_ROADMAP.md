@@ -152,8 +152,12 @@ on these two substrates. Make ingest crash-safe and the shared store un-starvabl
 ### Phase 2 — Onboarding Breadth & Content Packs
 **Goal:** win the "do you parse my stack?" evaluation. Secrets vault lands first.
 
-- **[S] Encrypted secrets vault (pulled ahead)** — AES-GCM at-rest for every collector credential,
-  per-integration scoping + rotation, before any new collector. *(Splunk: SOAR Assets credential store)*
+- **[S] Encrypted secrets vault (pulled ahead)** — ✅ **DONE.** AES-256-GCM at rest for every
+  collector credential, per-integration slots, all-or-nothing key rotation, admin UI, and
+  vault-then-environment resolution so integrations migrate one at a time. Needs the optional
+  `cryptography` package — the stdlib has no AES and a hand-rolled AEAD was judged the wrong
+  risk; without it the vault disables itself and credentials fall back to environment
+  variables. See [docs/VAULT.md](VAULT.md). *(Splunk: SOAR Assets credential store)*
 - **[L] CrowdStrike FDR + Event Streams** — SQS/S3 gzip-NDJSON pull (reuse SigV4) + OAuth2 long-lived
   datafeed → Endpoint CIM. The #1 EDR onboarding gap. *(Splunk: CrowdStrike FDR / Event Streams TAs)*
 - **[L] Microsoft Defender XDR** — Graph Security + M365 Defender (Endpoint/Identity/Office/Cloud

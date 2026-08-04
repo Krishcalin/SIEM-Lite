@@ -33,7 +33,7 @@ import pytest
 _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_notes",
            "entities", "entity_links", "ingest_batches", "detection_rules", "api_keys",
            "response_actions", "collectors", "sessions", "users", "audit_log", "iocs",
-           "saved_searches", "cim_meta")
+           "saved_searches", "cim_meta", "secrets")
 
 # Exactly the shape `app.cim.sql.view_name` emits, matched independently of that module
 # on purpose: this is the broom the CIM tests are swept up with, so it must not share a

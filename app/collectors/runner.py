@@ -20,37 +20,99 @@ from .cloud import (AwsCloudTrailCollector, EntraSignInCollector,
                     M365AuditCollector)
 from .gcp import GcpAuditLogCollector
 from .sources import GitHubCollector, GitLabCollector, OktaCollector
+from .. import vault
 
 log = logging.getLogger("logocean")
 
 
+def _cred(integration: str, name: str, env_value: str) -> str:
+    """One credential, resolved through the vault with the env var as the fallback.
+
+    Every secret below goes through here rather than reading `settings.*` directly, so
+    an operator can migrate integrations into the vault one at a time. `env_value` is
+    what this call used to be, passed in so the vault never needs a slot->setting map.
+    """
+    return vault.get(integration, name, env_value)
+
+
 def build_collectors() -> list[Collector]:
-    """Instantiate the collectors whose credentials are configured."""
+    """Instantiate the collectors whose credentials are configured.
+
+    Credentials resolve VAULT FIRST, then the plaintext environment variable (see
+    `app/vault/resolve.py`). Non-secret settings — domains, org names, regions, the
+    lookback window — are read straight off `settings` as before; only the secrets move.
+    """
     candidates = [
-        OktaCollector(settings.okta_domain, settings.okta_token,
+        OktaCollector(settings.okta_domain,
+                      _cred("okta", "token", settings.okta_token),
                       settings.collector_lookback_hours),
-        GitHubCollector(settings.github_org, settings.github_token,
+        GitHubCollector(settings.github_org,
+                        _cred("github", "token", settings.github_token),
                         settings.collector_lookback_hours),
-        GitLabCollector(settings.gitlab_url, settings.gitlab_token,
+        GitLabCollector(settings.gitlab_url,
+                        _cred("gitlab", "token", settings.gitlab_token),
                         settings.collector_lookback_hours),
-        AwsCloudTrailCollector(settings.aws_region, settings.aws_access_key_id,
-                               settings.aws_secret_access_key,
-                               settings.aws_session_token,
+        AwsCloudTrailCollector(settings.aws_region,
+                               _cred("aws", "access_key_id",
+                                     settings.aws_access_key_id),
+                               _cred("aws", "secret_access_key",
+                                     settings.aws_secret_access_key),
+                               _cred("aws", "session_token",
+                                     settings.aws_session_token),
                                settings.collector_lookback_hours),
         EntraSignInCollector(settings.azure_tenant_id, settings.azure_client_id,
-                             settings.azure_client_secret,
+                             _cred("azure", "client_secret",
+                                   settings.azure_client_secret),
                              settings.collector_lookback_hours),
         GcpAuditLogCollector(settings.gcp_project_id, settings.gcp_client_email,
-                             settings.gcp_private_key, settings.gcp_token_uri,
+                             _cred("gcp", "private_key", settings.gcp_private_key),
+                             settings.gcp_token_uri,
                              settings.collector_lookback_hours),
     ]
     if settings.m365_enabled:
         candidates.append(
             M365AuditCollector(settings.azure_tenant_id, settings.azure_client_id,
-                               settings.azure_client_secret,
+                               _cred("azure", "client_secret",
+                                     settings.azure_client_secret),
                                settings.m365_content_type,
                                settings.collector_lookback_hours))
     return [c for c in candidates if c.configured()]
+
+
+#: The credential slots the shipped collectors read, for the admin UI's "known slots"
+#: list and for the migration helper. Data, not behaviour: adding a collector adds a
+#: row here so an operator can see what it needs without reading the code.
+KNOWN_SLOTS: tuple[tuple[str, str, str], ...] = (
+    ("okta", "token", "OKTA_TOKEN"),
+    ("github", "token", "GITHUB_TOKEN"),
+    ("gitlab", "token", "GITLAB_TOKEN"),
+    ("aws", "access_key_id", "AWS_ACCESS_KEY_ID"),
+    ("aws", "secret_access_key", "AWS_SECRET_ACCESS_KEY"),
+    ("aws", "session_token", "AWS_SESSION_TOKEN"),
+    ("azure", "client_secret", "AZURE_CLIENT_SECRET"),
+    ("gcp", "private_key", "GCP_PRIVATE_KEY"),
+)
+
+
+def migrate_env_secrets(updated_by: str = "") -> list[str]:
+    """Import any plaintext env-var credential that is set but not yet in the vault.
+
+    Idempotent and non-destructive: a slot already in the vault is left alone (the vault
+    is authoritative once populated), and the environment variable is NOT cleared —
+    unsetting it is the operator's step, deliberately, so they can verify collectors
+    still work before removing their fallback.
+    """
+    from .. import db
+    done = []
+    have = {(r["integration"], r["name"]) for r in db.list_secrets()}
+    for integration, name, env_name in KNOWN_SLOTS:
+        if (integration, name) in have:
+            continue
+        value = getattr(settings, env_name.lower(), "")
+        if value:
+            vault.set_secret(integration, name, value, updated_by)
+            done.append(f"{integration}/{name}")
+    return done
 
 
 def run_collector(c: Collector) -> int:
