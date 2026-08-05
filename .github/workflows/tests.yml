@@ -38,6 +38,13 @@ jobs:
       # the moment those tests landed every unit matrix leg failed on a RuntimeError
       # raised inside starlette — while the same suite was green locally, where httpx
       # arrives as a transitive dependency of something else.
+      #
+      # `cryptography` is DELIBERATELY ABSENT here. It is optional — the vault disables
+      # itself without it and credentials fall back to environment variables — and
+      # leaving it out is what keeps that degraded path exercised on every run:
+      # `crypto.is_available()` returns False and the vault tests skip. The
+      # integration job installs it, so the real AES path is covered there. Between
+      # the two jobs, both branches are tested.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -78,10 +85,15 @@ jobs:
           cache: pip
           cache-dependency-path: requirements.txt
 
+      # `cryptography` IS installed here, unlike the unit job. The vault stores
+      # collector credentials, and its bytea round trip (psycopg returns `memoryview`,
+      # not `bytes`) is precisely what a DB-free test cannot cover — so the one job
+      # that has a database is the one that must exercise it for real. Without it
+      # those nine tests FAILED rather than skipped, and this job was red for it.
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt pytest httpx
+          pip install -r requirements.txt pytest httpx cryptography
 
       # ------------------------------------------------------------------ #
       #  Why three steps and not one                                       #

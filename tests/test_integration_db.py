@@ -2180,7 +2180,26 @@ def _vault_key(monkeypatch):
     return crypto.load_key(raw)
 
 
+def _vault_crypto_available() -> bool:
+    """True when the optional AES backend can be imported. A function rather than a
+    bare import so this module still imports on a machine without it."""
+    from app.vault import crypto
+    return crypto.is_available()
+
+
+# ── the secrets vault ─────────────────────────────────────────────────────────
+# `cryptography` is an OPTIONAL dependency (the stdlib has no AES, and this is the one
+# primitive the project does not hand-roll). tests/test_vault.py has always guarded on
+# it; these nine did not, so on any environment without it they FAILED rather than
+# skipped — which is exactly what the CI integration job is, and it stayed red for it.
+# The CI job now installs the package so the bytea round trip is genuinely exercised;
+# this guard is for a developer machine that has not.
+_HAVE_AES = _vault_crypto_available()
+needs_aes = pytest.mark.skipif(not _HAVE_AES, reason="cryptography not installed")
+
+
 @pytest.mark.integration
+@needs_aes
 def test_vault_secret_round_trips_through_postgres(clean_db, monkeypatch):
     """Seal -> store as bytea -> read back -> open. The bytea round trip is the part a
     DB-free test cannot cover: psycopg returns `memoryview`, not `bytes`."""
@@ -2199,6 +2218,7 @@ def test_vault_secret_round_trips_through_postgres(clean_db, monkeypatch):
 
 
 @pytest.mark.integration
+@needs_aes
 def test_vault_resolution_prefers_the_vault_over_the_environment(clean_db, monkeypatch):
     """The migration contract: vault wins where present, env var still serves elsewhere."""
     from app import vault
@@ -2212,6 +2232,7 @@ def test_vault_resolution_prefers_the_vault_over_the_environment(clean_db, monke
 
 
 @pytest.mark.integration
+@needs_aes
 def test_vault_delete_falls_back_to_the_environment_again(clean_db, monkeypatch):
     from app import vault
     _vault_key(monkeypatch)
@@ -2224,6 +2245,7 @@ def test_vault_delete_falls_back_to_the_environment_again(clean_db, monkeypatch)
 
 
 @pytest.mark.integration
+@needs_aes
 def test_vault_set_overwrites_in_place_rather_than_duplicating(clean_db, monkeypatch):
     from app import vault
     db = clean_db
@@ -2235,6 +2257,7 @@ def test_vault_set_overwrites_in_place_rather_than_duplicating(clean_db, monkeyp
 
 
 @pytest.mark.integration
+@needs_aes
 def test_list_secrets_never_exposes_ciphertext_or_plaintext(clean_db, monkeypatch):
     """What the admin page renders. It must be structurally incapable of leaking."""
     from app import vault
@@ -2248,6 +2271,7 @@ def test_list_secrets_never_exposes_ciphertext_or_plaintext(clean_db, monkeypatc
 
 
 @pytest.mark.integration
+@needs_aes
 def test_vault_rotation_reseals_every_secret_under_the_new_key(clean_db, monkeypatch):
     from app import vault
     from app.config import settings
@@ -2280,6 +2304,7 @@ def test_vault_rotation_reseals_every_secret_under_the_new_key(clean_db, monkeyp
 
 
 @pytest.mark.integration
+@needs_aes
 def test_vault_rotation_refuses_the_same_key(clean_db, monkeypatch):
     from app import vault
     from app.config import settings
@@ -2290,6 +2315,7 @@ def test_vault_rotation_refuses_the_same_key(clean_db, monkeypatch):
 
 
 @pytest.mark.integration
+@needs_aes
 def test_a_secret_that_cannot_be_opened_falls_back_loudly(clean_db, monkeypatch, caplog):
     """A sealed row under a retired key must NOT silently become the env-var value with
     no signal — the operator has to learn their vault is unreadable."""
@@ -2308,6 +2334,7 @@ def test_a_secret_that_cannot_be_opened_falls_back_loudly(clean_db, monkeypatch,
 
 
 @pytest.mark.integration
+@needs_aes
 def test_migrate_env_secrets_is_idempotent_and_non_destructive(clean_db, monkeypatch):
     from app import vault
     from app.collectors import runner
