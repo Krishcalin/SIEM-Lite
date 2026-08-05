@@ -79,6 +79,10 @@ roadmap below.**
   side-loaded add-on clearly outside core.
 - **GeoIP:** side-load the customer's licensed MaxMind DB + ship an openly-redistributable RIR-derived
   ASN/CIDR table as the offline default. **Cold tier = gzip-JSONL only** (parquet pulls pyarrow).
+  → *Shipped in Phase 3 slice 2, with one honest deviation: **no ASN/CIDR table is bundled**. The
+  built-in no-data-file default is RFC/IANA **scope** classification, which needs no table at all and
+  cannot go stale; a redistributable ASN table is loadable via `GEO_RANGES_CSV` but shipping one in
+  the repo would put a dated, multi-megabyte data file under version control.*
 
 **Pulled earlier + newly added:**
 
@@ -189,17 +193,42 @@ eStreamer, and VPC Flow / WAF arrive through the generic paths rather than dedic
 ### Phase 3 — Asset, Identity & Enrichment Fabric
 **Goal:** give every event business + security context (schema + ingest hook defined back in Phase 1).
 
-- **[L] Asset & Identity registry + alias resolution** — ✅ **DONE (slice 1).** Declared assets and
+- **[L] Asset & Identity registry + alias resolution** — ✅ **DONE.** Declared assets and
   identities in their own tables, deliberately separate from the observational `entities` baseline;
   alias resolution over hostname/FQDN/IP/CIDR/MAC and email/UPN/SAM, with exact-beats-containment and
   most-specific-CIDR both deterministic. Context is resolved onto every event at ingest
   (`asset_id`, `asset_criticality`, `identity_id`, `identity_priority`, GIN-indexed `context_tags`)
   and corrected for history by `db.backfill_assets`, which re-derives through the SAME resolver.
+  The operator surface landed with it: CSV import/export (plan-then-apply, all-or-nothing),
+  an admin-gated console page, and a READ-ONLY `/api/v1/registry/*` including a `resolve`
+  endpoint that runs the real resolver and reports which field the subject came from.
   See [docs/ASSETS.md](ASSETS.md). *(Splunk: ES Asset & Identity)*
 - **[M] Automatic enrichment + query-time lookups** — denormalize asset/identity onto events at
   ingest & via LOQL join; analyst-managed lookup tables (`inputlookup/outputlookup`). *(Splunk: automatic lookups · KV Store)*
-- **[M] GeoIP/ASN · reverse-DNS · WHOIS** — offline enrichment framework (side-loaded MaxMind +
-  redistributable RIR ASN table). *(Splunk: iplocation)*
+- **[M] GeoIP/ASN · reverse-DNS · WHOIS** — ✅ **GeoIP/ASN DONE (slice 2); reverse-DNS and WHOIS
+  NOT done and deliberately deferred.** Offline enrichment, no socket anywhere on the ingest path.
+  Two independent layers: network-scope classification (RFC 1918 / CGNAT / loopback / link-local /
+  multicast / documentation / reserved / public) built from explicit RFC/IANA tables that needs **no
+  data file at all**, so every install gets it; and country/ASN from a side-loaded database — a
+  MaxMind-format `.mmdb` read by a **stdlib-only** reader written from the published v2 spec
+  (`maxminddb` is not a dependency and never will be), or a hand-editable CSV range table that takes
+  precedence so an operator can correct a binary they cannot edit. Four scalar columns land on
+  `events` (`src_country`, `dst_country`, `src_asn`, `dst_asn` — `bigint`, because RFC 6996 private
+  ASNs overflow `int4`); city/lat/lon/AS-org are decoded and thrown away rather than widening the
+  largest table in the system. Scope labels merge into the **shared** `context_tags` array through
+  one derivation used by ingest and both backfills, so neither can strip the other's labels.
+  `db.backfill_geo` corrects history and `geo_meta` makes the obligation visible; READ-ONLY
+  `/api/v1/geo/{status,lookup}`, the latter running the real resolver.
+  The from-spec reader is CONFORMANCE-TESTED against databases MaxMind actually built —
+  all three record sizes, known country/ASN answers, every data type — fetched by CI,
+  which fails the build if the fetch breaks rather than letting the suite skip.
+  See [docs/GEOIP.md](GEOIP.md). *(Splunk: iplocation)*
+  - **Still open:** reverse-DNS and WHOIS. Both belong at *query* time, on demand — a network call
+    on the write path is unbounded backpressure on the ingest queue, and an air-gapped install must
+    behave identically to a connected one. Also open: the country/ASN columns are not yet reachable
+    from LOQL or a `datamodel:` projection (a deliberate, separate edit to the column vocabulary),
+    and no real GeoLite2 file has been decoded — the gate on this slice is an integration test
+    against one, with known IP → country answers.
 - **[M] IOC lifecycle + TAXII/STIX/MISP** — per-indicator confidence, aging/expiry, source-reliability,
   cross-feed dedup, sighting/FP feedback; pure-Python TAXII 2.1 poll + STIX/MISP parsers; side-loadable.
   *(Splunk: ES Threat-Intel framework)*

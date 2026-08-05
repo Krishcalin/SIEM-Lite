@@ -297,5 +297,31 @@ class Settings:
     # Resolved through the vault like a collector credential (slot contentpack/key).
     content_pack_key: str = os.getenv("CONTENT_PACK_KEY", "")
 
+    # Geo & network enrichment (Phase 3 slice 2). Side-loaded database files, read
+    # OFFLINE — there is no socket on the ingest path, and reverse-DNS and WHOIS are
+    # deliberately not in this slice. See docs/GEOIP.md and app/enrich/.
+    #
+    # NO ENABLE FLAG, on purpose. The scope layer (RFC 1918 / CGNAT / loopback /
+    # link-local / multicast / documentation / reserved / public -> `context_tags`) is
+    # arithmetic over the address, needs no file, and every install gets it. A flag
+    # would only ever be a way to switch that off by accident. The country/ASN layer is
+    # enabled by pointing one of these at a file; leave them empty and the four
+    # `events` columns simply stay NULL, which /health reports as mode "scope-only".
+    #
+    # EMPTY DEFAULTS, NOT RELATIVE PATHS. A relative default is resolved against the
+    # PROCESS CWD, which is the `ingest_actions_dir` incident this file already carries
+    # a warning about: a path verified at the repo root loads nothing under a service
+    # unit with a different WorkingDirectory, and it does so with every prescribed check
+    # still saying ok. `geo.stats()` publishes the configured string AND the absolute
+    # path each one resolved to, so /health can show the difference.
+    #
+    # ORDER IS PRECEDENCE. The CSV is consulted first: an operator can edit a CSV and
+    # cannot edit a binary database they downloaded, so it is the only override layer
+    # available. Country and ASN are separate MaxMind databases and are merged per
+    # address, which is the normal shape rather than an edge case.
+    geo_ranges_csv: str = os.getenv("GEO_RANGES_CSV", "")   # CSV range table (override)
+    geo_country_db: str = os.getenv("GEO_COUNTRY_DB", "")   # e.g. GeoLite2-Country.mmdb
+    geo_asn_db: str = os.getenv("GEO_ASN_DB", "")           # e.g. GeoLite2-ASN.mmdb
+
 
 settings = Settings()

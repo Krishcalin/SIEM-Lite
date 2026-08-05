@@ -125,8 +125,54 @@ jobs:
           PYTHONPATH: .
           DB_DSN: postgresql://logocean:logocean@localhost:5432/logocean
 
+      # The MMDB reader is a binary-format parser written from the published spec with
+      # no `maxminddb` to check it against. Its own tests round-trip through a writer
+      # THIS PROJECT also wrote — which proves the offset chain is internally coherent
+      # and cannot prove it agrees with a real file, because a reader and a writer that
+      # misunderstand the format the same way round-trip perfectly. A wrong answer
+      # there is a plausible wrong country on a stored event, not a crash.
+      #
+      # So CI fetches MaxMind's OWN published test databases and asserts known answers
+      # against them. They are not vendored: they are MaxMind's files, and this keeps
+      # the repo free of third-party data. `continue-on-error` is deliberately NOT set
+      # — if the fetch breaks, the conformance suite skips, and a silent skip is
+      # exactly what this step exists to prevent.
+      - name: Fetch MaxMind's published test databases
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/mmdb"
+          base=https://raw.githubusercontent.com/maxmind/MaxMind-DB/main/test-data
+          files="GeoIP2-Country-Test.mmdb GeoLite2-ASN-Test.mmdb"
+          files="$files MaxMind-DB-test-ipv4-24.mmdb MaxMind-DB-test-ipv4-28.mmdb"
+          files="$files MaxMind-DB-test-ipv4-32.mmdb MaxMind-DB-test-decoder.mmdb"
+          for f in $files; do
+            if ! curl -sSfL -o "$RUNNER_TEMP/mmdb/$f" "$base/$f"; then
+              echo "::error::could not fetch $f - the MMDB conformance suite would silently skip"
+              exit 1
+            fi
+          done
+          ls -l "$RUNNER_TEMP/mmdb"
+
       - name: Run integration tests against PostgreSQL
         run: python -m pytest tests/ -m integration -q
         env:
           PYTHONPATH: .
           DB_DSN: postgresql://logocean:logocean@localhost:5432/logocean
+
+      # Not marked `integration` (it needs no database), so it is in neither run above;
+      # it needs the fetched corpus, which only this job has. The skip check is the
+      # point of the step: a conformance suite that silently skips is worse than one
+      # that does not exist, because the reader LOOKS verified.
+      - name: Run the MMDB conformance suite against real MaxMind databases
+        run: |
+          set -euo pipefail
+          out=$(python -m pytest tests/test_mmdb_conformance.py -q)
+          echo "$out"
+          case "$out" in
+            *skipped*)
+              echo "::error::the MMDB conformance suite SKIPPED - MMDB_TEST_DATA is not reaching it, so the from-spec reader is unverified against real vendor output"
+              exit 1 ;;
+          esac
+        env:
+          PYTHONPATH: .
+          MMDB_TEST_DATA: ${{ runner.temp }}/mmdb

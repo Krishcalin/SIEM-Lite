@@ -31,6 +31,7 @@ from .auth import require_role
 from .config import settings
 from .detect import detect_format
 from .detection import correlation, runtime as detection_runtime
+from .enrich import geo
 from .loql import LoqlError, run_query
 from .parsers import FORMAT_LABELS
 from .receivers import netflow as netflow_receiver, syslog
@@ -231,6 +232,19 @@ async def lifespan(app: FastAPI):
     except Exception:                          # noqa: BLE001
         log.warning("asset registry could not be stamped at startup; events will "
                     "store no business context until it loads", exc_info=True)
+    # Geo & network enrichment (Phase 3 slice 2). Same position and the same rules as
+    # the registry block above: after `init_schema` because the `geo_meta` stamp needs
+    # its table, explicit rather than lazy so the stamp exists and /health can answer
+    # "is a backfill owed?" before the first event rather than after, and NEVER fatal.
+    # `geo.reload()` does not raise for a bad FILE — a source that will not parse
+    # becomes an entry in `stats()['errors']` and the rest of the index still loads —
+    # so what this catches is a genuine defect, and even then ingest continues with the
+    # four columns NULL.
+    try:
+        db.stamp_geo_sources(geo.reload())
+    except Exception:                          # noqa: BLE001
+        log.warning("geo sources could not be stamped at startup; events will store no "
+                    "country/ASN until they load", exc_info=True)
     if settings.auth_enabled and db.count_users() == 0:
         pw = settings.admin_password or secrets.token_urlsafe(12)
         db.create_user(settings.admin_user, auth.hash_password(pw), "admin")
@@ -591,6 +605,63 @@ def _cim_health() -> tuple[dict[str, Any], list[str]]:
     return block, reasons
 
 
+def _geo_health() -> tuple[dict[str, Any], list[str]]:
+    """The geo block of /health, plus the reasons (if any) it is not healthy.
+
+    Built as a function returning `(block, reasons)` — the `_cim_health` shape rather
+    than the inline asset one — because there are four distinct degradations here and
+    only one of them is visible in the data. Every one of them presents identically to
+    an operator staring at the console: `src_country` is NULL. What separates them is
+    only reported here.
+
+    * `scope_available` False means `app/enrich/ranges.py` failed to IMPORT. The import
+      is guarded precisely so that a broken sibling cannot take the ingest writer down
+      with it — which means the only trace is this flag, and every row silently loses
+      its network-scope labels until it is fixed. Reported first because it is the one
+      failure with no other symptom at all.
+    * `errors` means a CONFIGURED source did not load: a wrong path, a corrupt file, or
+      the settings fields missing from `app.config.Settings` entirely. The last of those
+      is otherwise indistinguishable from a healthy install with nothing side-loaded,
+      forever, which is the `ingest_actions_dir` failure shape this repo already carries
+      scars from.
+    * `write_state.failures` means rows are being STORED with no geo context at all.
+    * `backfill_due` means the source set has moved ahead of stored history — expected
+      right after a side-load, and the operator's cue to run the backfill.
+
+    Nothing here raises: /health must answer even when the database will not.
+    """
+    # `geo_status` FIRST: it resolves the cached index, so calling `stats()` before it
+    # on a process that has not ingested yet would report mode "unloaded" and an empty
+    # error list for an index that is about to load — i.e. /health would hide exactly
+    # the load errors this block exists to surface.
+    try:
+        status = db.geo_status()
+    except Exception:                          # noqa: BLE001 — /health must answer
+        status = {"error": "unavailable"}
+        geo.get_index()                        # ...but still populate `stats()` below
+    stats = geo.stats()
+    write = db.geo_write_state()
+    block = {**stats, **status, "write_state": write}
+
+    reasons: list[str] = []
+    if not stats.get("scope_available"):
+        reasons.append("geo: app/enrich/ranges.py did not import — EVERY event is being "
+                       "stored without its network-scope labels (src:private, "
+                       "dst:public); nothing else reports this")
+    for err in stats.get("errors") or []:
+        reasons.append(f"geo: a configured source did not load ({err}) — the country "
+                       "and ASN columns stay NULL until it does")
+    if write.get("failures"):
+        reasons.append(
+            f"geo: {write['failures']} event(s) stored with NO geo context "
+            f"({write.get('error')}) — run db.backfill_geo() once this is fixed")
+    if status.get("backfill_due"):
+        reasons.append("geo: the loaded geo sources have changed since events were last "
+                       "derived under them — run db.backfill_geo() so stored history "
+                       "matches")
+    return block, reasons
+
+
 @app.get("/health")
 def health():
     """Liveness plus a per-subsystem snapshot.
@@ -649,12 +720,16 @@ def health():
             "asset registry: the declared registry has changed since events were last "
             "derived under it — run db.backfill_assets() so stored history matches"]
 
+    geo_block, geo_reasons = _geo_health()
+    degraded = degraded + geo_reasons
+
     return {"status": "degraded" if degraded else "ok",
             "degraded": degraded or None,
             "ingest_queue": q.stats.as_dict() if q else None,
             "netflow": fr.status() if fr else None,
             "ingest_actions": actions,
             "asset_registry": {**registry, "write_state": ctx_state},
+            "geo": geo_block,
             "notifications": d.stats() if d else None,
             "responses": r.stats() if r else None,
             "reverts": rv.stats() if rv else None,

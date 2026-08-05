@@ -31,6 +31,11 @@ from .cim.match import cim_models_for
 from .cim.registry import _REGISTRY_PATH as _REGISTRY_FILE, get_registry, load as load_registry
 from .cim.spec import CimRegistry
 from .config import settings
+# Geo/network enrichment (Phase 3 slice 2). A plain top-level import, unlike the
+# function-local `from .. import db` inside `assets/registry.py`: the asset registry
+# loads FROM this module's tables and so has a genuine cycle to break, whereas the geo
+# index is built from files on disk and imports nothing from here.
+from .enrich import geo
 from .models import NormalizedEvent
 from .normalize import dedup_hash, tsv_text
 from .ot import OT_PROTOCOLS
@@ -48,6 +53,7 @@ INSERT INTO events (event_time, vendor, product, log_type, severity, action,
     src_ip, dst_ip, src_port, dst_port, protocol, app, user_name, host_name,
     rule_name, bytes_total, message, raw, search_tsv, cim_models,
     asset_id, asset_criticality, identity_id, identity_priority, context_tags,
+    src_country, dst_country, src_asn, dst_asn,
     batch_id, dedup_hash)
 VALUES (%(event_time)s, %(vendor)s, %(product)s, %(log_type)s, %(severity)s, %(action)s,
     %(src_ip)s::inet, %(dst_ip)s::inet, %(src_port)s, %(dst_port)s, %(protocol)s, %(app)s,
@@ -55,6 +61,7 @@ VALUES (%(event_time)s, %(vendor)s, %(product)s, %(log_type)s, %(severity)s, %(a
     %(raw)s, to_tsvector('simple', %(tsv)s), %(cim_models)s::text[],
     %(asset_id)s, %(asset_criticality)s, %(identity_id)s, %(identity_priority)s,
     %(context_tags)s::text[],
+    %(src_country)s, %(dst_country)s, %(src_asn)s, %(dst_asn)s,
     %(batch_id)s, %(dedup_hash)s)
 ON CONFLICT (dedup_hash, event_time) DO NOTHING
 """
@@ -355,6 +362,129 @@ def _asset_context(evt: NormalizedEvent,
         return dict(_NO_CONTEXT)
 
 
+# --------------------------------------------------------------------------- #
+#  Geo & network context (Phase 3 slice 2): resolved onto every row at ingest  #
+# --------------------------------------------------------------------------- #
+_geo_write_state: dict[str, Any] = {"failures": 0, "error": None, "since": None}
+
+#: The four geo columns, all NULL. Named once for the same reason `_NO_CONTEXT` is.
+#:
+#: DELIBERATELY NOT MERGED INTO `_NO_CONTEXT`, and this is not tidiness. `backfill_assets`
+#: compares the dict `_asset_context` returns against a hand-built five-key `current`
+#: dict; widening that dict with geo keys would make the two different SHAPES, so
+#: `new != current` would be true for every row forever — a full-table rewrite on every
+#: run and `unchanged` permanently zero.
+_NO_GEO: dict[str, Any] = {"src_country": None, "dst_country": None,
+                           "src_asn": None, "dst_asn": None}
+
+#: The five registry columns `backfill_assets` owns, and the four geo columns
+#: `backfill_geo` owns. `context_tags` is in NEITHER list because it is shared — see
+#: `_derived_context`.
+_ASSET_COLUMNS = ("asset_id", "asset_criticality", "identity_id", "identity_priority")
+_GEO_COLUMNS = ("src_country", "dst_country", "src_asn", "dst_asn")
+
+
+def geo_write_state() -> dict[str, Any]:
+    """How the ingest-time geo stamp is faring — the snapshot /health reports.
+
+    Non-zero `failures` means rows are stored with NO country/ASN and NO scope labels;
+    `db.backfill_geo()` re-derives them once the cause is fixed.
+    """
+    return dict(_geo_write_state)
+
+
+def reset_geo_write_state() -> None:
+    _geo_write_state.update(failures=0, error=None, since=None)
+
+
+def _geo_context(evt: Any, resolution: Optional[Any] = None,
+                 index: Optional[Any] = None) -> tuple[dict[str, Any], tuple[str, ...]]:
+    """``(the four geo columns, the scope labels)`` for one row.
+
+    RETURNS A TUPLE RATHER THAN ONE DICT, on purpose. `_asset_context` returns
+    `context_tags` inside its dict, so if this returned one too the obvious
+    ``{**_asset_context(...), **_geo_context(...)}`` in `_row` would compile, run, and
+    silently let whichever came second WIN — stripping the other subsystem's labels from
+    every event, with nothing in the data to show it happened. A tuple cannot be spread
+    into a row dict by accident, so the merge has to be written out. That merge is
+    `_derived_context`, and it is the only place either set of labels is allowed to reach
+    a bind parameter.
+
+    Degrades to `(_NO_GEO, ())` on any failure, the same contract `_cim_tags` and
+    `_asset_context` follow: this runs inside the write path, so an unreadable geo
+    database costs the event its CONTEXT and never the event.
+
+    NOTE the asymmetry with `_asset_context`, which is the same one its docstring
+    records: `geo.get_index()` already degrades to an empty index internally and
+    `GeoIndex.lookup` swallows a per-source failure into its own counter, so neither a
+    missing file nor a corrupt one reaches the `except` below. What lands here is a
+    genuine defect in the resolver — which is exactly what this counter should report,
+    and why it is not inflated by the ordinary "no database side-loaded" state.
+    """
+    try:
+        res = resolution
+        if res is None:
+            res = geo.resolve(evt, index if index is not None else geo.get_index())
+        if res.is_empty():
+            return dict(_NO_GEO), ()
+        return ({"src_country": res.src_country, "dst_country": res.dst_country,
+                 "src_asn": res.src_asn, "dst_asn": res.dst_asn},
+                tuple(res.context_tags))
+    except Exception as exc:                  # noqa: BLE001 — storing beats discarding
+        first = _geo_write_state["failures"] == 0
+        _geo_write_state["failures"] += 1
+        _geo_write_state["error"] = f"{type(exc).__name__}: {exc}"
+        if first:
+            _geo_write_state["since"] = dt.datetime.now(dt.timezone.utc)
+            log.exception(
+                "geo context could not be resolved; events are being STORED WITH NO "
+                "country, ASN or network-scope labels rather than dropped. Run "
+                "db.backfill_geo() once this is fixed to re-derive the affected rows")
+        elif _geo_write_state["failures"] % 1000 == 0:
+            log.error("geo context still unavailable: %d event(s) stored without it (%s)",
+                      _geo_write_state["failures"], _geo_write_state["error"])
+        return dict(_NO_GEO), ()
+
+
+def _derived_context(evt: Any, context: Optional[Any] = None,
+                     geo_res: Optional[Any] = None,
+                     geo_index: Optional[Any] = None) -> dict[str, Any]:
+    """Every derived context column for one row — the five registry columns, the four
+    geo columns, and the ONE `context_tags` array both subsystems write into.
+
+    THE MERGE IS WHY THIS FUNCTION EXISTS. `events.context_tags` has one column and two
+    producers: the asset registry emits ``host:prod`` / ``src:pci`` / ``identity:vip``,
+    and geo emits network-scope labels ``src:private`` / ``dst:public``. Every writer of
+    that column — `_row` here, `backfill_assets` and `backfill_geo` below — goes through
+    this function, so all three emit a byte-identical array from identical inputs. If any
+    two disagreed, a no-op backfill would see `new != current` on every row and rewrite
+    the entire heap, and whichever ran last would strip the other's labels.
+
+    LABEL OWNERSHIP IS NOT RECOVERABLE FROM THE TEXT, which is what forces that design.
+    Geo's ``src:public`` is spelled exactly like the label an operator gets by declaring
+    an asset environment or category named ``public`` — a completely ordinary thing to
+    call a DMZ. So neither backfill may "strip only its own labels" by matching a
+    vocabulary: it would delete an operator's label or double-count it. Both backfills
+    re-derive BOTH sides and write the merged array instead, which makes ownership
+    irrelevant rather than ambiguous.
+
+    Canonicalized through `geo.canonical_tags` — sorted, de-duplicated, lower-cased,
+    blank-free — because `tuple(set(...))` orders by hash and Python randomizes string
+    hashes per process, so an ingest worker and a later backfill process would otherwise
+    produce different arrays from the same inputs, in production only.
+
+    NULL, never ``'{}'``, for a row with no labels at all: the GIN index then stays
+    proportional to rows that actually carry context, the rule `cim_models` follows.
+    """
+    asset = _asset_context(evt, context)
+    geo_cols, geo_tags = _geo_context(evt, geo_res, geo_index)
+    merged = geo.canonical_tags(list(asset["context_tags"] or ()) + list(geo_tags))
+    # `context_tags` is assigned LAST and explicitly. `asset` carries a key of that name
+    # and `geo_cols` deliberately does not, but spelling it out here means the merged
+    # value cannot be lost to a future reordering of the spread above.
+    return {**asset, **geo_cols, "context_tags": list(merged) or None}
+
+
 def validate_cim_registry() -> CimRegistry:
     """Parse + validate app/cim/models.yaml eagerly. Raises on a malformed registry.
 
@@ -389,6 +519,15 @@ def _row(evt: NormalizedEvent, batch_id: int,
     omitting it resolves here, against the cached registry index. Only
     `backfill_assets` passes one, so that a whole re-derive runs against a single
     pinned index instead of picking up a reload halfway through.
+
+    GEO HAS NO SUCH PARAMETER, deliberately. It resolves from the cached geo index on
+    every call, so `_row(evt, batch_id)` returns all four geo columns like every other
+    column — a `geo=` argument would make them appear only for callers that passed one,
+    and the placeholder-alignment guard in tests/test_cim.py would then fail as a
+    confusing set difference rather than as "you forgot the default path". Threading one
+    through `insert_events` would be worse still: `pipeline.write_stream` probes that
+    signature with `inspect.signature` and falls back to the three-argument call, and a
+    test double monkeypatches it with a three-argument lambda.
     """
     return {
         "event_time": evt.event_time, "vendor": evt.vendor, "product": evt.product,
@@ -415,10 +554,13 @@ def _row(evt: NormalizedEvent, batch_id: int,
         # byte-identical to a freshly ingested one. Wrapped by `_cim_tags` so a
         # registry that broke after startup costs the tags and never the event.
         "cim_models": _cim_tags(evt, tags),
-        # Business context from the asset/identity registry, on the same footing as
-        # `cim_models` above: derived here in Python, NULL when nothing resolves, and
-        # corrected for existing rows by `backfill_assets` rather than by a trigger.
-        **_asset_context(evt, context),
+        # Business context from the asset/identity registry AND geo/network context,
+        # on the same footing as `cim_models` above: derived here in Python, NULL when
+        # nothing resolves, and corrected for existing rows by `backfill_assets` /
+        # `backfill_geo` rather than by a trigger. Both subsystems write labels into the
+        # single `context_tags` array, so they are merged in one place — see
+        # `_derived_context`, and do NOT spread `_asset_context` here directly again.
+        **_derived_context(evt, context),
         "batch_id": batch_id, "dedup_hash": dedup_hash(evt),
     }
 
@@ -2769,8 +2911,21 @@ def backfill_assets(*, chunk: int = 2000, start_id: int = 0,
     resumes with ``start_id=<the returned last_id>``. Rows whose context is unchanged
     are not written at all, which makes a re-run after a no-op edit nearly free rather
     than rewriting every heap tuple it touches.
+
+    IT ALSO RE-DERIVES THE GEO SCOPE LABELS, even though it writes no geo column. It has
+    to: `context_tags` is one array with two producers, and `_ASSET_UPDATE` sets it
+    unconditionally, so deriving it from asset labels alone would strip every
+    ``src:private`` / ``dst:public`` from every row this run touched — and would then see
+    a difference on all of them, turning a no-op backfill into a full-table rewrite. The
+    merge lives in `_derived_context`, shared with `_row` and `backfill_geo`.
     """
     idx = index if index is not None else assets.get_index()
+    # The geo index is pinned for the run for the same reason the asset one is. This
+    # backfill does not WRITE a geo column, but it does rewrite `context_tags`, which
+    # geo also writes into — so it must re-derive the geo labels and merge them, or
+    # every scope label would be stripped from every row it touched and `new != current`
+    # would fire on all of them. See `_derived_context`.
+    geo_idx = geo.get_index()
     chunk = max(1, int(chunk))
     full_pass = (int(start_id) == 0 and max_rows is None
                  and since is None and until is None)
@@ -2796,7 +2951,13 @@ def backfill_assets(*, chunk: int = 2000, start_id: int = 0,
             writes = []
             for r in rows:
                 res = assets.resolve(r, idx)      # a stored row IS event-like
-                new = _asset_context(r, res)
+                # Through `_derived_context`, not `_asset_context`, so the array written
+                # here is the SAME array `_row` writes at ingest. Only the five registry
+                # columns are lifted out of it; the four geo scalars belong to
+                # `backfill_geo` and `_ASSET_UPDATE` does not name them.
+                derived = _derived_context(r, res, geo_index=geo_idx)
+                new = {k: derived[k] for k in _ASSET_COLUMNS}
+                new["context_tags"] = derived["context_tags"]
                 current = {"asset_id": r["asset_id"],
                            "asset_criticality": r["asset_criticality"],
                            "identity_id": r["identity_id"],
@@ -2839,6 +3000,308 @@ def backfill_assets(*, chunk: int = 2000, start_id: int = 0,
               "full_pass": full_pass, "fingerprint": idx.fingerprint,
               "seconds": round(time.monotonic() - started, 2)}
     log.info("asset backfill finished: %s", result)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+#  Geo sources: the stamp, the staleness answer, and the history backfill      #
+# --------------------------------------------------------------------------- #
+# The asset twins one screen up are the template, and every deviation below is called
+# out where it happens. The one structural difference: `context_tags` is shared, so
+# BOTH backfills re-derive BOTH sides through `_derived_context` and write the merged
+# array. Each writes only its OWN scalar columns.
+
+_GEO_STAMP_UPSERT = """
+INSERT INTO geo_meta (id, geo_hash, source_count, applied_at,
+                      backfilled_at, backfill_hash)
+VALUES (true, %(hash)s, %(sources)s, now(),
+        CASE WHEN %(seed)s::boolean THEN now() END,
+        CASE WHEN %(seed)s::boolean THEN %(hash)s::text END)
+ON CONFLICT (id) DO UPDATE SET
+    geo_hash     = EXCLUDED.geo_hash,
+    source_count = EXCLUDED.source_count,
+    applied_at   = EXCLUDED.applied_at
+"""
+_GEO_BACKFILL_STAMP = ("UPDATE geo_meta SET backfilled_at = now(), "
+                       "backfill_hash = %(hash)s WHERE id = true")
+
+
+def _events_exist(conn) -> bool:
+    """Is there any stored history at all? Used ONLY to decide the seed below.
+
+    Degrades to True — "assume there is history" — because that is the safe direction:
+    it reports a backfill as owed on a store that may not need one, which costs an
+    operator one cheap no-op run, whereas the other way round would mark unmigrated
+    history as already current and there would be nothing left to notice it by.
+    """
+    try:
+        row = conn.execute("SELECT EXISTS (SELECT 1 FROM events) AS present").fetchone()
+        return bool(row and row["present"])
+    except Exception:                         # noqa: BLE001
+        log.warning("could not probe `events` for the geo stamp seed; assuming history "
+                    "exists, so a backfill will be reported as owed", exc_info=True)
+        return True
+
+
+def stamp_geo_sources(index: Optional[Any] = None) -> str:
+    """Record the live geo fingerprint on `geo_meta`. Returns the fingerprint.
+
+    Called at startup and after a reload — the RECORD half of the row. The
+    `ON CONFLICT` branch never touches `backfill_hash`, exactly as
+    `stamp_asset_registry` does not: the configured sources may legitimately move ahead
+    of the rows derived under them, and claiming otherwise would report a side-loaded
+    database as applied to history it has not reached.
+
+    THE SEED IS THE ONE PIECE THAT HAS NO ASSET TWIN, and it exists because geo has no
+    "nothing declared" state to gate staleness on. `asset_status` can answer "no assets
+    are declared, so nothing is owed"; geo derives scope labels from arithmetic with no
+    data file at all, so its empty index is a real derivation with a real fingerprint
+    and `backfill_due` would otherwise read TRUE on every fresh install forever — a
+    permanently degraded /health that means nothing, which is the fastest way to teach
+    an operator to ignore the field.
+
+    So the very first stamp on a database — and only the first, because the INSERT
+    branch runs only when `geo_meta` is empty — seeds `backfill_hash` if and only if
+    `events` is still empty. A fresh install has no history to correct. An UPGRADE has
+    rows that genuinely predate these columns, `events` is not empty, the stamp stays
+    NULL, and /health tells the operator to run `db.backfill_geo()`.
+    """
+    idx = index if index is not None else geo.get_index()
+    with pool().connection() as conn:
+        seed = not _events_exist(conn)
+        conn.execute(_GEO_STAMP_UPSERT, {"hash": idx.fingerprint,
+                                         "sources": len(idx.sources), "seed": seed})
+        conn.commit()
+        if seed:
+            log.info("geo stamp seeded on an empty store (fingerprint %s); no backfill "
+                     "is owed for history that does not exist", idx.fingerprint)
+    return idx.fingerprint
+
+
+def geo_status() -> dict[str, Any]:
+    """Loaded sources, the stored stamp, and whether a backfill is owed.
+
+    `backfill_due` compares `backfill_hash` against the fingerprint of the geo sources
+    AS THEY ARE NOW, recomputed from the live index — not against the stored `geo_hash`,
+    which is refreshed only on load and would answer "history is current" for exactly as
+    long as a side-loaded file had been ignored. `asset_status` and `cim_status` document
+    the identical trap.
+
+    NO "NOTHING DECLARED" GUARD, unlike `asset_status`. An empty geo index still derives
+    context — scope classification needs no file — so `bool(sources)` would be the wrong
+    gate: it would suppress the backfill notice on precisely the install where rows
+    ingested before this slice have no scope labels at all. The fresh-install case is
+    handled at the other end, by the seed in `stamp_geo_sources`.
+    """
+    idx = geo.get_index()
+    live = idx.fingerprint
+    with pool().connection() as conn:
+        row = conn.execute("SELECT * FROM geo_meta WHERE id = true").fetchone()
+    stamped = str(row["backfill_hash"]) if row and row["backfill_hash"] else None
+    return {
+        # `source_count`, NOT `sources`. Both /health and /api/v1/geo/status publish
+        # `{**geo.stats(), **db.geo_status()}`, and `geo.stats()['sources']` is the LIST
+        # of per-source descriptions — the configured string and the absolute path each
+        # one resolved to, which is the entire diagnosis for a path that silently
+        # resolved against the wrong working directory. A key collision here would
+        # replace that list with an integer and take the diagnosis with it. Measured,
+        # not hypothetical: it did exactly that before this rename.
+        "source_count": len(idx.sources),
+        "mode": "scope-only" if idx.is_empty() else "scope+country/asn",
+        "errors": list(idx.errors),
+        "geo_hash": live,
+        "applied_at": row["applied_at"] if row else None,
+        "backfilled_at": row["backfilled_at"] if row else None,
+        "backfill_hash": stamped,
+        "backfill_due": stamped != live,
+    }
+
+
+# ---- the history backfill -------------------------------------------------- #
+# The geo resolver's input fields (src_ip, dst_ip), the ASSET resolver's input fields
+# (host_name, user_name — needed because this run rewrites the shared `context_tags`
+# array and so must re-derive that side too), the id/event_time key, and every stored
+# column this run writes, so an already-correct row is skipped without a write.
+_GEO_BACKFILL_COLS = ("id, event_time, host_name, src_ip, dst_ip, user_name, "
+                      "src_country, dst_country, src_asn, dst_asn, context_tags")
+
+_GEO_UPDATE = ("UPDATE events SET src_country = %(src_country)s, "
+               "dst_country = %(dst_country)s, "
+               "src_asn = %(src_asn)s, "
+               "dst_asn = %(dst_asn)s, "
+               "context_tags = %(context_tags)s::text[] "
+               "WHERE id = %(id)s AND event_time = %(event_time)s")
+
+
+def _geo_backfill_query(since: Optional[dt.datetime] = None,
+                        until: Optional[dt.datetime] = None) -> tuple[str, dict]:
+    """``(sql, params)`` for ONE backfill chunk — pure, so a DB-free test can assert on
+    the emitted text. The caller adds `_after` (the keyset cursor) and `_limit`.
+
+    Keyset pagination on `id`, for the reason `_asset_backfill_query` gives: `id` comes
+    from one identity sequence on the partitioned parent, so it is globally monotonic and
+    each chunk is an index range scan whose cost does not grow with how far into the run
+    we are.
+    """
+    where = ["id > %(_after)s"]
+    p: dict[str, Any] = {}
+    if since is not None:
+        where.append("event_time >= %(_since)s")
+        p["_since"] = since
+    if until is not None:
+        where.append("event_time < %(_until)s")
+        p["_until"] = until
+    sql = (f"SELECT {_GEO_BACKFILL_COLS} FROM events "          # nosec B608 — constants
+           f"WHERE {' AND '.join(where)} ORDER BY id LIMIT %(_limit)s")
+    return sql, p
+
+
+def _refuse_if_asset_registry_degraded(conn, aidx: Any) -> None:
+    """Refuse a geo backfill that would ERASE asset context across the whole store.
+
+    `assets.get_index()` returns EMPTY_INDEX — silently, uncached, by design — on ANY
+    load failure. That contract is exactly right on the ingest path, where context is
+    never worth an event: the row stores NULL, /health says so, and a later
+    `backfill_assets` repairs it.
+
+    HERE THE SAME DEGRADATION IS CATASTROPHIC. `backfill_geo` re-derives the SHARED
+    `context_tags` array through `_derived_context`, so an empty asset index means every
+    row is rewritten with the geo half only — silently deleting `host:prod`, `src:pci`
+    and `identity:vip` from every event in the store, with no error raised and nothing
+    left in the data to show what was there.
+
+    The database is the authority on EMPTY versus UNREAD: rows in `assets`/`identities`
+    with an empty index can only mean the load failed.
+
+    NOT SYMMETRIC — `backfill_assets` needs no such guard. Geo's contribution to
+    `context_tags` is scope labels from `enrich.ranges`, which needs no data file and
+    cannot degrade; only the four scalar geo columns depend on a side-loaded database,
+    and `_GEO_UPDATE` is their only writer. Measured: `geo.resolve` against an empty
+    index still returns ('dst:public', 'src:private').
+    """
+    if not aidx.is_empty():
+        return
+    row = conn.execute(
+        "SELECT (SELECT count(*) FROM assets) AS a, "
+        "(SELECT count(*) FROM identities) AS i").fetchone()
+    declared = int(row["a"]) + int(row["i"])
+    if declared:
+        raise RuntimeError(
+            f"refusing to run backfill_geo: {declared} asset/identity row(s) are "
+            "declared but the registry index is empty, which means it failed to load. "
+            "Re-deriving now would rewrite every row's context_tags with the geo half "
+            "only and erase the asset labels across the whole store. Fix the registry "
+            "(check /health), call assets.reload(), then run this again.")
+
+
+def backfill_geo(*, chunk: int = 2000, start_id: int = 0,
+                 max_rows: Optional[int] = None,
+                 since: Optional[dt.datetime] = None,
+                 until: Optional[dt.datetime] = None,
+                 index: Optional[Any] = None,
+                 asset_index: Optional[Any] = None,
+                 progress: Optional[Callable[[dict[str, Any]], None]] = None,
+                 ) -> dict[str, Any]:
+    """Re-derive the geo columns on rows already in the store — the operator step that
+    corrects HISTORY after a database is side-loaded, and the step that gives rows
+    ingested before this slice their network-scope labels.
+
+    Everything `backfill_assets` documents applies here unchanged: ONE index pinned for
+    the whole run so the first half cannot disagree with the second; re-derived through
+    the SAME `geo.resolve` the ingest path uses rather than a set-based SQL twin that
+    would be a second implementation of scope classification and precedence; chunked,
+    committed per chunk, resumable with ``start_id=<the returned last_id>``; unchanged
+    rows not written at all.
+
+    TWO INDEXES, not one. `index` is the geo index. `asset_index` is pinned as well
+    because this run rewrites `context_tags`, which the asset registry also writes into,
+    so it must re-derive the asset labels and merge — the mirror image of the geo
+    re-derivation `backfill_assets` performs. Neither backfill touches the other's
+    scalar columns: `_GEO_UPDATE` names only the four geo columns plus the shared array.
+
+    RUNNING BOTH BACKFILLS IN EITHER ORDER CONVERGES, because both compute the array
+    through `_derived_context`. Running only this one leaves the registry columns as
+    they were and still produces a correct merged array.
+    """
+    idx = index if index is not None else geo.get_index()
+    aidx = asset_index if asset_index is not None else assets.get_index()
+    chunk = max(1, int(chunk))
+    full_pass = (int(start_id) == 0 and max_rows is None
+                 and since is None and until is None)
+    select_sql, base = _geo_backfill_query(since, until)
+    cursor_id = int(start_id)
+    scanned = updated = unchanged = chunks = 0
+    done = True
+    started = time.monotonic()
+
+    with pool().connection() as conn:
+        _refuse_if_asset_registry_degraded(conn, aidx)
+        while True:
+            budget = chunk if max_rows is None else min(chunk, max_rows - scanned)
+            if budget <= 0:
+                done = False              # stopped on the bound, not on the data
+                break
+            rows = conn.execute(select_sql,
+                                dict(base, _after=cursor_id, _limit=budget)).fetchall()
+            if not rows:
+                break
+            scanned += len(rows)
+            chunks += 1
+            cursor_id = int(rows[-1]["id"])
+            writes = []
+            for r in rows:
+                # A stored row IS event-like: `geo._field` and `assets.resolve._field`
+                # both accept a Mapping, which is the whole reason the resolvers are
+                # pure. psycopg loads `inet` as an ipaddress OBJECT rather than a string
+                # and `geo._ip_text` handles that (and the `/32` interface form) at the
+                # boundary, so nothing here has to coerce.
+                ares = assets.resolve(r, aidx)
+                derived = _derived_context(r, ares, geo_index=idx)
+                new = {k: derived[k] for k in _GEO_COLUMNS}
+                new["context_tags"] = derived["context_tags"]
+                current = {"src_country": r["src_country"],
+                           "dst_country": r["dst_country"],
+                           "src_asn": r["src_asn"],
+                           "dst_asn": r["dst_asn"],
+                           "context_tags": r["context_tags"]}
+                if new != current:
+                    writes.append({**new, "id": r["id"],
+                                   "event_time": r["event_time"]})
+            unchanged += len(rows) - len(writes)
+            if writes:
+                with conn.cursor() as cur:
+                    cur.executemany(_GEO_UPDATE, writes)
+                updated += len(writes)
+            conn.commit()                 # bounded WAL + a resumable cursor
+            log.info("geo backfill: scanned=%d updated=%d unchanged=%d last_id=%d",
+                     scanned, updated, unchanged, cursor_id)
+            if progress is not None:
+                # After the commit, never before: `last_id` is only a valid resume
+                # cursor once the work up to it is durable.
+                try:
+                    progress({"scanned": scanned, "updated": updated,
+                              "unchanged": unchanged, "chunks": chunks,
+                              "last_id": cursor_id})
+                except Exception:         # noqa: BLE001 — a progress sink is
+                    log.warning("geo backfill progress callback failed",
+                                exc_info=True)      # diagnostics; never aborts the run
+            if len(rows) < budget:
+                break                     # short page -> the range is exhausted
+        if done and full_pass:
+            # ONLY an unbounded, completed run may advance the stamp. A bounded one has
+            # left rows underived, and claiming otherwise would answer "history is
+            # current" over a store that is half migrated.
+            stamped = conn.execute(_GEO_BACKFILL_STAMP,
+                                   {"hash": idx.fingerprint}).rowcount
+            conn.commit()
+            if not stamped:
+                log.warning("geo backfill completed but could not record the stamp: "
+                            "geo_meta is empty - call db.stamp_geo_sources() first")
+    result = {"scanned": scanned, "updated": updated, "unchanged": unchanged,
+              "chunks": chunks, "last_id": cursor_id, "done": done,
+              "full_pass": full_pass, "fingerprint": idx.fingerprint,
+              "seconds": round(time.monotonic() - started, 2)}
+    log.info("geo backfill finished: %s", result)
     return result
 
 

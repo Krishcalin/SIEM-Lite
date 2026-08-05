@@ -1209,9 +1209,10 @@ def test_row_binds_null_not_empty_array_for_an_unmatched_event():
 def test_insert_names_cim_models_and_stays_placeholder_aligned():
     """The guard that catches the next column added to one half only.
 
-    It has since earned its keep twice: the count moved 22 -> 27 when Phase 3 added
-    the five asset/identity context columns, and this test is what forced them to be
-    added to BOTH halves of the statement rather than to the column list alone.
+    It has since earned its keep three times: the count moved 22 -> 27 when Phase 3
+    added the five asset/identity context columns, and 27 -> 31 when slice 2 added the
+    four geo columns. Both times this test is what forced them to be added to BOTH
+    halves of the statement rather than to the column list alone.
     """
     cols = re.search(r"INSERT INTO events \((.*?)\)", db._INSERT, re.S).group(1)
     columns = [c.strip() for c in cols.split(",")]
@@ -1220,10 +1221,15 @@ def test_insert_names_cim_models_and_stays_placeholder_aligned():
     assert "%(cim_models)s::text[]" in db._INSERT
     # The registry context columns ride the same statement on the same terms.
     for name in ("asset_id", "asset_criticality", "identity_id", "identity_priority",
-                 "context_tags"):
+                 "context_tags",
+                 # ...and so do the geo columns (Phase 3 slice 2).
+                 "src_country", "dst_country", "src_asn", "dst_asn"):
         assert name in columns, name
     assert "%(context_tags)s::text[]" in db._INSERT      # arrays need the cast
-    assert len(columns) == len(params) == 27
+    assert len(columns) == len(params) == 31
+    # The half this catches that the count cannot: every placeholder must be a key
+    # `_row` returns BY DEFAULT. A column derived only when some optional argument is
+    # passed binds NULL on the ingest path and nothing would say so.
     assert set(params) == set(db._row(evt(), 1))
 
 

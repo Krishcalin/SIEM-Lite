@@ -636,3 +636,73 @@ CREATE TABLE IF NOT EXISTS asset_meta (
     backfilled_at  timestamptz,
     backfill_hash  text
 );
+
+-- ---------------------------------------------------------------------------
+--  Geo / network context, materialized on `events` (Phase 3, slice 2).
+-- ---------------------------------------------------------------------------
+-- Post-hoc ALTERs for exactly the reason the asset columns above are, and it is worth
+-- restating because it is the property an upgrade depends on: with no DEFAULT each ADD
+-- COLUMN is catalog-only, it recurses into every existing partition, and a database
+-- upgraded through this release ends up with the SAME column list and the same ordinal
+-- positions as one created fresh from this file. A DEFAULT here would rewrite three
+-- years of partitions.
+--
+-- FOUR SCALARS AND NO MORE. City, latitude, longitude and the AS organisation name are
+-- decoded by the reader and then thrown away. Nothing in the product reads them, and
+-- `events` is the largest table in the system - a text city column costs more than the
+-- whole geo feature returns. A map view should join a lookup at query time against the
+-- same database file rather than widen the fact table.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS src_country text;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS dst_country text;
+-- bigint, NOT integer, and this is a measured correctness requirement rather than
+-- caution. An AS number is a 32-bit UNSIGNED value: RFC 6996 reserves 4200000000 to
+-- 4294967294 for private use, which is precisely the range an enterprise's own internal
+-- BGP uses and precisely what an operator's side-loaded CSV maps. `geo.norm_asn` accepts
+-- those values (verified), and int4 tops out at 2147483647, so an `integer` column would
+-- raise numeric_value_out_of_range from inside `executemany` - taking the WHOLE insert
+-- chunk down, not the one offending row. That is the same failure class the `to_port`
+-- and `to_int` clamps in db._row already exist to prevent.
+ALTER TABLE events ADD COLUMN IF NOT EXISTS src_asn     bigint;
+ALTER TABLE events ADD COLUMN IF NOT EXISTS dst_asn     bigint;
+
+-- NO INDEX ON THESE FOUR, DELIBERATELY, and here is the reasoning so the next reader
+-- does not add one reflexively:
+--
+--  * Nothing queries them yet. `db._SEARCH_COLS` does not project them and the LOQL /
+--    CIM column vocabularies (app/cim/sql.py) do not name them, so today there is no
+--    query for an index to serve. An index that serves nothing is pure write
+--    amplification on the highest-volume table in the system.
+--  * The scope half is ALREADY indexed, at zero extra cost. `src:public` / `dst:private`
+--    land in `context_tags`, so `context_tags @> ARRAY['dst:public']` is answered by the
+--    existing GIN index from the moment this ships. The labels are the queryable half.
+--  * A country column is low-cardinality (~250 distinct values over the whole table).
+--    A btree on it is a poor fit: any selective query will also be time-bounded, and
+--    partition pruning already does the bulk of that work.
+--
+-- BEFORE ADDING ONE, measure. The condition that would justify it is a real query -
+-- src_country exposed through LOQL, or a detection filtering on it - whose EXPLAIN over
+-- a populated multi-partition store shows a seq scan the planner would have replaced
+-- with a bitmap heap scan. At that point the right index is most likely a partial one
+-- (WHERE src_country IS NOT NULL), because on host telemetry both columns are NULL.
+
+-- Exactly one row: which geo sources the stored geo context on `events` was last
+-- derived under. Same two-writer split as `asset_meta` and `cim_meta` above.
+--   * geo_hash / source_count / applied_at - refreshed whenever the index is (re)loaded.
+--     A RECORD of the live source set for an operator.
+--   * backfilled_at / backfill_hash - written ONLY by db.backfill_geo, and only by a run
+--     that was unbounded AND completed.
+-- One deliberate difference from `asset_meta`: an EMPTY geo index still derives context.
+-- Scope classification is arithmetic over the address and needs no data file at all, so
+-- there is no "nothing declared, nothing owed" state to gate on the way asset_status
+-- gates on `bool(idx.assets or idx.identities)`. Instead db.stamp_geo_sources seeds the
+-- backfill stamp on the very first stamp of a database whose `events` table is still
+-- empty - a fresh install has no history to correct - and leaves it NULL on an upgrade,
+-- where every already-stored row genuinely predates these columns.
+CREATE TABLE IF NOT EXISTS geo_meta (
+    id            boolean     PRIMARY KEY DEFAULT true CHECK (id),   -- one row only
+    geo_hash      text        NOT NULL,
+    source_count  integer     NOT NULL DEFAULT 0,
+    applied_at    timestamptz NOT NULL DEFAULT now(),
+    backfilled_at timestamptz,
+    backfill_hash text
+);

@@ -22,6 +22,7 @@ from starlette.concurrency import run_in_threadpool
 from . import contentpack, db, ingest
 from .config import settings
 from .detect import detect_format
+from .enrich import geo
 from .hec import router as hec_router          # re-exported; main.py mounts it on the app
 from .loql import LoqlError, run_query
 from .parsers import PARSERS
@@ -278,3 +279,65 @@ async def api_registry_resolve(host: str = "", user: str = "", src_ip: str = "",
     return {"asset_id": res.asset_id, "asset_criticality": res.asset_criticality,
             "identity_id": res.identity_id, "identity_priority": res.identity_priority,
             "context_tags": list(res.context_tags), "via": res.asset_via or None}
+
+
+# --------------------------------------------------------------------------- #
+#  Geo & network enrichment (Phase 3 slice 2) — READ ONLY, same reason         #
+# --------------------------------------------------------------------------- #
+# Reads only, on exactly the grounds the registry block above states: an `api_keys` row
+# carries no role, `require_api_key` accepts any enabled key, and /api/ is exempt from
+# the console session auth. A write endpoint here would let a key issued to a log
+# forwarder repoint the geo database the whole store is enriched from. There is no
+# console write twin either — the sources are FILES, side-loaded by whoever administers
+# the host and named by environment variables, which is deliberately not something an
+# HTTP request can change.
+
+@router.get("/geo/status")
+async def api_geo_status(key: dict = Depends(require_api_key)):
+    """What is loaded, from where, and whether stored history is stale.
+
+    Reports the RESOLVED absolute path of every source alongside the configured string.
+    That pair is the entire diagnosis for the most common geo failure: a relative path
+    that resolved against a service unit's working directory, loaded nothing, and left
+    every check saying ok while the columns stayed NULL.
+    """
+    def _status() -> dict:
+        try:
+            stored = db.geo_status()
+        except Exception:                      # noqa: BLE001 — answer without a database
+            stored = {"error": "unavailable"}
+        return {**geo.stats(), **stored, "write_state": db.geo_write_state()}
+
+    return await run_in_threadpool(_status)
+
+
+@router.get("/geo/lookup")
+async def api_geo_lookup(ip: str = "", src_ip: str = "", dst_ip: str = "",
+                         key: dict = Depends(require_api_key)):
+    """"What would this address resolve to, and would it even be called public?"
+
+    Runs the REAL resolver against the live index, for the reason `/registry/resolve`
+    does: an endpoint that re-implemented the lookup could drift from what ingest
+    actually stores, and the whole point of asking is to find out what was stored.
+
+    `ip` is a convenience for the one-address case and fills the `src` side. Pass
+    `src_ip` and `dst_ip` to see both sides of a flow exactly as an event would.
+
+    `normalized` is worth reading when an answer looks wrong: it is the text the lookup
+    actually used, after an IPv4-mapped IPv6 address has been unwrapped and any `/prefix`
+    dropped. An address that appears there unchanged but resolves to nothing simply is
+    not in the loaded database — an empty `sources` list in /geo/status says why.
+    """
+    from types import SimpleNamespace
+
+    from .enrich.geo import _ip_text
+
+    src = src_ip or ip
+    evt = SimpleNamespace(src_ip=src or None, dst_ip=dst_ip or None)
+    res = await run_in_threadpool(geo.resolve, evt, geo.get_index())
+    return {"src_country": res.src_country, "dst_country": res.dst_country,
+            "src_asn": res.src_asn, "dst_asn": res.dst_asn,
+            "context_tags": list(res.context_tags),
+            "normalized": {"src_ip": _ip_text(src) or None,
+                           "dst_ip": _ip_text(dst_ip) or None},
+            "mode": geo.stats()["mode"]}

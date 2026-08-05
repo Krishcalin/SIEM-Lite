@@ -47,7 +47,13 @@ _TABLES = ("events", "alerts", "alert_notes", "suppressions", "cases", "case_not
            # it behind would make one test's "history is current" the starting state of
            # the next. The alias tables are listed before their parents only for
            # readability — TRUNCATE ... CASCADE handles the FKs either way.
-           "asset_aliases", "identity_aliases", "assets", "identities", "asset_meta")
+           "asset_aliases", "identity_aliases", "assets", "identities", "asset_meta",
+           # `geo_meta` (slice 2) is here for exactly the reason `asset_meta` is, with
+           # one extra edge: `db.stamp_geo_sources` SEEDS the backfill stamp when it
+           # first stamps a database whose `events` table is empty. Leaving a stale row
+           # behind would skip that seed for the next test and hand it a `backfill_due`
+           # it never asked for — order-dependent flakiness, not a loud failure.
+           "geo_meta")
 
 # Exactly the shape `app.cim.sql.view_name` emits, matched independently of that module
 # on purpose: this is the broom the CIM tests are swept up with, so it must not share a
